@@ -7,6 +7,7 @@ import { DatabaseService } from './services/database'
 import { wechatDecryptService } from './services/decryptService'
 import { ConfigService } from './services/config'
 import { wxKeyService } from './services/wxKeyService'
+import { wxKeyServiceMac } from './services/wxKeyServiceMac'
 import { dbPathService } from './services/dbPathService'
 import { wcdbService } from './services/wcdbService'
 import { dataManagementService } from './services/dataManagementService'
@@ -26,6 +27,7 @@ import { voiceTranscribeServiceWhisper } from './services/voiceTranscribeService
 import { windowsHelloService, WindowsHelloResult } from './services/windowsHelloService'
 import { shortcutService } from './services/shortcutService'
 import { httpApiService } from './services/httpApiService'
+import { getBestCachePath, getRuntimePlatformInfo } from './services/platformService'
 
 // 扩展 app 对象类型，添加 isQuitting 标志
 declare module 'electron' {
@@ -1285,6 +1287,10 @@ function registerIpcHandlers() {
     return app.getVersion()
   })
 
+  ipcMain.handle('app:getPlatformInfo', async () => {
+    return getRuntimePlatformInfo()
+  })
+
   ipcMain.handle('app:checkForUpdates', async () => {
     try {
       const result = await autoUpdater.checkForUpdates()
@@ -1511,27 +1517,62 @@ function registerIpcHandlers() {
 
   // 密钥获取相关
   ipcMain.handle('wxkey:isWeChatRunning', async () => {
+    if (process.platform === 'darwin') {
+      return wxKeyServiceMac.isWeChatRunning()
+    }
     return wxKeyService.isWeChatRunning()
   })
 
   ipcMain.handle('wxkey:getWeChatPid', async () => {
+    if (process.platform === 'darwin') {
+      return wxKeyServiceMac.getWeChatPid()
+    }
     return wxKeyService.getWeChatPid()
   })
 
   ipcMain.handle('wxkey:killWeChat', async () => {
+    if (process.platform === 'darwin') {
+      return wxKeyServiceMac.killWeChat()
+    }
     return wxKeyService.killWeChat()
   })
 
-  ipcMain.handle('wxkey:launchWeChat', async () => {
-    return wxKeyService.launchWeChat()
+  ipcMain.handle('wxkey:launchWeChat', async (_, customWechatPath?: string) => {
+    if (process.platform === 'darwin') {
+      return wxKeyServiceMac.launchWeChat(customWechatPath)
+    }
+    return wxKeyService.launchWeChat(customWechatPath)
   })
 
   ipcMain.handle('wxkey:waitForWindow', async (_, maxWaitSeconds?: number) => {
+    if (process.platform === 'darwin') {
+      return wxKeyServiceMac.waitForWeChatWindow(maxWaitSeconds)
+    }
     return wxKeyService.waitForWeChatWindow(maxWaitSeconds)
   })
 
   ipcMain.handle('wxkey:startGetKey', async (event, customWechatPath?: string) => {
     logService?.info('WxKey', '开始获取微信密钥', { customWechatPath })
+    if (process.platform === 'darwin') {
+      try {
+        const result = await wxKeyServiceMac.autoGetDbKey(180_000, (status, level) => {
+          event.sender.send('wxkey:status', { status, level })
+        })
+
+        if (result.success) {
+          logService?.info('WxKey', 'macOS 数据库密钥获取成功', { keyLength: result.key?.length || 0 })
+        } else {
+          logService?.warn('WxKey', 'macOS 数据库密钥获取失败', { error: result.error })
+        }
+
+        return result
+      } catch (e) {
+        wxKeyServiceMac.dispose()
+        logService?.error('WxKey', 'macOS 获取密钥异常', { error: String(e) })
+        return { success: false, error: String(e) }
+      }
+    }
+
     try {
       // 初始化 DLL
       const initSuccess = await wxKeyService.initialize()
@@ -1624,11 +1665,18 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('wxkey:cancel', async () => {
+    if (process.platform === 'darwin') {
+      wxKeyServiceMac.dispose()
+      return true
+    }
     wxKeyService.dispose()
     return true
   })
 
   ipcMain.handle('wxkey:detectCurrentAccount', async (_, dbPath?: string, maxTimeDiffMinutes?: number) => {
+    if (process.platform === 'darwin') {
+      return wxKeyServiceMac.detectCurrentAccount(dbPath, maxTimeDiffMinutes)
+    }
     return wxKeyService.detectCurrentAccount(dbPath, maxTimeDiffMinutes)
   })
 
@@ -1647,26 +1695,9 @@ function registerIpcHandlers() {
 
   // 获取最佳缓存目录
   ipcMain.handle('dbpath:getBestCachePath', async () => {
-    const { existsSync } = require('fs')
-    const { join } = require('path')
-
-    // 按优先级检查磁盘：D、E、F、C
-    const drives = ['D', 'E', 'F', 'C']
-
-    for (const drive of drives) {
-      const drivePath = `${drive}:\\`
-      if (existsSync(drivePath)) {
-        const cachePath = join(drivePath, 'CipherTalkDB')
-        logService?.info('CachePath', `找到可用磁盘: ${drive}`, { cachePath })
-        return { success: true, path: cachePath, drive }
-      }
-    }
-
-    // 如果都没有，返回用户目录下的默认路径
-    const { app } = require('electron')
-    const defaultPath = join(app.getPath('userData'), 'cache')
-    logService?.warn('CachePath', '未找到常规磁盘，使用默认路径', { defaultPath })
-    return { success: true, path: defaultPath, drive: 'default' }
+    const result = getBestCachePath()
+    logService?.info('CachePath', '返回平台默认缓存目录', result)
+    return result
   })
 
   // WCDB 数据库相关
@@ -1917,6 +1948,45 @@ function registerIpcHandlers() {
   // 图片密钥获取（通过 DLL 从缓存目录获取 code，用前端 wxid 计算密钥）
   ipcMain.handle('imageKey:getImageKeys', async (event, userDir: string) => {
     logService?.info('ImageKey', '开始获取图片密钥（DLL 本地扫描模式）', { userDir })
+    if (process.platform === 'darwin') {
+      try {
+        const kvcommResult = await wxKeyServiceMac.autoGetImageKey(
+          userDir,
+          (message) => event.sender.send('imageKey:progress', message)
+        )
+
+        if (kvcommResult.success) {
+          logService?.info('ImageKey', 'macOS kvcomm 图片密钥获取成功', {
+            xorKey: kvcommResult.xorKey,
+            aesKey: kvcommResult.aesKey
+          })
+          return kvcommResult
+        }
+
+        logService?.warn('ImageKey', 'macOS kvcomm 方案失败，切换内存扫描', { error: kvcommResult.error })
+        event.sender.send('imageKey:progress', 'kvcomm 方案失败，正在尝试内存扫描...')
+
+        const scanResult = await wxKeyServiceMac.autoGetImageKeyByMemoryScan(
+          userDir,
+          (message) => event.sender.send('imageKey:progress', message)
+        )
+
+        if (scanResult.success) {
+          logService?.info('ImageKey', 'macOS 内存扫描图片密钥获取成功', {
+            xorKey: scanResult.xorKey,
+            aesKey: scanResult.aesKey
+          })
+        } else {
+          logService?.error('ImageKey', 'macOS 图片密钥获取失败', { error: scanResult.error })
+        }
+
+        return scanResult
+      } catch (e) {
+        logService?.error('ImageKey', 'macOS 图片密钥获取异常', { error: String(e) })
+        return { success: false, error: String(e) }
+      }
+    }
+
     try {
       // ========== 方案一：DLL 本地扫描（优先） ==========
       const dllResult = await (async () => {

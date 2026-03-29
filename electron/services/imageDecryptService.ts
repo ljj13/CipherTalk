@@ -9,6 +9,7 @@ import { Worker } from 'worker_threads'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { ConfigService } from './config'
+import { getDefaultCachePath as getPlatformDefaultCachePath } from './platformService'
 
 const execFileAsync = promisify(execFile)
 
@@ -1504,25 +1505,7 @@ export class ImageDecryptService {
    * 获取默认缓存路径（与 dataManagementService 保持一致）
    */
   private getDefaultCachePath(): string {
-    // 开发环境使用文档目录
-    if (process.env.VITE_DEV_SERVER_URL) {
-      const documentsPath = app.getPath('documents')
-      return join(documentsPath, 'CipherTalkData')
-    }
-
-    // 生产环境
-    const exePath = app.getPath('exe')
-    const installDir = require('path').dirname(exePath)
-
-    // 检查是否安装在 C 盘
-    const isOnCDrive = /^[cC]:/i.test(installDir) || installDir.startsWith('\\\\')
-
-    if (isOnCDrive) {
-      const documentsPath = app.getPath('documents')
-      return join(documentsPath, 'CipherTalkData')
-    }
-
-    return join(installDir, 'CipherTalkData')
+    return getPlatformDefaultCachePath()
   }
 
   private getCacheRoot(): string {

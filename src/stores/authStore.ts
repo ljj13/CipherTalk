@@ -25,6 +25,15 @@ interface AuthState {
 
 import { hashPassword } from '@/utils/crypto'
 
+async function isWindowsPlatform(): Promise<boolean> {
+    try {
+        const info = await window.electronAPI.app.getPlatformInfo()
+        return info.platform === 'win32'
+    } catch {
+        return false
+    }
+}
+
 // WebAuthn 错误消息映射
 function getFriendlyErrorMessage(error: any): string {
     const msg = error.message || ''
@@ -90,6 +99,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     enableAuth: async () => {
         try {
+            if (!(await isWindowsPlatform())) {
+                return { success: false, error: '当前平台不支持 Windows Hello 应用锁，请改用自定义密码。' }
+            }
+
             // 优先尝试使用原生 Windows Hello DLL (更快)
             if (window.electronAPI?.windowsHello) {
                 const available = await window.electronAPI.windowsHello.isAvailable()
@@ -221,6 +234,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         if (!credentialId) return { success: false, error: '未找到凭证' }
 
         try {
+            if (!(await isWindowsPlatform()) && credentialId === 'native-windows-hello') {
+                return { success: false, error: '当前平台不支持 Windows Hello 解锁' }
+            }
+
             // 优先使用原生 Windows Hello DLL (更快)
             if (credentialId === 'native-windows-hello' && window.electronAPI?.windowsHello) {
                 const result = await window.electronAPI.windowsHello.verify('请验证您的身份以解锁 CipherTalk')

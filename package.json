@@ -91,6 +91,13 @@
       "target": "nsis",
       "requestedExecutionLevel": "asInvoker"
     },
+    "mac": {
+      "category": "public.app-category.utilities",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "resources/macos/entitlements.mac.plist",
+      "entitlementsInherit": "resources/macos/entitlements.mac.plist"
+    },
     "nsis": {
       "differentialPackage": false,
       "oneClick": false,

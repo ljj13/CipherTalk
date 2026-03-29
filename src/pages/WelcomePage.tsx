@@ -13,7 +13,7 @@ import './WelcomePage.scss'
 
 const steps = [
   { id: 'intro', title: '欢迎', desc: '准备开始你的本地数据探索' },
-  { id: 'db', title: '数据库目录', desc: '定位 xwechat_files 目录' },
+  { id: 'db', title: '数据库目录', desc: '定位微信数据目录' },
   { id: 'cache', title: '缓存目录', desc: '设置本地缓存存储位置' },
   { id: 'key', title: '解密密钥', desc: '获取密钥与自动识别账号' },
   { id: 'image', title: '图片密钥', desc: '获取 XOR 与 AES 密钥' },
@@ -59,6 +59,12 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
   const [decryptStatus, setDecryptStatus] = useState('')
   const [countdown, setCountdown] = useState(0)
   const [hasCache, setHasCache] = useState(false)
+  const [platformInfo, setPlatformInfo] = useState<{ platform: string; arch: string }>({
+    platform: 'win32',
+    arch: 'x64'
+  })
+
+  const isMac = platformInfo.platform === 'darwin'
 
   useEffect(() => {
     const removeStatus = window.electronAPI.wxKey?.onStatus?.((payload) => {
@@ -74,6 +80,10 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
     })
     const removeImageProgress = window.electronAPI.imageKey?.onProgress?.((msg) => {
       setImageKeyStatus(msg)
+    })
+
+    void window.electronAPI.app.getPlatformInfo().then(setPlatformInfo).catch(() => {
+      // ignore
     })
 
     // 请求通知权限
@@ -671,14 +681,24 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 <h3>数据库目录说明</h3>
                 <p>这是微信存储聊天记录的根目录，通常位于：</p>
                 <ul className="info-list">
-                  <li>微信 → 设置 → 账号与存储 → 存储位置</li>
-                  <li>按照上面的路径找到 <code>xwechat_files</code> 目录</li>
-                  <li>路径中不能包含中文字符</li>
+                  {isMac ? (
+                    <li><code>~/Library/Containers/com.tencent.xinWeChat/Data/Library/Application Support/com.tencent.xinWeChat/&lt;version&gt;</code> 或旧版 <code>xwechat_files</code></li>
+                  ) : (
+                    <li>微信 → 设置 → 账号与存储 → 存储位置</li>
+                  )}
+                  {isMac ? (
+                    <li>支持 4.0.5+ 新路径和旧版 <code>xwechat_files</code> 路径</li>
+                  ) : (
+                    <li>按照上面的路径找到 <code>xwechat_files</code> 目录</li>
+                  )}
+                  <li>{isMac ? '建议优先选择版本目录或账号根目录' : '路径中不能包含中文字符'}</li>
                 </ul>
-                <div className="info-warning">
-                  <ShieldCheck size={16} />
-                  <span>如路径包含中文，请在微信中更改存储位置</span>
-                </div>
+                {!isMac && (
+                  <div className="info-warning">
+                    <ShieldCheck size={16} />
+                    <span>如路径包含中文，请在微信中更改存储位置</span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -687,8 +707,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 <h3>缓存目录说明</h3>
                 <p>用于存储解密后的图片、表情等媒体文件。</p>
                 <ul className="info-list">
-                  <li>自动检测可用磁盘（优先 D、E、F 盘）</li>
-                  <li>避免使用系统盘（C盘）</li>
+                  <li>{isMac ? 'macOS 默认使用文稿目录下的 CipherTalkData' : '自动检测可用磁盘（优先 D、E、F 盘）'}</li>
+                  <li>{isMac ? '也可以手动指定到其他本地目录' : '避免使用系统盘（C盘）'}</li>
                   <li>需要足够的存储空间</li>
                   <li>可以手动修改路径</li>
                 </ul>
@@ -700,13 +720,13 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 <h3>解密密钥说明</h3>
                 <p>用于解密微信数据库的64位十六进制密钥。</p>
                 <ul className="info-list">
-                  <li>点击"自动获取"会自动启动微信</li>
-                  <li>等待提示"hook安装成功"后登录</li>
-                  <li>登录后会自动识别账号</li>
+                  <li>{isMac ? 'macOS 通过 helper + 断点捕获获取 DbKey' : '点击"自动获取"会自动启动微信'}</li>
+                  <li>{isMac ? '此流程要求先关闭 SIP，并允许管理员提权' : '等待提示"hook安装成功"后登录'}</li>
+                  <li>{isMac ? '成功后会自动回填 64 位 DbKey 并尝试识别账号' : '登录后会自动识别账号'}</li>
                 </ul>
                 <div className="info-warning">
                   <ShieldCheck size={16} />
-                  <span>密钥仅保存在本地，不会上传</span>
+                  <span>{isMac ? '若 SIP 未关闭，自动获取会直接失败并给出提示' : '密钥仅保存在本地，不会上传'}</span>
                 </div>
               </div>
             )}
@@ -716,8 +736,8 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                 <h3>图片密钥说明</h3>
                 <p>用于解密微信图片的密钥（可选）。</p>
                 <ul className="info-list">
-                  <li>点击"自动获取"从本地缓存目录扫描</li>
-                  <li>无需启动微信，秒级获取</li>
+                  <li>优先通过本地缓存目录和 kvcomm 码推导图片密钥</li>
+                  <li>{isMac ? 'kvcomm 失败时才回退到微信进程内存扫描' : '无需启动微信，秒级获取'}</li>
                   <li>自动匹配当前 wxid 的密钥</li>
                   <li>如无法获取，可手动填写</li>
                 </ul>
@@ -727,17 +747,26 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
             {currentStep.id === 'security' && (
               <div className="info-content">
                 <h3>安全防护说明</h3>
-                <p>为应用添加额外的安全保护（可选）。</p>
-                <ul className="info-list">
-                  <li>启用后每次启动需要验证</li>
-                  <li>使用 Windows Hello 进行认证</li>
-                  <li>支持面部识别、指纹或 PIN 码</li>
-                  <li>保护您的聊天记录隐私</li>
-                </ul>
-                <div className="info-warning" style={{ background: 'rgba(76, 175, 80, 0.1)', color: '#4CAF50' }}>
-                  <ShieldCheck size={16} />
-                  <span>推荐在公共电脑上开启此功能</span>
-                </div>
+                <p>{isMac ? '当前向导不提供 macOS 系统应用锁，后续可在设置中改用自定义密码。' : '为应用添加额外的安全保护（可选）。'}</p>
+                {isMac ? (
+                  <div className="info-warning">
+                    <ShieldCheck size={16} />
+                    <span>Windows Hello 仅在 Windows 上可用，macOS 不做假支持。</span>
+                  </div>
+                ) : (
+                  <>
+                    <ul className="info-list">
+                      <li>启用后每次启动需要验证</li>
+                      <li>使用 Windows Hello 进行认证</li>
+                      <li>支持面部识别、指纹或 PIN 码</li>
+                      <li>保护您的聊天记录隐私</li>
+                    </ul>
+                    <div className="info-warning" style={{ background: 'rgba(76, 175, 80, 0.1)', color: '#4CAF50' }}>
+                      <ShieldCheck size={16} />
+                      <span>推荐在公共电脑上开启此功能</span>
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -787,15 +816,19 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                   <input
                     type="text"
                     className="field-input"
-                    placeholder="例如：C:\\Users\\xxx\\Documents\\xwechat_files"
+                    placeholder={isMac
+                      ? '例如：~/Library/Containers/com.tencent.xinWeChat/Data/Library/Application Support/com.tencent.xinWeChat/2.0b4.0.9'
+                      : '例如：C:\\Users\\xxx\\Documents\\xwechat_files'}
                     value={dbPath}
                     onChange={(e) => setDbPath(e.target.value)}
                   />
                   <button className="btn btn-primary btn-full" onClick={handleSelectPath}>
                     <FolderOpen size={16} /> 浏览选择目录
                   </button>
-                  <div className="field-hint">请选择微信-设置-存储位置对应的目录</div>
-                  <div className="field-hint" style={{ color: '#ff6b6b', marginTop: '4px' }}>⚠️ 目录路径不可包含中文，如有中文请去微信-设置-存储位置点击更改，迁移至全英文目录</div>
+                  <div className="field-hint">{isMac ? '请选择微信版本目录或账号根目录' : '请选择微信-设置-存储位置对应的目录'}</div>
+                  {!isMac && (
+                    <div className="field-hint" style={{ color: '#ff6b6b', marginTop: '4px' }}>⚠️ 目录路径不可包含中文，如有中文请去微信-设置-存储位置点击更改，迁移至全英文目录</div>
+                  )}
                 </div>
               )}
 
@@ -805,7 +838,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                   <input
                     type="text"
                     className="field-input"
-                    placeholder="D:\CipherTalkDB"
+                    placeholder={isMac ? '~/Documents/CipherTalkData' : 'D:\\CipherTalkDB'}
                     value={cachePath}
                     onChange={(e) => setCachePath(e.target.value)}
                   />
@@ -817,7 +850,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                       <RotateCcw size={16} /> 恢复默认
                     </button>
                   </div>
-                  <div className="field-hint">用于头像、表情与图片缓存，已自动选择最佳磁盘</div>
+                  <div className="field-hint">{isMac ? '用于头像、表情与图片缓存，默认已选文稿目录' : '用于头像、表情与图片缓存，已自动选择最佳磁盘'}</div>
                 </div>
               )}
 
@@ -883,7 +916,7 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                     {isFetchingDbKey ? '获取中...' : '自动获取密钥'}
                   </button>
 
-                  {showWechatPathPrompt && (
+                  {!isMac && showWechatPathPrompt && (
                     <div className="manual-prompt">
                       <p className="prompt-text">未能自动找到微信安装位置，请手动选择 Weixin.exe</p>
                       <input
@@ -906,8 +939,10 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                   )}
 
                   {dbKeyStatus && <div className="field-hint status-text">{dbKeyStatus}</div>}
-                  <div className="field-hint">获取密钥会自动启动微信并识别候选账号目录</div>
-                  <div className="field-hint">点击自动获取后等待提示<span style={{ color: 'red' }}>hook安装成功</span>，然后登录微信即可</div>
+                  <div className="field-hint">{isMac ? '获取密钥会调用 mac helper，并尝试识别候选账号目录' : '获取密钥会自动启动微信并识别候选账号目录'}</div>
+                  <div className="field-hint">
+                    {isMac ? 'macOS 要求先关闭 SIP；点击后会弹出管理员授权，再等待微信触发数据库访问即可。' : <>点击自动获取后等待提示<span style={{ color: 'red' }}>hook安装成功</span>，然后登录微信即可</>}
+                  </div>
                 </div>
               )}
 
@@ -933,69 +968,83 @@ function WelcomePage({ standalone = false }: WelcomePageProps) {
                     {isFetchingImageKey ? '获取中...' : '自动获取图片密钥'}
                   </button>
                   {imageKeyStatus && <div className="field-hint status-text">{imageKeyStatus}</div>}
-                  <div className="field-hint">请在电脑微信中打开查看几个图片后再点击获取秘钥，如获取失败请重复以上操作</div>
-                  {isFetchingImageKey && <div className="field-hint status-text">正在扫描内存，请稍候...</div>}
+                  <div className="field-hint">{isMac ? '优先从 kvcomm 和模板文件推导，若失败再回退到内存扫描。' : '请在电脑微信中打开查看几个图片后再点击获取秘钥，如获取失败请重复以上操作'}</div>
+                  {isFetchingImageKey && <div className="field-hint status-text">{isMac ? '正在尝试 kvcomm / 内存扫描，请稍候...' : '正在扫描内存，请稍候...'}</div>}
                 </div>
               )}
 
               {currentStep.id === 'security' && (
                 <div className="setup-body">
-                  <div className="auth-setup-card">
-                    <div className="auth-icon-large">
-                      <Fingerprint size={48} />
+                  {isMac ? (
+                    <div className="auth-setup-card">
+                      <div className="auth-icon-large">
+                        <Lock size={48} />
+                      </div>
+                      <h3>系统应用锁暂不可用</h3>
+                      <p className="auth-desc">
+                        当前版本不会在 macOS 上伪装支持 Windows Hello。
+                        <br />
+                        你可以先跳过这一步，后续在设置页使用自定义密码。
+                      </p>
                     </div>
-                    <h3>Windows Hello 认证</h3>
-                    <p className="auth-desc">
-                      启用 Windows Hello 以保护您的数据。
-                      <br />
-                      启用后，每次打开应用都需要进行生物识别或 PIN 码验证。
-                    </p>
+                  ) : (
+                    <div className="auth-setup-card">
+                      <div className="auth-icon-large">
+                        <Fingerprint size={48} />
+                      </div>
+                      <h3>Windows Hello 认证</h3>
+                      <p className="auth-desc">
+                        启用 Windows Hello 以保护您的数据。
+                        <br />
+                        启用后，每次打开应用都需要进行生物识别或 PIN 码验证。
+                      </p>
 
-                    <div className="auth-actions">
-                      {!isAuthEnabled ? (
-                        <button
-                          className="btn btn-primary"
-                          onClick={async () => {
-                            setIsEnablingAuth(true)
-                            setAuthStatus('正在等待 Windows Hello 验证...')
-                            const result = await enableAuth()
-                            setIsEnablingAuth(false)
-                            if (result.success) {
-                              setAuthStatus('已成功启用认证保护')
-                            } else {
-                              setError(result.error || '启用失败')
-                              setAuthStatus('')
-                            }
-                          }}
-                          disabled={isEnablingAuth}
-                        >
-                          {isEnablingAuth ? '正在配置...' : '启用应用锁'}
-                        </button>
-                      ) : (
-                        <div className="auth-success-state">
-                          <div className="success-badge">
-                            <CheckCircle2 size={16} />
-                            <span>已启用保护</span>
-                          </div>
+                      <div className="auth-actions">
+                        {!isAuthEnabled ? (
                           <button
-                            className="btn btn-text-danger"
+                            className="btn btn-primary"
                             onClick={async () => {
-                              await disableAuth()
-                              setAuthStatus('')
+                              setIsEnablingAuth(true)
+                              setAuthStatus('正在等待 Windows Hello 验证...')
+                              const result = await enableAuth()
+                              setIsEnablingAuth(false)
+                              if (result.success) {
+                                setAuthStatus('已成功启用认证保护')
+                              } else {
+                                setError(result.error || '启用失败')
+                                setAuthStatus('')
+                              }
                             }}
+                            disabled={isEnablingAuth}
                           >
-                            关闭保护
+                            {isEnablingAuth ? '正在配置...' : '启用应用锁'}
                           </button>
+                        ) : (
+                          <div className="auth-success-state">
+                            <div className="success-badge">
+                              <CheckCircle2 size={16} />
+                              <span>已启用保护</span>
+                            </div>
+                            <button
+                              className="btn btn-text-danger"
+                              onClick={async () => {
+                                await disableAuth()
+                                setAuthStatus('')
+                              }}
+                            >
+                              关闭保护
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {authStatus && (
+                        <div className="auth-status-text">
+                          {authStatus}
                         </div>
                       )}
                     </div>
-
-                    {authStatus && (
-                      <div className="auth-status-text">
-                        {authStatus}
-                      </div>
-                    )}
-                  </div>
+                  )}
                 </div>
               )}
 

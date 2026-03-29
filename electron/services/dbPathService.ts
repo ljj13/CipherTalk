@@ -1,33 +1,19 @@
-import { join } from 'path'
+import { basename, join } from 'path'
 import { existsSync, readdirSync, statSync } from 'fs'
 import { homedir } from 'os'
 
 export class DbPathService {
-  /**
-   * 自动检测微信数据库根目录
-   */
   async autoDetect(): Promise<{ success: boolean; path?: string; error?: string }> {
     try {
-      const possiblePaths: string[] = []
-      const home = homedir()
+      for (const candidate of this.getPossibleRoots()) {
+        if (!existsSync(candidate)) continue
 
-      // 微信4.x 数据目录
-      possiblePaths.push(join(home, 'Documents', 'xwechat_files'))
-      // 旧版微信数据目录
-      possiblePaths.push(join(home, 'Documents', 'WeChat Files'))
+        if (this.isAccountDir(candidate)) {
+          return { success: true, path: candidate }
+        }
 
-      for (const path of possiblePaths) {
-        if (existsSync(path)) {
-          const rootName = path.split(/[/\\]/).pop()?.toLowerCase()
-          if (rootName !== 'xwechat_files' && rootName !== 'wechat files') {
-            continue
-          }
-          
-          // 检查是否有有效的账号目录
-          const accounts = this.findAccountDirs(path)
-          if (accounts.length > 0) {
-            return { success: true, path }
-          }
+        if (this.findAccountDirs(candidate).length > 0) {
+          return { success: true, path: candidate }
         }
       }
 
@@ -37,55 +23,157 @@ export class DbPathService {
     }
   }
 
-  /**
-   * 查找账号目录（包含 db_storage 的目录）
-   */
-  findAccountDirs(rootPath: string): string[] {
-    const accounts: string[] = []
-    
-    try {
-      const entries = readdirSync(rootPath)
-      
-      for (const entry of entries) {
-        const entryPath = join(rootPath, entry)
-        const stat = statSync(entryPath)
-        
-        if (stat.isDirectory()) {
-          // 检查是否有 db_storage 子目录
-          const dbStoragePath = join(entryPath, 'db_storage')
-          if (existsSync(dbStoragePath)) {
-            accounts.push(entry)
-          }
-        }
-      }
-    } catch {}
-    
-    return accounts
-  }
-
-  /**
-   * 扫描 wxid 列表
-   * 微信账号目录格式多样：
-   * - wxid_xxxxx（传统格式）
-   * - 纯数字（QQ号绑定）
-   * - 自定义微信号格式（如 chenggongyouyue003_03d9）
-   */
   scanWxids(rootPath: string): string[] {
     try {
-      // 直接返回所有包含 db_storage 的账号目录
-      // 不再限制 wxid 格式，因为微信账号目录名称格式多样
+      if (this.isAccountDir(rootPath)) {
+        return [basename(rootPath)]
+      }
       return this.findAccountDirs(rootPath)
-    } catch {}
-    
-    return []
+    } catch {
+      return []
+    }
   }
 
-  /**
-   * 获取默认数据库路径
-   */
   getDefaultPath(): string {
     const home = homedir()
+    if (process.platform === 'darwin') {
+      const appSupportBase = join(
+        home,
+        'Library',
+        'Containers',
+        'com.tencent.xinWeChat',
+        'Data',
+        'Library',
+        'Application Support',
+        'com.tencent.xinWeChat'
+      )
+
+      for (const entry of this.safeReadDir(appSupportBase)) {
+        if (this.isMacVersionDir(entry)) {
+          return join(appSupportBase, entry)
+        }
+      }
+
+      return join(home, 'Library', 'Containers', 'com.tencent.xinWeChat', 'Data', 'Documents', 'xwechat_files')
+    }
+
     return join(home, 'Documents', 'xwechat_files')
+  }
+
+  private getPossibleRoots(): string[] {
+    const home = homedir()
+    const possiblePaths: string[] = []
+
+    if (process.platform === 'darwin') {
+      const appSupportBase = join(
+        home,
+        'Library',
+        'Containers',
+        'com.tencent.xinWeChat',
+        'Data',
+        'Library',
+        'Application Support',
+        'com.tencent.xinWeChat'
+      )
+
+      for (const entry of this.safeReadDir(appSupportBase)) {
+        if (this.isMacVersionDir(entry)) {
+          possiblePaths.push(join(appSupportBase, entry))
+        }
+      }
+
+      possiblePaths.push(
+        join(home, 'Library', 'Containers', 'com.tencent.xinWeChat', 'Data', 'Documents', 'xwechat_files'),
+        join(home, 'Documents', 'xwechat_files'),
+        join(home, 'Documents', 'WeChat Files')
+      )
+      return possiblePaths
+    }
+
+    return [
+      join(home, 'Documents', 'xwechat_files'),
+      join(home, 'Documents', 'WeChat Files')
+    ]
+  }
+
+  private findAccountDirs(rootPath: string): string[] {
+    const accounts: string[] = []
+
+    try {
+      for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue
+        if (!this.isPotentialAccountName(entry.name)) continue
+
+        const entryPath = join(rootPath, entry.name)
+        if (this.isAccountDir(entryPath)) {
+          accounts.push(entry.name)
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return accounts.sort((a, b) => {
+      const aTime = this.getAccountModifiedTime(join(rootPath, a))
+      const bTime = this.getAccountModifiedTime(join(rootPath, b))
+      if (bTime !== aTime) return bTime - aTime
+      return a.localeCompare(b)
+    })
+  }
+
+  private isAccountDir(entryPath: string): boolean {
+    return (
+      existsSync(join(entryPath, 'db_storage')) ||
+      existsSync(join(entryPath, 'FileStorage', 'Image')) ||
+      existsSync(join(entryPath, 'FileStorage', 'Image2')) ||
+      existsSync(join(entryPath, 'msg', 'attach'))
+    )
+  }
+
+  private isPotentialAccountName(name: string): boolean {
+    const lower = name.toLowerCase()
+    return !(
+      lower.startsWith('all') ||
+      lower.startsWith('applet') ||
+      lower.startsWith('backup') ||
+      lower.startsWith('wmpf') ||
+      lower.startsWith('app_data')
+    )
+  }
+
+  private isMacVersionDir(name: string): boolean {
+    return /^\d+\.\d+b\d+\.\d+/.test(name) || /^\d+\.\d+\.\d+/.test(name)
+  }
+
+  private getAccountModifiedTime(entryPath: string): number {
+    try {
+      const accountStat = statSync(entryPath)
+      let latest = accountStat.mtimeMs
+
+      for (const candidate of [
+        join(entryPath, 'db_storage'),
+        join(entryPath, 'FileStorage', 'Image'),
+        join(entryPath, 'FileStorage', 'Image2'),
+        join(entryPath, 'msg', 'attach')
+      ]) {
+        if (existsSync(candidate)) {
+          latest = Math.max(latest, statSync(candidate).mtimeMs)
+        }
+      }
+
+      return latest
+    } catch {
+      return 0
+    }
+  }
+
+  private safeReadDir(dirPath: string): string[] {
+    try {
+      if (!existsSync(dirPath)) return []
+      return readdirSync(dirPath)
+    } catch {
+      return []
+    }
   }
 }
 

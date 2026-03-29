@@ -149,10 +149,15 @@ function SettingsPage() {
   const [isLoadingLogContent, setIsLoadingLogContent] = useState(false)
   const [logSize, setLogSize] = useState<number>(0)
   const [currentLogLevel, setCurrentLogLevel] = useState<string>('WARN')
+  const [platformInfo, setPlatformInfo] = useState<{ platform: string; arch: string }>({
+    platform: 'win32',
+    arch: 'x64'
+  })
 
   // 配置变化状态
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const [initialConfig, setInitialConfig] = useState<any>(null)
+  const isMac = platformInfo.platform === 'darwin'
 
   useEffect(() => {
     loadConfig()
@@ -160,6 +165,9 @@ function SettingsPage() {
     loadAppVersion()
     loadCacheSize()
     loadLogFiles()
+    void window.electronAPI.app.getPlatformInfo().then(setPlatformInfo).catch(() => {
+      // ignore
+    })
   }, [])
 
   const loadConfig = async () => {
@@ -577,9 +585,58 @@ function SettingsPage() {
   const handleGetKey = async () => {
     if (isGettingKey) return
     setIsGettingKey(true)
-    setKeyStatus('正在检查微信进程...')
+    setKeyStatus(isMac ? '正在准备 macOS helper...' : '正在检查微信进程...')
 
     try {
+      if (isMac) {
+        const removeListener = window.electronAPI.wxKey.onStatus(({ status }) => {
+          setKeyStatus(status)
+        })
+
+        const result = await window.electronAPI.wxKey.startGetKey()
+        removeListener()
+
+        if (result.success && result.key) {
+          setDecryptKey(result.key)
+          await configService.setDecryptKey(result.key)
+
+          setKeyStatus('正在检测当前登录账号...')
+
+          let accountInfo = await window.electronAPI.wxKey.detectCurrentAccount(dbPath, 10)
+          if (!accountInfo) {
+            accountInfo = await window.electronAPI.wxKey.detectCurrentAccount(dbPath, 60)
+          }
+
+          if (accountInfo) {
+            setWxid(accountInfo.wxid)
+            setIsAccountVerified(false)
+            await configService.setMyWxid(accountInfo.wxid)
+            showMessage(`密钥获取成功！已识别候选账号: ${accountInfo.wxid}，请继续验证目录。`, true)
+          } else {
+            const wxids = await window.electronAPI.dbPath.scanWxids(dbPath)
+            setWxidOptions(wxids)
+            setIsAccountVerified(false)
+
+            if (wxids.length === 1) {
+              setWxid(wxids[0])
+              showMessage('密钥获取成功，已识别到 1 个候选账号目录，请继续验证。', true)
+            } else if (wxids.length > 1) {
+              setShowWxidDropdown(true)
+              showMessage(`密钥获取成功，识别到 ${wxids.length} 个候选账号目录，请选择后验证。`, true)
+            } else {
+              showMessage('密钥获取成功，请手动填写或扫描账号目录后继续验证。', true)
+            }
+          }
+
+          setKeyStatus('')
+        } else {
+          showMessage(result.error || '获取密钥失败', false)
+          setKeyStatus('')
+        }
+
+        return
+      }
+
       const isRunning = await window.electronAPI.wxKey.isWeChatRunning()
       if (isRunning) {
         const shouldKill = window.confirm('检测到微信正在运行，需要重启微信才能获取密钥。\n是否关闭当前微信？')
@@ -1210,7 +1267,7 @@ function SettingsPage() {
 
       <div className="form-group">
         <label>解密密钥</label>
-        <span className="form-hint">64位十六进制密钥</span>
+        <span className="form-hint">{isMac ? '64位十六进制 DbKey，macOS 通过 helper + 断点捕获获取' : '64位十六进制密钥'}</span>
         <div className="input-with-toggle">
           <input type={showDecryptKey ? 'text' : 'password'} placeholder="例如: a1b2c3d4e5f6..." value={decryptKey} onChange={(e) => setDecryptKey(e.target.value)} />
           <button type="button" className="toggle-visibility" onClick={() => setShowDecryptKey(!showDecryptKey)}>
@@ -1224,12 +1281,24 @@ function SettingsPage() {
           </button>
           {isGettingKey && <button className="btn btn-secondary" onClick={handleCancelGetKey}><X size={16} /> 取消</button>}
         </div>
+        <span className="form-hint">
+          {isMac
+            ? 'macOS 要求先关闭 SIP；点击后会请求管理员授权，并在微信访问数据库时返回最终 DbKey。'
+            : '点击后会自动启动微信并等待 Hook 安装完成。'}
+        </span>
       </div>
 
       <div className="form-group">
         <label>数据库根目录</label>
-        <span className="form-hint">xwechat_files 目录</span>
-        <input type="text" placeholder="例如: C:\Users\xxx\Documents\xwechat_files" value={dbPath} onChange={(e) => setDbPath(e.target.value)} />
+        <span className="form-hint">{isMac ? '微信版本目录或旧版 xwechat_files 根目录' : 'xwechat_files 目录'}</span>
+        <input
+          type="text"
+          placeholder={isMac
+            ? '例如: ~/Library/Containers/com.tencent.xinWeChat/Data/Library/Application Support/com.tencent.xinWeChat/2.0b4.0.9'
+            : '例如: C:\\Users\\xxx\\Documents\\xwechat_files'}
+          value={dbPath}
+          onChange={(e) => setDbPath(e.target.value)}
+        />
         <button className="btn btn-primary" onClick={handleSelectDbPath}><FolderOpen size={16} /> 浏览选择</button>
       </div>
 
@@ -1279,8 +1348,13 @@ function SettingsPage() {
 
       <div className="form-group">
         <label>缓存目录 <span className="optional">(可选)</span></label>
-        <span className="form-hint">留空使用默认目录，尽可能不选择C盘</span>
-        <input type="text" placeholder="留空使用默认目录" value={cachePath} onChange={(e) => setCachePath(e.target.value)} />
+        <span className="form-hint">{isMac ? '留空使用文稿目录下的 CipherTalkData' : '留空使用默认目录，尽可能不选择C盘'}</span>
+        <input
+          type="text"
+          placeholder={isMac ? '~/Documents/CipherTalkData' : '留空使用默认目录'}
+          value={cachePath}
+          onChange={(e) => setCachePath(e.target.value)}
+        />
         <div className="btn-row">
           <button className="btn btn-secondary" onClick={handleSelectCachePath}><FolderOpen size={16} /> 浏览选择</button>
           <button className="btn btn-secondary" onClick={() => setCachePath('')}><RotateCcw size={16} /> 恢复默认</button>
@@ -1318,7 +1392,7 @@ function SettingsPage() {
 
       <div className="form-group">
         <label>XOR 密钥</label>
-        <span className="form-hint">2位十六进制，如 0x53</span>
+        <span className="form-hint">{isMac ? 'kvcomm 校验成功后返回的 XOR 密钥，格式如 0x53' : '2位十六进制，如 0x53'}</span>
         <div className="input-with-toggle">
           <input type={showXorKey ? 'text' : 'password'} placeholder="例如: 0x12" value={imageXorKey} onChange={(e) => setImageXorKey(e.target.value)} />
           <button type="button" className="toggle-visibility" onClick={() => setShowXorKey(!showXorKey)}>
@@ -1329,7 +1403,7 @@ function SettingsPage() {
 
       <div className="form-group">
         <label>AES 密钥</label>
-        <span className="form-hint">至少16个字符（V4版本图片需要）</span>
+        <span className="form-hint">{isMac ? '16位字符串；优先走 kvcomm + wxid 验真，失败才回退到内存扫描' : '至少16个字符（V4版本图片需要）'}</span>
         <div className="input-with-toggle">
           <input type={showAesKey ? 'text' : 'password'} placeholder="例如: b123456789012345..." value={imageAesKey} onChange={(e) => setImageAesKey(e.target.value)} />
           <button type="button" className="toggle-visibility" onClick={() => setShowAesKey(!showAesKey)}>
@@ -1343,6 +1417,9 @@ function SettingsPage() {
       <button className="btn btn-primary" onClick={handleGetImageKey} disabled={isGettingImageKey}>
         <ImageIcon size={16} /> {isGettingImageKey ? '获取中...' : '自动获取图片密钥'}
       </button>
+      <span className="form-hint">
+        {isMac ? '优先扫描 kvcomm 和模板文件；只有前者不可用时才回退到微信进程内存扫描。' : '请先在电脑微信中打开几张图片，再执行自动获取。'}
+      </span>
     </div>
   )
 
@@ -1365,7 +1442,8 @@ function SettingsPage() {
 
     try {
       // 构建用户目录路径（用于 wxid 匹配）
-      const userDir = `${dbPath}\\${wxid}`
+      const separator = dbPath.includes('\\') && !dbPath.includes('/') ? '\\' : '/'
+      const userDir = `${dbPath.replace(/[\\/]+$/, '')}${separator}${wxid}`
 
       const removeListener = window.electronAPI.imageKey.onProgress((msg) => {
         setImageKeyStatus(msg)
@@ -2158,6 +2236,11 @@ function SettingsPage() {
 
 
   const handleSecurityMethodSelect = async (method: 'biometric' | 'password') => {
+    if (method === 'biometric' && isMac) {
+      showMessage('当前平台不支持 Windows Hello，请改用自定义密码。', false)
+      return
+    }
+
     // 1. 如果点击的是当前已激活的方法 -> 关闭
     if (isAuthEnabled && authMethod === method) {
       await disableAuth()
@@ -2212,40 +2295,43 @@ function SettingsPage() {
   const renderSecurityTab = () => (
     <div className="tab-content">
       <h3 className="section-title">安全保护</h3>
-      <div className="section-desc">配置应用启动时的安全验证方式，保护您的隐私数据。</div>
+      <div className="section-desc">
+        {isMac ? 'macOS 当前仅支持自定义应用密码。Windows Hello 在此平台直接禁用。' : '配置应用启动时的安全验证方式，保护您的隐私数据。'}
+      </div>
 
       <div className="security-grid">
-        {/* Windows Hello Card */}
-        <div
-          className={`security-card ${isAuthEnabled && authMethod === 'biometric' ? 'active' : ''}`}
-          onClick={() => handleSecurityMethodSelect('biometric')}
-          style={{ cursor: 'pointer' }}
-        >
-          <div className="security-preview-area">
-            <div className="preview-lock-screen">
-              <div className="preview-avatar">
-                <Lock size={20} />
-              </div>
-              <div className="preview-badge">
-                <Fingerprint /> Windows Hello
-              </div>
-              <div className="preview-btn" />
-            </div>
-          </div>
-          <div className="security-content">
-            <div className="security-header">
-              <span className="security-title">Windows Hello</span>
-              {isAuthEnabled && authMethod === 'biometric' && (
-                <div className="theme-check" style={{ position: 'relative', top: 0, right: 0, transform: 'scale(1)', background: 'var(--primary)', boxShadow: 'none' }}>
-                  <Check size={12} />
+        {!isMac && (
+          <div
+            className={`security-card ${isAuthEnabled && authMethod === 'biometric' ? 'active' : ''}`}
+            onClick={() => handleSecurityMethodSelect('biometric')}
+            style={{ cursor: 'pointer' }}
+          >
+            <div className="security-preview-area">
+              <div className="preview-lock-screen">
+                <div className="preview-avatar">
+                  <Lock size={20} />
                 </div>
-              )}
+                <div className="preview-badge">
+                  <Fingerprint /> Windows Hello
+                </div>
+                <div className="preview-btn" />
+              </div>
             </div>
-            <div className="security-desc">
-              使用系统的面部识别、指纹或 PIN 码进行验证。体验最流畅，安全性高。
+            <div className="security-content">
+              <div className="security-header">
+                <span className="security-title">Windows Hello</span>
+                {isAuthEnabled && authMethod === 'biometric' && (
+                  <div className="theme-check" style={{ position: 'relative', top: 0, right: 0, transform: 'scale(1)', background: 'var(--primary)', boxShadow: 'none' }}>
+                    <Check size={12} />
+                  </div>
+                )}
+              </div>
+              <div className="security-desc">
+                使用系统的面部识别、指纹或 PIN 码进行验证。体验最流畅，安全性高。
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Custom Password Card */}
         <div
@@ -2272,7 +2358,9 @@ function SettingsPage() {
               )}
             </div>
             <div className="security-desc">
-              设置应用专属密码。如果不方便使用生物识别，或者需要在多台设备间同步配置时推荐。
+              {isMac
+                ? '设置应用专属密码。当前 macOS 侧只提供这一种应用锁方式。'
+                : '设置应用专属密码。如果不方便使用生物识别，或者需要在多台设备间同步配置时推荐。'}
             </div>
 
             {/* Input area - prevent click propagation to avoid toggling card off while typing */}
