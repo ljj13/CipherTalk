@@ -90,6 +90,7 @@ let aiSummaryWindow: BrowserWindow | null = null
 let welcomeWindow: BrowserWindow | null = null
 // 聊天记录窗口实例
 let chatHistoryWindow: BrowserWindow | null = null
+const allowDevTools = !!process.env.VITE_DEV_SERVER_URL
 
 /**
  * 获取当前主题的 URL 查询参数
@@ -181,6 +182,7 @@ function createWindow() {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -303,6 +305,7 @@ function createChatWindow() {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -377,6 +380,7 @@ function createGroupAnalyticsWindow() {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -454,6 +458,7 @@ function createMomentsWindow(filterUsername?: string) {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -542,6 +547,7 @@ function createChatHistoryWindow(sessionId: string, messageId: number) {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -607,6 +613,7 @@ function createAnnualReportWindow(year: number) {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -678,6 +685,7 @@ function createAgreementWindow() {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -739,6 +747,7 @@ function createWelcomeWindow() {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -782,6 +791,7 @@ function createPurchaseWindow() {
     minHeight: 600,
     icon: iconPath,
     webPreferences: {
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -827,6 +837,7 @@ function createImageViewerWindow(
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false // 允许加载本地文件
@@ -935,6 +946,7 @@ function createVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHe
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false
@@ -997,6 +1009,7 @@ function createBrowserWindow(url: string, title?: string) {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false,
@@ -1071,6 +1084,7 @@ function createAISummaryWindow(sessionId: string, sessionName: string) {
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
@@ -3530,6 +3544,7 @@ function createSplashWindow(): BrowserWindow {
     show: true, // 直接显示窗口
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
+      devTools: allowDevTools,
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: false  // 允许加载本地文件
