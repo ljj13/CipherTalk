@@ -10,7 +10,7 @@ if (!fs.existsSync(ymlPath)) {
 }
 
 // 读取 yml 内容
-let content = fs.readFileSync(ymlPath, 'utf-8')
+const content = fs.readFileSync(ymlPath, 'utf-8')
 const lines = content.split('\n')
 
 // 从 yml 中提取文件名
@@ -32,10 +32,11 @@ if (!fs.existsSync(exePath)) {
 const stats = fs.statSync(exePath)
 const size = stats.size
 
-// 找到 files 块内第一个 sha512 行，在其后插入 size
+// electron-builder 新版本已经会生成 files[0].size，这里只在缺失时补齐，避免写出重复键
 const newLines = []
 let inFiles = false
 let sizeAdded = false
+let fileItemIndent = ''
 
 for (let i = 0; i < lines.length; i++) {
   const line = lines[i]
@@ -43,11 +44,36 @@ for (let i = 0; i < lines.length; i++) {
   
   if (line.startsWith('files:')) {
     inFiles = true
+    fileItemIndent = ''
+    continue
   }
-  
+
+  if (!inFiles) {
+    continue
+  }
+
+  const trimmed = line.trim()
+  const indent = line.match(/^\s*/)?.[0] || ''
+
+  if (trimmed.startsWith('- ')) {
+    fileItemIndent = `${indent}  `
+    continue
+  }
+
+  if (trimmed.startsWith('size:')) {
+    console.log('latest.yml 已包含 size，跳过写入')
+    process.exit(0)
+  }
+
+  // 离开 files 块
+  if (trimmed && !line.startsWith(' ') && !line.startsWith('\t')) {
+    inFiles = false
+    continue
+  }
+
   // 在 files 块内的第一个 sha512 后添加 size
-  if (inFiles && !sizeAdded && line.trim().startsWith('sha512:')) {
-    newLines.push(`    size: ${size}`)
+  if (!sizeAdded && trimmed.startsWith('sha512:')) {
+    newLines.push(`${fileItemIndent || '    '}size: ${size}`)
     sizeAdded = true
     inFiles = false
   }
