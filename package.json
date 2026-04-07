@@ -180,6 +180,7 @@
     "files": [
       "dist/**/*",
       "dist-electron/**/*",
+      "sikll/**/*",
       "!node_modules/**/*.{txt,md,js.map,ts,html}",
       "!node_modules/**/test/**/*",
       "!node_modules/**/docs/**/*",

@@ -317,7 +317,8 @@ export class ConfigService {
     const cachePath = String(profile.cachePath ?? fallback?.cachePath ?? '').trim()
     const imageXorKey = String(profile.imageXorKey ?? fallback?.imageXorKey ?? '').trim()
     const imageAesKey = String(profile.imageAesKey ?? fallback?.imageAesKey ?? '').trim()
-    const displayName = String(profile.displayName ?? fallback?.displayName ?? wxid || '未命名账号').trim() || wxid || '未命名账号'
+    const rawDisplayName = profile.displayName ?? fallback?.displayName ?? wxid ?? ''
+    const displayName = String(rawDisplayName).trim() || wxid || '未命名账号'
 
     return {
       wxid,

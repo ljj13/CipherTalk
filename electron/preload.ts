@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AccountProfile } from '../src/types/account'
+import type { SkillInstallTarget } from './services/skillInstallerService'
 
 function getMcpLaunchConfigSafe(): Promise<{
   command: string
@@ -43,6 +44,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('accounts:update', accountId, patch) as Promise<AccountProfile | null>,
     delete: (accountId: string, deleteLocalData?: boolean) =>
       ipcRenderer.invoke('accounts:delete', accountId, deleteLocalData) as Promise<{ success: boolean; error?: string; deleted?: AccountProfile | null; nextActiveAccountId?: string }>
+  },
+
+  skillInstaller: {
+    detectTargets: (skillName: string) => ipcRenderer.invoke('skillInstaller:detectTargets', skillName) as Promise<SkillInstallTarget[]>,
+    installSkill: (skillName: string) =>
+      ipcRenderer.invoke('skillInstaller:installSkill', skillName) as Promise<{ success: boolean; results: SkillInstallTarget[]; error?: string }>,
+    exportSkillZip: (skillName: string) =>
+      ipcRenderer.invoke('skillInstaller:exportSkillZip', skillName) as Promise<{ success: boolean; outputPath?: string; fileName?: string; version?: string; error?: string }>
   },
 
   // 数据库操作

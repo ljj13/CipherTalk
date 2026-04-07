@@ -2,6 +2,20 @@ import type { ChatSession, Message, Contact, ContactInfo } from './models'
 import type { SummaryResult } from './ai'
 import type { AccountProfile } from './account'
 
+export interface SkillInstallTarget {
+  agentKind: 'codex' | 'agents'
+  agentLabel: string
+  source: 'known' | 'discovered'
+  skillsDir: string
+  supported: boolean
+  installed: boolean
+  bundledVersion: string
+  installedVersion?: string
+  updateAvailable: boolean
+  installPath?: string
+  error?: string
+}
+
 export interface ImageListItem {
   imagePath: string
   liveVideoPath?: string
@@ -65,6 +79,11 @@ export interface ElectronAPI {
     save: (profile: Omit<AccountProfile, 'id' | 'createdAt' | 'updatedAt' | 'lastUsedAt'>) => Promise<AccountProfile | null>
     update: (accountId: string, patch: Partial<Omit<AccountProfile, 'id' | 'createdAt' | 'updatedAt' | 'lastUsedAt'>>) => Promise<AccountProfile | null>
     delete: (accountId: string, deleteLocalData?: boolean) => Promise<{ success: boolean; error?: string; deleted?: AccountProfile | null; nextActiveAccountId?: string }>
+  }
+  skillInstaller: {
+    detectTargets: (skillName: string) => Promise<SkillInstallTarget[]>
+    installSkill: (skillName: string) => Promise<{ success: boolean; results: SkillInstallTarget[]; error?: string }>
+    exportSkillZip: (skillName: string) => Promise<{ success: boolean; outputPath?: string; fileName?: string; version?: string; error?: string }>
   }
   db: {
     open: (dbPath: string, key?: string) => Promise<boolean>

@@ -32,6 +32,7 @@ import { httpApiService } from './services/httpApiService'
 import { getBestCachePath, getRuntimePlatformInfo } from './services/platformService'
 import { getMcpLaunchConfig as getMcpLaunchConfigForUi, getMcpProxyConfig } from './services/mcp/runtime'
 import { mcpProxyService } from './services/mcp/proxyService'
+import { skillInstallerService } from './services/skillInstallerService'
 
 type AppWithQuitFlag = typeof app & {
   isQuitting?: boolean
@@ -1335,6 +1336,18 @@ function registerIpcHandlers() {
 
     const result = configService.deleteAccount(accountId)
     return { success: true, deleted: result.deleted, nextActiveAccountId: result.nextActiveAccountId }
+  })
+
+  ipcMain.handle('skillInstaller:detectTargets', async (_, skillName: string) => {
+    return skillInstallerService.detectTargets(skillName)
+  })
+
+  ipcMain.handle('skillInstaller:installSkill', async (_, skillName: string) => {
+    return skillInstallerService.installSkill(skillName)
+  })
+
+  ipcMain.handle('skillInstaller:exportSkillZip', async (_, skillName: string) => {
+    return skillInstallerService.exportSkillZip(skillName)
   })
 
   // HTTP API 管理
