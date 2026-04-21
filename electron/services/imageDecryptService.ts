@@ -67,6 +67,7 @@ export class ImageDecryptService {
   private cacheIndexing: Promise<void> | null = null
   private updateFlags = new Map<string, boolean>()
   private notFoundCache = new Set<string>()  // 失败缓存，避免重复查询
+  private hdNotFoundCache = new Set<string>()  // 高清图失败缓存
   private nativeLogged = false
 
   async resolveCachedImage(payload: { sessionId?: string; imageMd5?: string; imageDatName?: string }): Promise<DecryptResult & { hasUpdate?: boolean }> {
@@ -138,6 +139,9 @@ export class ImageDecryptService {
 
     // 即使 force=true，也先检查是否有高清图缓存
     if (payload.force) {
+      if (this.hdNotFoundCache.has(cacheKey)) {
+        return { success: false, error: '未找到高清图，请在微信中点开该图片查看后重试' }
+      }
       // 快速查找高清图缓存
       const hdCached = this.findCachedOutputFast(cacheKey, payload.sessionId, true) ||
         this.findCachedOutput(cacheKey, payload.sessionId, true)
@@ -220,6 +224,7 @@ export class ImageDecryptService {
 
       // 如果要求高清图但没找到，直接返回提示
       if (!datPath && payload.force) {
+        this.hdNotFoundCache.add(cacheKey)
         console.warn(`[ImageDecrypt] 未找到高清图: ${payload.imageDatName || payload.imageMd5}`)
         this.logDecryptTiming({
           cacheKey,

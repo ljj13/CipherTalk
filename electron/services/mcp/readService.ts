@@ -1047,10 +1047,10 @@ async function getImageLocalPath(sessionId: string, message: Message): Promise<s
 }
 
 function getVideoLocalPath(message: Message): string | null {
-  if (!message.videoMd5) return null
+  if (!message.videoMd5 && !message.rawContent) return null
 
   try {
-    const info = videoService.getVideoInfo(String(message.videoMd5))
+    const info = videoService.getVideoInfo(String(message.videoMd5 || ''), String(message.rawContent || ''))
     return info.exists ? info.videoUrl || null : null
   } catch {
     return null

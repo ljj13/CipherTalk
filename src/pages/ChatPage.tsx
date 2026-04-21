@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { createPortal } from 'react-dom'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, Info, Calendar, Database, Hash, Image as ImageIcon, Play, Video, Copy, ZoomIn, CheckSquare, Check, Edit, Link, Sparkles, FileText, FileArchive, Users, Mic, CheckCircle, XCircle, Download, Phone, Aperture, MapPin, UserRound } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, Info, Calendar, Database, Hash, Image as ImageIcon, Play, PlayCircle, Video, Copy, ZoomIn, CheckSquare, Check, Edit, Link, Sparkles, FileText, FileArchive, Users, Mic, CheckCircle, XCircle, Download, Phone, Aperture, MapPin, UserRound } from 'lucide-react'
 import { Qwen } from '@lobehub/icons'
 import { useChatStore } from '../stores/chatStore'
 import { useUpdateStatusStore } from '../stores/updateStatusStore'
@@ -299,6 +299,7 @@ function ChatPage(_props: ChatPageProps) {
   const [sidebarWidth, setSidebarWidth] = useState(260)
   const [isResizing, setIsResizing] = useState(false)
   const [showDetailPanel, setShowDetailPanel] = useState(false)
+  const [isDetailClosing, setIsDetailClosing] = useState(false)
   const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
   const [isLoadingDetail, setIsLoadingDetail] = useState(false)
   const [hasImageKey, setHasImageKey] = useState<boolean | null>(null)
@@ -527,12 +528,22 @@ function ChatPage(_props: ChatPageProps) {
   }, [])
 
   // 切换详情面板
+  const closeDetailPanel = useCallback(() => {
+    setIsDetailClosing(true)
+    setTimeout(() => {
+      setShowDetailPanel(false)
+      setIsDetailClosing(false)
+    }, 220)
+  }, [])
+
   const toggleDetailPanel = useCallback(() => {
-    if (!showDetailPanel && currentSessionId) {
-      loadSessionDetail(currentSessionId)
+    if (showDetailPanel) {
+      closeDetailPanel()
+    } else {
+      if (currentSessionId) loadSessionDetail(currentSessionId)
+      setShowDetailPanel(true)
     }
-    setShowDetailPanel(!showDetailPanel)
-  }, [showDetailPanel, currentSessionId, loadSessionDetail])
+  }, [showDetailPanel, currentSessionId, loadSessionDetail, closeDetailPanel])
 
   // 连接数据库
   const connect = useCallback(async () => {
@@ -2136,10 +2147,10 @@ function ChatPage(_props: ChatPageProps) {
 
               {/* 会话详情面板 */}
               {showDetailPanel && (
-                <div className="detail-panel">
+                <div className={`detail-panel${isDetailClosing ? ' closing' : ''}`}>
                   <div className="detail-header">
                     <h4>会话详情</h4>
-                    <button className="close-btn" onClick={() => setShowDetailPanel(false)}>
+                    <button className="close-btn" onClick={closeDetailPanel}>
                       <X size={16} />
                     </button>
                   </div>
@@ -2791,13 +2802,29 @@ function enqueueDecrypt(fn: () => Promise<void>) {
 }
 
 // 视频信息缓存（带时间戳）
-const videoInfoCache = new Map<string, {
+type VideoLookupDiagnostics = {
+  requestedMd5?: string
+  candidateMd5s?: string[]
+  searchedFileKeys?: string[]
+  matchedMd5?: string
+  hardlinkMatchedMd5?: string
+  hardlinkDbPath?: string
+  accountDir?: string
+  videoBaseDir?: string
+  reason?: 'missing_input' | 'missing_config' | 'account_dir_not_found' | 'video_dir_missing' | 'local_file_missing'
+  summary?: string
+}
+
+type CachedVideoInfo = {
   videoUrl?: string
   coverUrl?: string
   thumbUrl?: string
   exists: boolean
   cachedAt: number  // 缓存时间戳
-}>()
+  diagnostics?: VideoLookupDiagnostics
+}
+
+const videoInfoCache = new Map<string, CachedVideoInfo>()
 
 // 最后一次增量更新时间戳
 let lastIncrementalUpdateTime = 0
@@ -2938,9 +2965,10 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   const imageContainerRef = useRef<HTMLDivElement>(null)
 
   // 视频相关状态
-  const [videoInfo, setVideoInfo] = useState<{ videoUrl?: string; coverUrl?: string; thumbUrl?: string; exists: boolean } | null>(null)
+  const [videoInfo, setVideoInfo] = useState<CachedVideoInfo | null>(null)
   const [videoLoading, setVideoLoading] = useState(false)
   const videoContainerRef = useRef<HTMLDivElement>(null)
+  const videoCacheKey = message.videoMd5 || `local:${message.localId}`
 
   // 从缓存获取表情包 data URL
   const cacheKey = message.emojiMd5 || message.emojiCdnUrl || ''
@@ -3136,13 +3164,24 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   // 加载视频信息
   useEffect(() => {
     if (!isVideo || !isVisible || videoInfo || videoLoading) return
-    if (!message.videoMd5) return
+    if (!message.videoMd5 && !message.rawContent) return
 
     // 先检查缓存
-    const cached = videoInfoCache.get(message.videoMd5)
+    const cached = videoInfoCache.get(videoCacheKey)
     if (cached) {
       // 智能缓存失效：如果视频不存在，且缓存时间早于最后一次增量更新，则重新获取
       const shouldRefetch = !cached.exists && cached.cachedAt < lastIncrementalUpdateTime
+
+      console.log('[Video][Renderer] cache-check', {
+        localId: message.localId,
+        sessionId: session.username,
+        videoCacheKey,
+        videoMd5: message.videoMd5,
+        hasCached: true,
+        cachedExists: cached.exists,
+        shouldRefetch,
+        diagnostics: cached.diagnostics
+      })
 
       if (!shouldRefetch) {
         setVideoInfo(cached)
@@ -3150,34 +3189,68 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
       }
 
       // 需要重新获取，清除旧缓存
-      videoInfoCache.delete(message.videoMd5)
+      videoInfoCache.delete(videoCacheKey)
     }
 
     setVideoLoading(true)
-    window.electronAPI.video.getVideoInfo(message.videoMd5).then((result) => {
+    console.log('[Video][Renderer] request-start', {
+      localId: message.localId,
+      sessionId: session.username,
+      videoCacheKey,
+      videoMd5: message.videoMd5,
+      rawPreview: String(message.rawContent || '').replace(/\s+/g, ' ').slice(0, 220)
+    })
+    window.electronAPI.video.getVideoInfo(message.videoMd5 || '', message.rawContent).then((result) => {
       if (result && result.success) {
         const info = {
           exists: result.exists,
           videoUrl: result.videoUrl,
           coverUrl: result.coverUrl,
           thumbUrl: result.thumbUrl,
+          diagnostics: result.diagnostics,
           cachedAt: Date.now()  // 记录缓存时间
         }
-        videoInfoCache.set(message.videoMd5!, info)
+        videoInfoCache.set(videoCacheKey, info)
         setVideoInfo(info)
+        console.log('[Video][Renderer] request-success', {
+          localId: message.localId,
+          sessionId: session.username,
+          videoCacheKey,
+          exists: result.exists,
+          videoUrl: result.videoUrl,
+          diagnostics: result.diagnostics
+        })
+        if (!result.exists && result.diagnostics) {
+          console.warn('[Video] 视频定位失败:', {
+            localId: message.localId,
+            diagnostics: result.diagnostics
+          })
+        }
       } else {
         const info = { exists: false, cachedAt: Date.now() }
-        videoInfoCache.set(message.videoMd5!, info)
+        videoInfoCache.set(videoCacheKey, info)
         setVideoInfo(info)
+        console.warn('[Video][Renderer] request-unsuccessful', {
+          localId: message.localId,
+          sessionId: session.username,
+          videoCacheKey,
+          result
+        })
       }
-    }).catch(() => {
+    }).catch((error) => {
       const info = { exists: false, cachedAt: Date.now() }
-      videoInfoCache.set(message.videoMd5!, info)
+      videoInfoCache.set(videoCacheKey, info)
       setVideoInfo(info)
+      console.error('[Video][Renderer] request-error', {
+        localId: message.localId,
+        sessionId: session.username,
+        videoCacheKey,
+        error: String(error)
+      })
     }).finally(() => {
       setVideoLoading(false)
     })
-  }, [isVideo, isVisible, videoInfo, videoLoading, message.videoMd5])
+  }, [isVideo, isVisible, videoInfo, videoLoading, message.videoMd5, message.rawContent, message.localId, videoCacheKey])
 
   // 播放视频 - 打开独立窗口
   const handlePlayVideo = useCallback(async () => {
@@ -3996,11 +4069,16 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
           <button
             className="video-unavailable"
             ref={videoContainerRef as unknown as React.RefObject<HTMLButtonElement>}
+            title={videoInfo?.diagnostics?.summary || '点击重试'}
             onClick={() => {
               // 清除缓存并重新加载
-              if (message.videoMd5) {
-                videoInfoCache.delete(message.videoMd5)
-              }
+              console.log('[Video][Renderer] retry-click', {
+                localId: message.localId,
+                sessionId: session.username,
+                videoCacheKey,
+                diagnostics: videoInfo?.diagnostics
+              })
+              videoInfoCache.delete(videoCacheKey)
               setVideoInfo(null)
               setVideoLoading(false)
             }}
@@ -4008,6 +4086,9 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
           >
             <Video size={24} />
             <span>视频不可用</span>
+            {videoInfo?.diagnostics?.summary && (
+              <span className="video-reason">{videoInfo.diagnostics.summary}</span>
+            )}
             <span className="video-action">点击重试</span>
           </button>
         )
@@ -4025,7 +4106,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
             </div>
           )}
           <div className="video-play-button">
-            <Play size={32} fill="white" />
+            <Play size={36} fill="currentColor" />
           </div>
           {message.videoDuration && message.videoDuration > 0 && (
             <span className="video-duration-tag">

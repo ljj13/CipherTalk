@@ -14,6 +14,20 @@ export interface VideoInfo {
   coverUrl?: string       // 封面 data URL
   thumbUrl?: string       // 缩略�?data URL
   exists: boolean
+  diagnostics?: VideoLookupDiagnostics
+}
+
+export interface VideoLookupDiagnostics {
+  requestedMd5?: string
+  candidateMd5s?: string[]
+  searchedFileKeys?: string[]
+  matchedMd5?: string
+  hardlinkMatchedMd5?: string
+  hardlinkDbPath?: string
+  accountDir?: string
+  videoBaseDir?: string
+  reason?: 'missing_input' | 'missing_config' | 'account_dir_not_found' | 'video_dir_missing' | 'local_file_missing'
+  summary?: string
 }
 
 export interface ChannelVideoInfo {
@@ -48,6 +62,21 @@ class VideoService {
 
   constructor() {
     this.configService = new ConfigService()
+  }
+
+  private logVideoLookup(stage: string, payload: Record<string, unknown> = {}): void {
+    console.log(`[VideoLookup] ${stage}`, payload)
+  }
+
+  private warnVideoLookup(stage: string, payload: Record<string, unknown> = {}): void {
+    console.warn(`[VideoLookup] ${stage}`, payload)
+  }
+
+  private previewRawContent(content?: string): string | undefined {
+    if (!content) return undefined
+    const normalized = content.replace(/\s+/g, ' ').trim()
+    if (!normalized) return undefined
+    return normalized.slice(0, 220)
   }
 
   /**
@@ -95,10 +124,147 @@ class VideoService {
     return trimmed
   }
 
+  private normalizeMd5(value?: string | null): string | undefined {
+    const normalized = String(value || '').trim().toLowerCase()
+    if (!normalized || !/^[a-f0-9]{8,}$/.test(normalized)) return undefined
+    return normalized
+  }
+
+  private addMd5Candidate(candidates: string[], value?: string | null): void {
+    const normalized = this.normalizeMd5(value)
+    if (!normalized || candidates.includes(normalized)) return
+    candidates.push(normalized)
+  }
+
+  private extractVideoMsgAttribute(content: string, attrName: string): string | undefined {
+    const match = new RegExp(`<videomsg[^>]*\\s${attrName}\\s*=\\s*['"]([a-fA-F0-9]+)['"]`, 'i').exec(content)
+    return this.normalizeMd5(match?.[1])
+  }
+
+  private extractVideoXmlValue(content: string, tagName: string): string | undefined {
+    const match = new RegExp(`<${tagName}>\\s*([a-fA-F0-9]+)\\s*<\\/${tagName}>`, 'i').exec(content)
+    return this.normalizeMd5(match?.[1])
+  }
+
+  private collectVideoMd5Candidates(content?: string, preferredMd5?: string): string[] {
+    const candidates: string[] = []
+
+    this.addMd5Candidate(candidates, preferredMd5)
+    if (!content) return candidates
+
+    this.addMd5Candidate(candidates, this.extractVideoMsgAttribute(content, 'newmd5'))
+    this.addMd5Candidate(candidates, this.extractVideoMsgAttribute(content, 'md5'))
+    this.addMd5Candidate(candidates, this.extractVideoMsgAttribute(content, 'rawmd5'))
+    this.addMd5Candidate(candidates, this.extractVideoXmlValue(content, 'newmd5'))
+    this.addMd5Candidate(candidates, this.extractVideoXmlValue(content, 'md5'))
+    this.addMd5Candidate(candidates, this.extractVideoXmlValue(content, 'rawmd5'))
+
+    return candidates
+  }
+
+  private formatMd5CandidateSummary(values: string[]): string {
+    return values
+      .filter(Boolean)
+      .slice(0, 3)
+      .map(value => value.slice(0, 8))
+      .join(' / ')
+  }
+
+  private buildLookupSummary(
+    reason: VideoLookupDiagnostics['reason'],
+    diagnostics: Pick<VideoLookupDiagnostics, 'candidateMd5s' | 'searchedFileKeys' | 'hardlinkMatchedMd5'>
+  ): string {
+    switch (reason) {
+      case 'missing_input':
+        return '缺少视频 MD5'
+      case 'missing_config':
+        return '缺少数据库路径或微信账号'
+      case 'account_dir_not_found':
+        return '未找到账号目录'
+      case 'video_dir_missing':
+        return '未找到 msg/video 目录'
+      case 'local_file_missing': {
+        if (diagnostics.hardlinkMatchedMd5) {
+          const resolved = this.formatMd5CandidateSummary(diagnostics.searchedFileKeys || [])
+          return resolved ? `hardlink 已命中，但本地文件缺失 ${resolved}` : 'hardlink 已命中，但本地文件缺失'
+        }
+
+        const summary = this.formatMd5CandidateSummary(diagnostics.candidateMd5s || [])
+        return summary ? `未命中本地缓存，候选 ${summary}` : '未命中本地缓存'
+      }
+      default:
+        return '视频不可用'
+    }
+  }
+
+  private isDirectory(path: string): boolean {
+    try {
+      return statSync(path).isDirectory()
+    } catch {
+      return false
+    }
+  }
+
+  private isAccountDir(path: string): boolean {
+    return (
+      existsSync(join(path, 'msg')) ||
+      existsSync(join(path, 'db_storage')) ||
+      existsSync(join(path, 'hardlink.db'))
+    )
+  }
+
+  private resolveAccountDir(dbPath: string, wxid: string): string | null {
+    const normalized = dbPath.replace(/[\\/]+$/, '')
+    const cleanedWxid = this.cleanWxid(wxid)
+
+    const directCandidates = new Set<string>([
+      normalized,
+      join(normalized, wxid)
+    ])
+
+    if (cleanedWxid !== wxid) {
+      directCandidates.add(join(normalized, cleanedWxid))
+    }
+
+    for (const candidate of directCandidates) {
+      if (this.isAccountDir(candidate)) return candidate
+    }
+
+    if (!this.isDirectory(normalized)) return null
+
+    try {
+      const entries = readdirSync(normalized)
+      const wxidLower = wxid.toLowerCase()
+      const cleanedWxidLower = cleanedWxid.toLowerCase()
+
+      for (const entry of entries) {
+        const entryPath = join(normalized, entry)
+        if (!this.isDirectory(entryPath)) continue
+
+        const lowerEntry = entry.toLowerCase()
+        const cleanedEntry = this.cleanWxid(entry).toLowerCase()
+        if (
+          lowerEntry === wxidLower ||
+          lowerEntry === cleanedWxidLower ||
+          lowerEntry.startsWith(`${wxidLower}_`) ||
+          lowerEntry.startsWith(`${cleanedWxidLower}_`) ||
+          cleanedEntry === wxidLower ||
+          cleanedEntry === cleanedWxidLower
+        ) {
+          if (this.isAccountDir(entryPath)) return entryPath
+        }
+      }
+    } catch {
+      // ignore
+    }
+
+    return null
+  }
+
   /**
    * �?video_hardlink_info_v4 表查询视频文件名
    */
-  private queryVideoFileName(md5: string): string | undefined {
+  private resolveHardlinkDbPath(): string | undefined {
     const cachePath = this.getCachePath()
     const wxid = this.getMyWxid()
     const cleanedWxid = this.cleanWxid(wxid)
@@ -135,29 +301,62 @@ class VideoService {
       }
     }
     
-    if (!hardlinkDbPath) return undefined
+    return hardlinkDbPath
+  }
 
-    try {
-      const db = new Database(hardlinkDbPath, { readonly: true })
-      
-      // 查询视频文件�?
-      const row = db.prepare(`
-        SELECT file_name, md5 FROM video_hardlink_info_v4 
-        WHERE md5 = ? 
-        LIMIT 1
-      `).get(md5) as { file_name: string; md5: string } | undefined
-
-      db.close()
-
-      if (row?.file_name) {
-        // 提取不带扩展名的文件名作�?MD5
-        return row.file_name.replace(/\.[^.]+$/, '')
-      }
-    } catch {
-      // 忽略错误
+  private queryVideoFileNames(md5Candidates: string[]): {
+    fileKeys: string[]
+    hardlinkDbPath?: string
+    hardlinkMatchedMd5?: string
+  } {
+    const hardlinkDbPath = this.resolveHardlinkDbPath()
+    if (!hardlinkDbPath || md5Candidates.length === 0) {
+      return { fileKeys: [], hardlinkDbPath }
     }
 
-    return undefined
+    let db: Database.Database | null = null
+
+    try {
+      db = new Database(hardlinkDbPath, { readonly: true })
+      const stmt = db.prepare(`
+        SELECT file_name, md5 FROM video_hardlink_info_v4
+        WHERE md5 = ?
+        LIMIT 1
+      `)
+
+      const fileKeys: string[] = []
+      let hardlinkMatchedMd5: string | undefined
+
+      for (const md5 of md5Candidates) {
+        const row = stmt.get(md5) as { file_name?: string; md5?: string } | undefined
+        const normalizedFileKey = this.normalizeMd5(row?.file_name?.replace(/\.[^.]+$/, ''))
+        if (!normalizedFileKey) continue
+
+        if (!hardlinkMatchedMd5) {
+          hardlinkMatchedMd5 = this.normalizeMd5(row?.md5) || md5
+        }
+
+        this.addMd5Candidate(fileKeys, normalizedFileKey)
+      }
+
+      this.logVideoLookup('hardlink-query', {
+        hardlinkDbPath,
+        md5Candidates,
+        fileKeys,
+        hardlinkMatchedMd5
+      })
+
+      return { fileKeys, hardlinkDbPath, hardlinkMatchedMd5 }
+    } catch (error) {
+      this.warnVideoLookup('hardlink-query-error', {
+        hardlinkDbPath,
+        md5Candidates,
+        error: String(error)
+      })
+      return { fileKeys: [], hardlinkDbPath }
+    } finally {
+      db?.close()
+    }
   }
 
   /**
@@ -178,21 +377,83 @@ class VideoService {
    * 视频存放�? {数据库根目录}/{用户wxid}/msg/video/{年月}/
    * 文件命名: {md5}.mp4, {md5}.jpg, {md5}_thumb.jpg
    */
-  getVideoInfo(videoMd5: string): VideoInfo {
+  getVideoInfo(videoMd5: string, rawContent?: string): VideoInfo {
     const dbPath = this.getDbPath()
     const wxid = this.getMyWxid()
-
-    if (!dbPath || !wxid || !videoMd5) {
-      return { exists: false }
+    const requestedMd5 = this.normalizeMd5(videoMd5)
+    const candidateMd5s = this.collectVideoMd5Candidates(rawContent, requestedMd5)
+    const diagnostics: VideoLookupDiagnostics = {
+      requestedMd5,
+      candidateMd5s
     }
 
-    // 先尝试从数据库查询真正的视频文件�?
-    const realVideoMd5 = this.queryVideoFileName(videoMd5) || videoMd5
+    this.logVideoLookup('request', {
+      requestedMd5,
+      candidateMd5s,
+      hasRawContent: Boolean(rawContent),
+      rawPreview: this.previewRawContent(rawContent),
+      dbPath,
+      wxid
+    })
 
-    const videoBaseDir = join(dbPath, wxid, 'msg', 'video')
+    if (candidateMd5s.length === 0) {
+      diagnostics.reason = 'missing_input'
+      diagnostics.summary = this.buildLookupSummary('missing_input', diagnostics)
+      this.warnVideoLookup('missing-input', diagnostics)
+      return { exists: false, diagnostics }
+    }
+
+    if (!dbPath || !wxid) {
+      diagnostics.reason = 'missing_config'
+      diagnostics.summary = this.buildLookupSummary('missing_config', diagnostics)
+      this.warnVideoLookup('missing-config', diagnostics)
+      return { exists: false, diagnostics }
+    }
+
+    const accountDir = this.resolveAccountDir(dbPath, wxid)
+    diagnostics.accountDir = accountDir || undefined
+
+    this.logVideoLookup('account-dir', {
+      requestedMd5,
+      accountDir,
+      dbPath,
+      wxid
+    })
+
+    if (!accountDir) {
+      diagnostics.reason = 'account_dir_not_found'
+      diagnostics.summary = this.buildLookupSummary('account_dir_not_found', diagnostics)
+      this.warnVideoLookup('account-dir-not-found', diagnostics)
+      return { exists: false, diagnostics }
+    }
+
+    const videoBaseDir = join(accountDir, 'msg', 'video')
+    diagnostics.videoBaseDir = videoBaseDir
+
+    const hardlinkResult = this.queryVideoFileNames(candidateMd5s)
+    diagnostics.hardlinkDbPath = hardlinkResult.hardlinkDbPath
+    diagnostics.hardlinkMatchedMd5 = hardlinkResult.hardlinkMatchedMd5
+
+    const fileKeys = [...candidateMd5s]
+    for (const fileKey of hardlinkResult.fileKeys) {
+      this.addMd5Candidate(fileKeys, fileKey)
+    }
+    diagnostics.searchedFileKeys = fileKeys
+
+    this.logVideoLookup('search-plan', {
+      requestedMd5,
+      candidateMd5s,
+      hardlinkDbPath: diagnostics.hardlinkDbPath,
+      hardlinkMatchedMd5: diagnostics.hardlinkMatchedMd5,
+      searchedFileKeys: diagnostics.searchedFileKeys,
+      videoBaseDir
+    })
 
     if (!existsSync(videoBaseDir)) {
-      return { exists: false }
+      diagnostics.reason = 'video_dir_missing'
+      diagnostics.summary = this.buildLookupSummary('video_dir_missing', diagnostics)
+      this.warnVideoLookup('video-dir-missing', diagnostics)
+      return { exists: false, diagnostics }
     }
 
     // 遍历年月目录查找视频文件
@@ -210,25 +471,45 @@ class VideoService {
       for (const yearMonth of yearMonthDirs) {
         const dirPath = join(videoBaseDir, yearMonth)
 
-        const videoPath = join(dirPath, `${realVideoMd5}.mp4`)
-        const coverPath = join(dirPath, `${realVideoMd5}.jpg`)
-        const thumbPath = join(dirPath, `${realVideoMd5}_thumb.jpg`)
+        for (const fileKey of fileKeys) {
+          const videoPath = join(dirPath, `${fileKey}.mp4`)
+          const coverPath = join(dirPath, `${fileKey}.jpg`)
+          const thumbPath = join(dirPath, `${fileKey}_thumb.jpg`)
 
-        // 检查视频文件是否存�?
-        if (existsSync(videoPath)) {
-          return {
-            videoUrl: `file:///${videoPath.replace(/\\/g, '/')}`,  // 转换为 file:// 协议
-            coverUrl: this.fileToDataUrl(coverPath, 'image/jpeg'),
-            thumbUrl: this.fileToDataUrl(thumbPath, 'image/jpeg'),
-            exists: true
+          // 检查视频文件是否存�?
+          if (existsSync(videoPath)) {
+            diagnostics.matchedMd5 = fileKey
+            this.logVideoLookup('local-file-hit', {
+              requestedMd5,
+              matchedMd5: fileKey,
+              yearMonth,
+              videoPath,
+              coverExists: existsSync(coverPath),
+              thumbExists: existsSync(thumbPath)
+            })
+            return {
+              videoUrl: `file:///${videoPath.replace(/\\/g, '/')}`,  // 转换为 file:// 协议
+              coverUrl: this.fileToDataUrl(coverPath, 'image/jpeg'),
+              thumbUrl: this.fileToDataUrl(thumbPath, 'image/jpeg'),
+              exists: true,
+              diagnostics
+            }
           }
         }
       }
-    } catch {
-      // 忽略错误
+    } catch (error) {
+      this.warnVideoLookup('scan-error', {
+        requestedMd5,
+        videoBaseDir,
+        searchedFileKeys: diagnostics.searchedFileKeys,
+        error: String(error)
+      })
     }
 
-    return { exists: false }
+    diagnostics.reason = 'local_file_missing'
+    diagnostics.summary = this.buildLookupSummary('local_file_missing', diagnostics)
+    this.warnVideoLookup('local-file-missing', diagnostics)
+    return { exists: false, diagnostics }
   }
 
   /**
@@ -238,23 +519,14 @@ class VideoService {
     if (!content) return undefined
 
     try {
-      // 尝试从XML中提取md5
-      // 格式可能�? <md5>xxx</md5> �?md5="xxx"
-      const md5Match = /<md5>([a-fA-F0-9]+)<\/md5>/i.exec(content)
-      if (md5Match) {
-        return md5Match[1].toLowerCase()
-      }
-
-      const attrMatch = /md5\s*=\s*['"]([a-fA-F0-9]+)['"]/i.exec(content)
-      if (attrMatch) {
-        return attrMatch[1].toLowerCase()
-      }
-
-      // 尝试从videomsg标签中提�?
-      const videoMsgMatch = /<videomsg[^>]*md5\s*=\s*['"]([a-fA-F0-9]+)['"]/i.exec(content)
-      if (videoMsgMatch) {
-        return videoMsgMatch[1].toLowerCase()
-      }
+      return (
+        this.extractVideoXmlValue(content, 'md5') ||
+        this.extractVideoMsgAttribute(content, 'md5') ||
+        this.extractVideoXmlValue(content, 'newmd5') ||
+        this.extractVideoMsgAttribute(content, 'newmd5') ||
+        this.extractVideoXmlValue(content, 'rawmd5') ||
+        this.extractVideoMsgAttribute(content, 'rawmd5')
+      )
     } catch (e) {
       console.error('解析视频MD5失败:', e)
     }
