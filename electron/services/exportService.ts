@@ -2394,7 +2394,7 @@ class ExportService {
               try {
                 const videoMd5 = videoService.parseVideoMd5(content)
                 if (videoMd5) {
-                  const videoInfo = videoService.getVideoInfo(videoMd5)
+                  const videoInfo = videoService.getVideoInfo(videoMd5, content)
                   if (videoInfo.exists && videoInfo.videoUrl) {
                     const videoPath = videoInfo.videoUrl.replace(/^file:\/\/\//i, '').replace(/\//g, path.sep)
                     if (fs.existsSync(videoPath)) {

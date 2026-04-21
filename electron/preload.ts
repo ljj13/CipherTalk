@@ -286,7 +286,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // 视频
   video: {
-    getVideoInfo: (videoMd5: string) => ipcRenderer.invoke('video:getVideoInfo', videoMd5),
+    getVideoInfo: (videoMd5: string, rawContent?: string) => ipcRenderer.invoke('video:getVideoInfo', videoMd5, rawContent),
     readFile: (videoPath: string) => ipcRenderer.invoke('video:readFile', videoPath),
     parseVideoMd5: (content: string) => ipcRenderer.invoke('video:parseVideoMd5', content),
     parseChannelVideo: (content: string) => ipcRenderer.invoke('video:parseChannelVideo', content),

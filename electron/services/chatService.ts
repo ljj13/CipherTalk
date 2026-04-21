@@ -2682,6 +2682,10 @@ class ChatService extends EventEmitter {
       const md5 =
         this.extractXmlValue(content, 'md5') ||
         this.extractXmlAttribute(content, 'videomsg', 'md5') ||
+        this.extractXmlValue(content, 'newmd5') ||
+        this.extractXmlAttribute(content, 'videomsg', 'newmd5') ||
+        this.extractXmlValue(content, 'rawmd5') ||
+        this.extractXmlAttribute(content, 'videomsg', 'rawmd5') ||
         undefined
 
       return md5?.toLowerCase()

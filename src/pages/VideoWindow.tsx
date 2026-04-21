@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Play, Pause, Volume2, VolumeX, RotateCcw } from 'lucide-react'
+import { Play, Pause, PlayCircle, Volume2, VolumeX, RotateCcw } from 'lucide-react'
 import './VideoWindow.scss'
 
 export default function VideoWindow() {
@@ -147,7 +147,7 @@ export default function VideoWindow() {
                 />
                 {!isPlaying && !isLoading && !error && (
                     <div className="play-overlay">
-                        <Play size={64} fill="white" />
+                        <Play size={48} fill="currentColor" />
                     </div>
                 )}
 

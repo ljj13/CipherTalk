@@ -409,13 +409,25 @@ export interface ElectronAPI {
     countThumbnails: () => Promise<{ success: boolean; count: number; error?: string }>
   }
   video: {
-    getVideoInfo: (videoMd5: string) => Promise<{
+    getVideoInfo: (videoMd5: string, rawContent?: string) => Promise<{
       success: boolean
       error?: string
       exists: boolean
       videoUrl?: string
       coverUrl?: string
       thumbUrl?: string
+      diagnostics?: {
+        requestedMd5?: string
+        candidateMd5s?: string[]
+        searchedFileKeys?: string[]
+        matchedMd5?: string
+        hardlinkMatchedMd5?: string
+        hardlinkDbPath?: string
+        accountDir?: string
+        videoBaseDir?: string
+        reason?: 'missing_input' | 'missing_config' | 'account_dir_not_found' | 'video_dir_missing' | 'local_file_missing'
+        summary?: string
+      }
     }>
     readFile: (videoPath: string) => Promise<{
       success: boolean

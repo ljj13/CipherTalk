@@ -2278,11 +2278,24 @@ function registerIpcHandlers() {
   })
 
   // 视频相关
-  ipcMain.handle('video:getVideoInfo', async (_, videoMd5: string) => {
+  ipcMain.handle('video:getVideoInfo', async (_, videoMd5: string, rawContent?: string) => {
     try {
-      const result = videoService.getVideoInfo(videoMd5)
+      console.log('[VideoIPC] getVideoInfo request', {
+        videoMd5,
+        hasRawContent: Boolean(rawContent)
+      })
+      const result = videoService.getVideoInfo(videoMd5, rawContent)
+      console.log('[VideoIPC] getVideoInfo response', {
+        videoMd5,
+        exists: result.exists,
+        diagnostics: result.diagnostics
+      })
       return { success: true, ...result }
     } catch (e) {
+      console.error('[VideoIPC] getVideoInfo error', {
+        videoMd5,
+        error: String(e)
+      })
       return { success: false, error: String(e), exists: false }
     }
   })
