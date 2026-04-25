@@ -118,6 +118,7 @@ const listContactsArgsSchema = z.object({
 
 const searchMessagesArgsSchema = z.object({
   query: z.string().trim().min(1),
+  semanticQuery: z.string().trim().min(1).optional(),
   sessionId: z.string().trim().min(1).optional(),
   sessionIds: z.array(z.string().trim().min(1)).max(MAX_SEARCH_SESSIONS).optional(),
   startTime: z.number().int().positive().optional(),
@@ -1957,8 +1958,18 @@ export class McpReadService {
     if (exhaustiveTargetedSearch) {
       try {
         const indexedRawHits: SearchRawHit[] = []
+        const indexedRawHitMap = new Map<string, SearchRawHit>()
         let indexedMessages = 0
         let indexedTruncated = false
+        const semanticQuery = args.data.semanticQuery || args.data.query
+        const hitKey = (hit: Pick<SearchRawHit, 'session' | 'message'>) => `${hit.session.sessionId}:${hit.message.localId}:${hit.message.createTime}:${hit.message.sortSeq}`
+        const addIndexedRawHit = (hit: SearchRawHit) => {
+          const key = hitKey(hit)
+          const existing = indexedRawHitMap.get(key)
+          if (!existing || hit.score > existing.score) {
+            indexedRawHitMap.set(key, hit)
+          }
+        }
 
         await reportProgress(reporter, {
           stage: 'scanning_messages',
@@ -1990,7 +2001,39 @@ export class McpReadService {
           indexedMessages += indexed.indexedCount
           indexedTruncated = indexedTruncated || indexed.truncated
 
-          for (const hit of indexed.hits) {
+          const hybridHits = [...indexed.hits]
+          const vectorState = chatSearchIndexService.getSessionVectorIndexState(session.sessionId)
+          const shouldRunVectorSearch = matchMode !== 'exact'
+            && vectorState.isVectorComplete
+          if (shouldRunVectorSearch) {
+            try {
+              const vectorIndexed = await chatSearchIndexService.searchSessionByVector({
+                sessionId: session.sessionId,
+                query: semanticQuery,
+                limit: Math.max(limit * 4, limit + 20),
+                matchMode,
+                startTimeMs,
+                endTimeMs,
+                direction: args.data.direction,
+                senderUsername: args.data.senderUsername,
+                onProgress: async (progress) => {
+                  await reportProgress(reporter, {
+                    stage: progress.stage === 'searching_index' ? 'streaming_hits' : 'scanning_messages',
+                    message: progress.message,
+                    sessionsScanned: targetSessions.indexOf(session) + 1,
+                    messagesScanned: progress.indexedCount ?? progress.messagesScanned
+                  })
+                }
+              })
+
+              indexedTruncated = indexedTruncated || vectorIndexed.truncated
+              hybridHits.push(...vectorIndexed.hits)
+            } catch (error) {
+              console.warn('[McpReadService] Local vector search failed, keeping keyword results:', error)
+            }
+          }
+
+          for (const hit of hybridHits) {
             if (!messageMatchesFilters(hit.message, {
               startTimeMs,
               endTimeMs,
@@ -2001,7 +2044,7 @@ export class McpReadService {
               continue
             }
 
-            indexedRawHits.push({
+            addIndexedRawHit({
               session,
               message: hit.message,
               matchedField: hit.matchedField,
@@ -2011,6 +2054,7 @@ export class McpReadService {
           }
         }
 
+        indexedRawHits.push(...indexedRawHitMap.values())
         indexedRawHits.sort((a, b) => b.score - a.score || compareMessageCursorDesc(a.message, b.message))
         const hits = await Promise.all(indexedRawHits.slice(0, limit).map(async (hit): Promise<McpSearchHit> => ({
           session: hit.session,

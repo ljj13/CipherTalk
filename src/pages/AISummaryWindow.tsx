@@ -31,6 +31,8 @@ import {
   type SessionQAHistoryMessage,
   type SessionQAProgressEvent,
   type SessionQAResult,
+  type SessionVectorIndexProgressEvent,
+  type SessionVectorIndexState,
   type SummaryEvidenceRef,
   type SummaryResult,
   type SummaryStructuredAnalysis
@@ -70,6 +72,11 @@ interface EvidenceContextState {
   messages: Message[]
   isLoading: boolean
   error?: string
+}
+
+interface VectorIndexConfirmState {
+  question: string
+  state?: SessionVectorIndexState
 }
 
 const RESULT_TABS: Array<{ id: ResultTabId; label: string; icon: LucideIcon }> = [
@@ -294,6 +301,9 @@ function AISummaryWindow() {
   const [qaInput, setQaInput] = useState('')
   const [qaMessages, setQaMessages] = useState<QAMessage[]>([])
   const [isAsking, setIsAsking] = useState(false)
+  const [isVectorIndexing, setIsVectorIndexing] = useState(false)
+  const [vectorConfirm, setVectorConfirm] = useState<VectorIndexConfirmState | null>(null)
+  const [vectorProgress, setVectorProgress] = useState<SessionVectorIndexProgressEvent | null>(null)
   const [qaError, setQaError] = useState('')
   const [copiedEvidenceKey, setCopiedEvidenceKey] = useState('')
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContextState | null>(null)
@@ -1247,11 +1257,11 @@ function AISummaryWindow() {
     }
   }
 
-  const handleAskQuestion = async () => {
-    const question = qaInput.trim()
+  const runAskQuestion = async (question: string) => {
     if (!sessionId || !question || isAsking) return
 
     setQaInput('')
+    setVectorConfirm(null)
     setQaError('')
     setIsAsking(true)
 
@@ -1354,6 +1364,93 @@ function AISummaryWindow() {
     }
   }
 
+  const handleAskQuestion = async () => {
+    const question = qaInput.trim()
+    if (!sessionId || !question || isAsking || isVectorIndexing) return
+
+    setQaError('')
+
+    try {
+      const stateResult = await window.electronAPI.ai.getSessionVectorIndexState(sessionId)
+      const state = stateResult.result
+      if (stateResult.success && state?.isVectorComplete) {
+        await runAskQuestion(question)
+        return
+      }
+
+      setVectorProgress(null)
+      setVectorConfirm({
+        question,
+        state
+      })
+    } catch {
+      await runAskQuestion(question)
+    }
+  }
+
+  const handleSkipVectorIndex = async () => {
+    const question = vectorConfirm?.question
+    setVectorConfirm(null)
+    setVectorProgress(null)
+    if (question) {
+      await runAskQuestion(question)
+    }
+  }
+
+  const handlePrepareVectorIndex = async () => {
+    const question = vectorConfirm?.question
+    if (!sessionId || !question || isVectorIndexing) return
+
+    let cleanupProgress: (() => void) | undefined
+    setQaError('')
+    setIsVectorIndexing(true)
+    setVectorProgress({
+      sessionId,
+      stage: 'preparing',
+      status: 'running',
+      processedCount: vectorConfirm?.state?.vectorizedCount || 0,
+      totalCount: vectorConfirm?.state?.indexedCount || 0,
+      message: '正在准备本地向量索引',
+      vectorModel: vectorConfirm?.state?.vectorModel || 'local-chargram-hash-v1'
+    })
+
+    try {
+      cleanupProgress = window.electronAPI.ai.onSessionVectorIndexProgress((event) => {
+        if (event.sessionId !== sessionId) return
+        setVectorProgress(event)
+      })
+
+      const result = await window.electronAPI.ai.prepareSessionVectorIndex({ sessionId })
+      if (!result.success || !result.result) {
+        throw new Error(result.error || '向量索引准备失败')
+      }
+
+      if (result.result.isVectorComplete) {
+        setVectorConfirm(null)
+        setVectorProgress(null)
+        setIsVectorIndexing(false)
+        await runAskQuestion(question)
+      } else {
+        setQaError('本地向量索引未完成，已取消本次准备')
+      }
+    } catch (e) {
+      setQaError(String(e))
+    } finally {
+      cleanupProgress?.()
+      setIsVectorIndexing(false)
+    }
+  }
+
+  const handleCancelVectorIndex = async () => {
+    if (!sessionId) return
+    try {
+      await window.electronAPI.ai.cancelSessionVectorIndex(sessionId)
+    } catch {
+      // 取消失败不影响用户继续手动跳过。
+    }
+    setIsVectorIndexing(false)
+  }
+
   // 删除历史记录
   const handleDeleteHistory = (id: number, e: React.MouseEvent) => {
     e.stopPropagation()
@@ -1442,6 +1539,76 @@ function AISummaryWindow() {
     )
   }
 
+  const renderVectorIndexDialog = () => {
+    if (!vectorConfirm) return null
+
+    const totalCount = Math.max(
+      vectorProgress?.totalCount || 0,
+      vectorConfirm.state?.indexedCount || 0
+    )
+    const processedCount = Math.max(
+      vectorProgress?.processedCount || 0,
+      vectorConfirm.state?.vectorizedCount || 0
+    )
+    const progressPercent = totalCount > 0
+      ? Math.min(100, Math.round((processedCount / totalCount) * 100))
+      : 0
+    const pendingCount = Math.max(0, totalCount - processedCount)
+
+    return (
+      <div
+        className="dialog-overlay"
+        onClick={() => {
+          if (!isVectorIndexing) {
+            setVectorConfirm(null)
+            setVectorProgress(null)
+          }
+        }}
+      >
+        <div className="dialog-box vector-index-dialog" onClick={(e) => e.stopPropagation()}>
+          <div className="dialog-header">
+            <h3>准备本地向量索引</h3>
+          </div>
+          <div className="dialog-content">
+            <div className="vector-index-intro">
+              <Atom size={18} />
+              <p>当前会话尚未完成本地向量化。建立后，本次和后续问 AI 会优先使用本地相似度检索，新消息会自动增量处理。</p>
+            </div>
+
+            <div className="vector-index-stats">
+              <span>已向量化 {processedCount} 条</span>
+              <span>待处理 {pendingCount} 条</span>
+            </div>
+
+            {isVectorIndexing && (
+              <div className="vector-index-progress">
+                <div className="vector-index-progress-bar">
+                  <div style={{ width: `${progressPercent}%` }} />
+                </div>
+                <p>{vectorProgress?.message || `正在处理 ${processedCount}/${totalCount}`}</p>
+              </div>
+            )}
+          </div>
+          <div className="dialog-actions">
+            <button
+              className="dialog-btn cancel-btn"
+              onClick={isVectorIndexing ? handleCancelVectorIndex : handleSkipVectorIndex}
+            >
+              {isVectorIndexing ? '取消' : '先跳过'}
+            </button>
+            <button
+              className="dialog-btn confirm-btn"
+              onClick={handlePrepareVectorIndex}
+              disabled={isVectorIndexing}
+            >
+              {isVectorIndexing ? '处理中' : '开始向量化'}
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   const renderAskPanel = () => (
     <div className="qa-panel">
       <div className="qa-thread" ref={qaContentRef}>
@@ -1503,7 +1670,7 @@ function AISummaryWindow() {
           value={qaInput}
           placeholder="追问当前会话..."
           rows={2}
-          disabled={isAsking}
+          disabled={isAsking || isVectorIndexing}
           onChange={(event) => setQaInput(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -1516,10 +1683,10 @@ function AISummaryWindow() {
           className="qa-send-btn"
           type="button"
           onClick={handleAskQuestion}
-          disabled={!qaInput.trim() || isAsking}
+          disabled={!qaInput.trim() || isAsking || isVectorIndexing}
           data-tooltip="发送问题"
         >
-          {isAsking ? <Loader2 size={16} className="spinner" /> : <Send size={16} />}
+          {isAsking || isVectorIndexing ? <Loader2 size={16} className="spinner" /> : <Send size={16} />}
         </button>
       </div>
 
@@ -1574,6 +1741,11 @@ function AISummaryWindow() {
           )}
           {isAsking && (
             <div className="generating-status" data-tooltip="正在回答...">
+              <Loader2 className="spinner" size={16} />
+            </div>
+          )}
+          {isVectorIndexing && (
+            <div className="generating-status" data-tooltip="正在准备本地向量索引...">
               <Loader2 className="spinner" size={16} />
             </div>
           )}
@@ -1908,6 +2080,8 @@ function AISummaryWindow() {
           </div>
         </div>
       )}
+
+      {renderVectorIndexDialog()}
     </div>
   )
 }

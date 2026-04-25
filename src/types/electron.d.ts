@@ -3,6 +3,8 @@ import type {
   SessionQAHistoryMessage,
   SessionQAProgressEvent,
   SessionQAResult,
+  SessionVectorIndexProgressEvent,
+  SessionVectorIndexState,
   SummaryResult,
   SummaryStructuredAnalysis
 } from './ai'
@@ -1072,9 +1074,25 @@ export interface ElectronAPI {
       result?: SessionQAResult
       error?: string
     }>
+    getSessionVectorIndexState: (sessionId: string) => Promise<{
+      success: boolean
+      result?: SessionVectorIndexState
+      error?: string
+    }>
+    prepareSessionVectorIndex: (options: { sessionId: string }) => Promise<{
+      success: boolean
+      result?: SessionVectorIndexState
+      error?: string
+    }>
+    cancelSessionVectorIndex: (sessionId: string) => Promise<{
+      success: boolean
+      result?: SessionVectorIndexState
+      error?: string
+    }>
     onSummaryChunk: (callback: (chunk: string) => void) => () => void
     onSessionQAChunk: (callback: (chunk: string) => void) => () => void
     onSessionQAProgress: (callback: (event: SessionQAProgressEvent) => void) => () => void
+    onSessionVectorIndexProgress: (callback: (event: SessionVectorIndexProgressEvent) => void) => () => void
   }
 
 }

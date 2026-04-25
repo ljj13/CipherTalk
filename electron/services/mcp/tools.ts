@@ -218,6 +218,7 @@ export function registerCipherTalkMcpTools(server: any) {
     description: 'Search messages across one or more sessions and return agent-friendly hits. Use for broad clue hunting when the target session or keyword is still uncertain. Hit text is in hits[].message.text and hits[].excerpt.',
     inputSchema: {
       query: z.string().trim().min(1).describe('Required full-text query.'),
+      semanticQuery: z.string().trim().min(1).optional().describe('Optional natural-language query for local vector search. Defaults to query.'),
       sessionId: z.string().trim().min(1).optional().describe('Single session identifier to search. Accepts sessionId, contactId, display name, remark, or nickname when uniquely resolvable.'),
       sessionIds: z.array(z.string().trim().min(1)).max(20).optional().describe('Multiple session identifiers to search. Each item accepts sessionId, contactId, display name, remark, or nickname when uniquely resolvable.'),
       startTime: z.number().int().positive().optional().describe('Start timestamp in seconds or milliseconds.'),

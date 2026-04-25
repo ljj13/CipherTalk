@@ -1,6 +1,24 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { AccountProfile } from '../src/types/account'
-import type { SessionQAProgressEvent } from '../src/types/ai'
+
+type SessionQAProgressEvent = {
+  stage: string
+  status: string
+  message: string
+  toolName?: string
+  createdAt?: number
+  [key: string]: unknown
+}
+
+type SessionVectorIndexProgressEvent = {
+  sessionId: string
+  stage: string
+  status: string
+  processedCount: number
+  totalCount: number
+  message: string
+  vectorModel: string
+}
 
 function getMcpLaunchConfigSafe(): Promise<{
   command: string
@@ -522,6 +540,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
       model: string
       enableThinking?: boolean
     }) => ipcRenderer.invoke('ai:askSessionQuestion', options),
+    getSessionVectorIndexState: (sessionId: string) => ipcRenderer.invoke('ai:getSessionVectorIndexState', sessionId),
+    prepareSessionVectorIndex: (options: { sessionId: string }) => ipcRenderer.invoke('ai:prepareSessionVectorIndex', options),
+    cancelSessionVectorIndex: (sessionId: string) => ipcRenderer.invoke('ai:cancelSessionVectorIndex', sessionId),
     onSummaryChunk: (callback: (chunk: string) => void) => {
       ipcRenderer.on('ai:summaryChunk', (_, chunk) => callback(chunk))
       return () => ipcRenderer.removeAllListeners('ai:summaryChunk')
@@ -533,6 +554,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onSessionQAProgress: (callback: (event: SessionQAProgressEvent) => void) => {
       ipcRenderer.on('ai:sessionQaProgress', (_, event) => callback(event))
       return () => ipcRenderer.removeAllListeners('ai:sessionQaProgress')
+    },
+    onSessionVectorIndexProgress: (callback: (event: SessionVectorIndexProgressEvent) => void) => {
+      ipcRenderer.on('ai:sessionVectorIndexProgress', (_, event) => callback(event))
+      return () => ipcRenderer.removeAllListeners('ai:sessionVectorIndexProgress')
     }
   }
 })

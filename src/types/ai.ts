@@ -154,6 +154,7 @@ export interface SessionQAToolCall {
     | 'aggregate_messages'
     | 'answer'
     | 'get_session_context'
+    | 'prepare_vector_index'
   args: Record<string, unknown>
   summary: string
 }
@@ -171,6 +172,38 @@ export interface SessionQAProgressEvent {
   query?: string
   count?: number
   createdAt: number
+}
+
+export interface SessionVectorIndexState {
+  sessionId: string
+  indexedCount: number
+  vectorizedCount: number
+  pendingCount: number
+  isVectorComplete: boolean
+  isVectorRunning: boolean
+  vectorModel: string
+}
+
+export type SessionVectorIndexProgressStage =
+  | 'preparing'
+  | 'indexing_messages'
+  | 'vectorizing_messages'
+  | 'completed'
+
+export type SessionVectorIndexProgressStatus =
+  | 'running'
+  | 'completed'
+  | 'cancelled'
+  | 'failed'
+
+export interface SessionVectorIndexProgressEvent {
+  sessionId: string
+  stage: SessionVectorIndexProgressStage
+  status: SessionVectorIndexProgressStatus
+  processedCount: number
+  totalCount: number
+  message: string
+  vectorModel: string
 }
 
 export interface SessionQAResult {

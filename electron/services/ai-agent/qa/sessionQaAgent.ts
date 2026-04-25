@@ -33,6 +33,7 @@ export type SessionQAToolName =
   | 'aggregate_messages'
   | 'answer'
   | 'get_session_context'
+  | 'prepare_vector_index'
 
 export type SessionQAProgressStage = 'intent' | 'tool' | 'context' | 'answer'
 export type SessionQAProgressStatus = 'running' | 'completed' | 'failed'
@@ -997,6 +998,7 @@ async function loadLatestContext(sessionId: string, limit = MAX_CONTEXT_MESSAGES
 }
 
 async function searchSessionMessages(sessionId: string, query: string, filters: {
+  semanticQuery?: string
   senderUsername?: string
   startTime?: number
   endTime?: number
@@ -1008,6 +1010,7 @@ async function searchSessionMessages(sessionId: string, query: string, filters: 
   const args = {
     sessionId,
     query,
+    ...(filters.semanticQuery ? { semanticQuery: filters.semanticQuery } : {}),
     limit: filters.limit || MAX_SEARCH_HITS,
     matchMode: 'substring',
     includeRaw: false,
@@ -1920,6 +1923,7 @@ export async function answerSessionQuestionWithAgent(
 
       try {
         const search = await searchSessionMessages(options.sessionId, query, {
+          semanticQuery: `${query} ${options.question}`,
           startTime: route.timeRange?.startTime,
           endTime: route.timeRange?.endTime,
           senderUsername: route.intent === 'participant_focus'

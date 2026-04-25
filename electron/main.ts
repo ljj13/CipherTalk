@@ -4103,6 +4103,48 @@ function registerIpcHandlers() {
       return { success: false, error: String(e) }
     }
   })
+
+  ipcMain.handle('ai:getSessionVectorIndexState', async (_, sessionId: string) => {
+    try {
+      const { chatSearchIndexService } = await import('./services/search/chatSearchIndexService')
+      return {
+        success: true,
+        result: chatSearchIndexService.getSessionVectorIndexState(sessionId)
+      }
+    } catch (e) {
+      console.error('[AI] 获取会话向量索引状态失败:', e)
+      logService?.error('AI', '获取会话向量索引状态失败', { error: String(e) })
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('ai:prepareSessionVectorIndex', async (event, options: { sessionId: string }) => {
+    try {
+      const { chatSearchIndexService } = await import('./services/search/chatSearchIndexService')
+      const result = await chatSearchIndexService.prepareSessionVectorIndex(options.sessionId, (progress) => {
+        event.sender.send('ai:sessionVectorIndexProgress', progress)
+      })
+      return { success: true, result }
+    } catch (e) {
+      console.error('[AI] 准备会话向量索引失败:', e)
+      logService?.error('AI', '准备会话向量索引失败', { error: String(e) })
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('ai:cancelSessionVectorIndex', async (_, sessionId: string) => {
+    try {
+      const { chatSearchIndexService } = await import('./services/search/chatSearchIndexService')
+      return {
+        success: true,
+        result: chatSearchIndexService.cancelSessionVectorIndex(sessionId)
+      }
+    } catch (e) {
+      console.error('[AI] 取消会话向量索引失败:', e)
+      logService?.error('AI', '取消会话向量索引失败', { error: String(e) })
+      return { success: false, error: String(e) }
+    }
+  })
 }
 
 // 主窗口引用
