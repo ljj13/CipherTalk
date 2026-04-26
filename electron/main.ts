@@ -1234,9 +1234,9 @@ function createAISummaryWindow(sessionId: string, sessionName: string) {
   const isDark = nativeTheme.shouldUseDarkColors
 
   aiSummaryWindow = new BrowserWindow({
-    width: 600,
-    height: 800,
-    minWidth: 500,
+    width: 1100,
+    height: 760,
+    minWidth: 900,
     minHeight: 600,
     icon: iconPath,
     webPreferences: {
@@ -4101,6 +4101,40 @@ function registerIpcHandlers() {
       console.error('[AI] 单会话问答失败:', e)
       logService?.error('AI', '单会话问答失败', { error: String(e) })
       return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('ai:startSessionQuestion', async (event, options: {
+    requestId?: string
+    sessionId: string
+    sessionName?: string
+    question: string
+    summaryText?: string
+    structuredAnalysis?: any
+    history?: Array<{ role: 'user' | 'assistant'; content: string }>
+    provider: string
+    apiKey: string
+    model: string
+    enableThinking?: boolean
+  }) => {
+    try {
+      const { sessionQAJobService } = await import('./services/ai/sessionQAJobService')
+      return sessionQAJobService.start(options, event.sender)
+    } catch (e) {
+      console.error('[AI] 启动单会话问答任务失败:', e)
+      logService?.error('AI', '启动单会话问答任务失败', { error: String(e) })
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('ai:cancelSessionQuestion', async (_, requestId: string) => {
+    try {
+      const { sessionQAJobService } = await import('./services/ai/sessionQAJobService')
+      return await sessionQAJobService.cancel(requestId)
+    } catch (e) {
+      console.error('[AI] 取消单会话问答任务失败:', e)
+      logService?.error('AI', '取消单会话问答任务失败', { error: String(e) })
+      return { success: false, requestId, error: String(e) }
     }
   })
 

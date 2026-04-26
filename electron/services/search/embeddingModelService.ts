@@ -59,8 +59,8 @@ export type EmbeddingModelProfile = {
 }
 
 const MODELSCOPE_HOST = 'https://www.modelscope.cn/'
-const MODELSCOPE_PATH_TEMPLATE = 'models/{model}/resolve/{revision}/'
-const MODELSCOPE_REVISION = 'master'
+const MODELSCOPE_PATH_TEMPLATE = 'models/{model}/resolve/master/'
+const MODELSCOPE_REVISION = 'main'
 
 export const DEFAULT_EMBEDDING_MODEL_PROFILE: EmbeddingModelProfileId = 'bge-large-zh-v1.5-int8'
 

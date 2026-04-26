@@ -29,10 +29,9 @@ import DOMPurify from 'dompurify'
 import {
   TIME_RANGE_OPTIONS,
   type SessionQAHistoryMessage,
+  type SessionQAJobEvent,
   type SessionQAProgressEvent,
   type SessionQAResult,
-  type SessionVectorIndexProgressEvent,
-  type SessionVectorIndexState,
   type SummaryEvidenceRef,
   type SummaryResult,
   type SummaryStructuredAnalysis
@@ -62,6 +61,7 @@ interface QAMessage {
   error?: string
   result?: SessionQAResult
   progressEvents?: SessionQAProgressEvent[]
+  requestId?: string
   thinkContent?: string
   isThinking?: boolean
   showThink?: boolean
@@ -72,11 +72,6 @@ interface EvidenceContextState {
   messages: Message[]
   isLoading: boolean
   error?: string
-}
-
-interface VectorIndexConfirmState {
-  question: string
-  state?: SessionVectorIndexState
 }
 
 const RESULT_TABS: Array<{ id: ResultTabId; label: string; icon: LucideIcon }> = [
@@ -301,9 +296,9 @@ function AISummaryWindow() {
   const [qaInput, setQaInput] = useState('')
   const [qaMessages, setQaMessages] = useState<QAMessage[]>([])
   const [isAsking, setIsAsking] = useState(false)
-  const [isVectorIndexing, setIsVectorIndexing] = useState(false)
-  const [vectorConfirm, setVectorConfirm] = useState<VectorIndexConfirmState | null>(null)
-  const [vectorProgress, setVectorProgress] = useState<SessionVectorIndexProgressEvent | null>(null)
+  const [activeQARequestId, setActiveQARequestId] = useState<string | null>(null)
+  const [expandedQAProgressIds, setExpandedQAProgressIds] = useState<Set<string>>(() => new Set())
+  const [expandedQAEvidenceIds, setExpandedQAEvidenceIds] = useState<Set<string>>(() => new Set())
   const [qaError, setQaError] = useState('')
   const [copiedEvidenceKey, setCopiedEvidenceKey] = useState('')
   const [evidenceContext, setEvidenceContext] = useState<EvidenceContextState | null>(null)
@@ -312,6 +307,8 @@ function AISummaryWindow() {
   const thinkContentRef = useRef<HTMLDivElement>(null)
   const qaContentRef = useRef<HTMLDivElement>(null)
   const qaInputRef = useRef<HTMLTextAreaElement>(null)
+  const activeQARequestIdRef = useRef<string | null>(null)
+  const qaRequestMessageMapRef = useRef<Map<string, string>>(new Map())
 
   // 对话框状态
   const [showDeleteDialog, setShowDeleteDialog] = useState(false)
@@ -495,51 +492,73 @@ function AISummaryWindow() {
     }
   }
 
-  const renderQAEvidenceCards = (evidenceRefs?: SummaryEvidenceRef[]) => {
+  const toggleQAEvidenceList = (messageId: string) => {
+    setExpandedQAEvidenceIds(prev => {
+      const next = new Set(prev)
+      if (next.has(messageId)) {
+        next.delete(messageId)
+      } else {
+        next.add(messageId)
+      }
+      return next
+    })
+  }
+
+  const renderQAEvidenceCards = (messageId: string, evidenceRefs?: SummaryEvidenceRef[]) => {
     const visibleEvidence = (evidenceRefs || []).slice(0, 8)
 
     if (visibleEvidence.length === 0) {
       return null
     }
 
+    const isExpanded = expandedQAEvidenceIds.has(messageId)
+
     return (
-      <section className="qa-evidence-cards" aria-label="回答证据">
-        <div className="qa-evidence-heading">
+      <section className={`qa-evidence-cards ${isExpanded ? 'expanded' : 'collapsed'}`} aria-label="回答证据">
+        <button
+          type="button"
+          className="qa-evidence-heading"
+          onClick={() => toggleQAEvidenceList(messageId)}
+          aria-expanded={isExpanded}
+        >
+          <ChevronRight size={15} className="qa-evidence-toggle" aria-hidden="true" />
           <span>回答证据</span>
-          <span>{visibleEvidence.length} 条</span>
-        </div>
+          <span className="qa-evidence-count">{visibleEvidence.length} 条</span>
+        </button>
 
-        <div className="qa-evidence-card-list">
-          {visibleEvidence.map((ref, index) => {
-            const key = getEvidenceKey(ref)
-            const isCopied = copiedEvidenceKey === key
+        {isExpanded && (
+          <div className="qa-evidence-card-list">
+            {visibleEvidence.map((ref, index) => {
+              const key = getEvidenceKey(ref)
+              const isCopied = copiedEvidenceKey === key
 
-            return (
-              <article key={key} className="qa-evidence-card">
-                <div className="qa-evidence-card-meta">
-                  <span>#{index + 1}</span>
-                  <span>{formatEvidenceTime(ref.createTime)}</span>
-                  <span>{getEvidenceSender(ref)}</span>
-                </div>
-                <p className="qa-evidence-card-preview">{ref.previewText}</p>
-                <div className="qa-evidence-actions">
-                  <button type="button" onClick={() => handleOpenEvidenceContext(ref)}>
-                    <MessageCircle size={13} />
-                    查看上下文
-                  </button>
-                  <button type="button" onClick={() => handleCopyEvidence(ref)}>
-                    <Copy size={13} />
-                    {isCopied ? '已复制' : '复制证据'}
-                  </button>
-                  <button type="button" onClick={() => handleAskAboutEvidence(ref)}>
-                    <CircleHelp size={13} />
-                    追问
-                  </button>
-                </div>
-              </article>
-            )
-          })}
-        </div>
+              return (
+                <article key={key} className="qa-evidence-card">
+                  <div className="qa-evidence-card-meta">
+                    <span>#{index + 1}</span>
+                    <span>{formatEvidenceTime(ref.createTime)}</span>
+                    <span>{getEvidenceSender(ref)}</span>
+                  </div>
+                  <p className="qa-evidence-card-preview">{ref.previewText}</p>
+                  <div className="qa-evidence-actions">
+                    <button type="button" onClick={() => handleOpenEvidenceContext(ref)}>
+                      <MessageCircle size={13} />
+                      查看上下文
+                    </button>
+                    <button type="button" onClick={() => handleCopyEvidence(ref)}>
+                      <Copy size={13} />
+                      {isCopied ? '已复制' : '复制证据'}
+                    </button>
+                    <button type="button" onClick={() => handleAskAboutEvidence(ref)}>
+                      <CircleHelp size={13} />
+                      追问
+                    </button>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        )}
       </section>
     )
   }
@@ -550,6 +569,18 @@ function AISummaryWindow() {
         ? { ...message, showThink: !message.showThink }
         : message
     )))
+  }
+
+  const toggleQAProgressEvent = (eventId: string) => {
+    setExpandedQAProgressIds(prev => {
+      const next = new Set(prev)
+      if (next.has(eventId)) {
+        next.delete(eventId)
+      } else {
+        next.add(eventId)
+      }
+      return next
+    })
   }
 
   const renderQAProgressStatusIcon = (event: SessionQAProgressEvent) => {
@@ -572,9 +603,23 @@ function AISummaryWindow() {
 
   const getQAProgressTargetLabel = (event: SessionQAProgressEvent) => {
     if (event.toolName) {
-      return `工具： ${event.toolName}`
+      return `ciphertalk : ${event.toolName}`
     }
-    return `阶段： ${event.title}`
+    return event.title
+  }
+
+  const getQAProgressDetailLines = (event: SessionQAProgressEvent) => {
+    const lines = [
+      event.detail || (event.status === 'running' ? '执行中...' : '执行完成')
+    ]
+
+    if (event.stage) lines.push(`阶段：${event.stage}`)
+    if (event.source) lines.push(`数据源：${event.source}`)
+    if (event.query) lines.push(`查询：${event.query}`)
+    if (event.count !== undefined) lines.push(`数量：${event.count}`)
+    if (event.elapsedMs !== undefined) lines.push(`耗时：${(event.elapsedMs / 1000).toFixed(1)} 秒`)
+
+    return lines.filter(Boolean)
   }
 
   const renderQAProgressEvents = (events?: SessionQAProgressEvent[]) => {
@@ -584,25 +629,43 @@ function AISummaryWindow() {
 
     return (
       <div className="qa-progress-list" aria-label="AI 工具执行轨迹">
-        {events.map((event) => (
-          <div key={event.id} className={`qa-progress-card ${event.stage} ${event.status}`}>
-            <div className="qa-progress-icon">
-              {renderQAProgressStatusIcon(event)}
-            </div>
-            <div className="qa-progress-content">
-              <div className="qa-progress-title-row">
+        {events.map((event) => {
+          const isExpanded = expandedQAProgressIds.has(event.id)
+          const detailLines = getQAProgressDetailLines(event)
+
+          return (
+            <div key={event.id} className={`qa-progress-card ${event.stage} ${event.status} ${isExpanded ? 'expanded' : ''}`}>
+              <button
+                type="button"
+                className="qa-progress-summary"
+                onClick={() => toggleQAProgressEvent(event.id)}
+                aria-expanded={isExpanded}
+              >
+                <span className="qa-progress-icon">
+                  {renderQAProgressStatusIcon(event)}
+                </span>
                 <span className="qa-progress-title">
-                  [{getQAProgressStatusLabel(event.status)}] {getQAProgressTargetLabel(event)}
+                  {getQAProgressTargetLabel(event)}
+                </span>
+                <span className={`qa-progress-status ${event.status}`}>
+                  {getQAProgressStatusLabel(event.status)}
                 </span>
                 {event.count !== undefined && (
                   <span className="qa-progress-count">{event.count}</span>
                 )}
-              </div>
-              <p>{event.status === 'running' ? (event.detail || '执行中...') : (event.detail || '执行完成')}</p>
+                <ChevronRight size={15} className="qa-progress-chevron" aria-hidden="true" />
+              </button>
+
+              {isExpanded && (
+                <div className="qa-progress-details">
+                  {detailLines.map((line, index) => (
+                    <p key={`${event.id}-${index}`}>{line}</p>
+                  ))}
+                </div>
+              )}
             </div>
-            <ChevronRight size={16} className="qa-progress-chevron" aria-hidden="true" />
-          </div>
-        ))}
+          )
+        })}
       </div>
     )
   }
@@ -1007,6 +1070,79 @@ function AISummaryWindow() {
     }
   }, [qaMessages])
 
+  useEffect(() => {
+    const cleanup = window.electronAPI.ai.onSessionQAEvent((event: SessionQAJobEvent) => {
+      const assistantId = qaRequestMessageMapRef.current.get(event.requestId)
+      if (!assistantId) return
+
+      if (event.kind === 'progress' && event.progress) {
+        setQaMessages(prev => prev.map(message => (
+          message.id === assistantId
+            ? { ...message, progressEvents: upsertQAProgressEvent(message.progressEvents, event.progress!) }
+            : message
+        )))
+        return
+      }
+
+      if (event.kind === 'chunk' && event.chunk) {
+        setQaMessages(prev => prev.map(message => (
+          message.id === assistantId
+            ? appendQAChunkToMessage(message, event.chunk!)
+            : message
+        )))
+        return
+      }
+
+      if (event.kind === 'final' && event.result) {
+        qaRequestMessageMapRef.current.delete(event.requestId)
+        if (activeQARequestIdRef.current === event.requestId) {
+          activeQARequestIdRef.current = null
+          setActiveQARequestId(null)
+          setIsAsking(false)
+        }
+        setQaMessages(prev => prev.map(message => (
+          message.id === assistantId
+            ? {
+                ...message,
+                content: stripSummaryContent(event.result!.answerText),
+                createdAt: event.result!.createdAt,
+                isStreaming: false,
+                isThinking: false,
+                showThink: false,
+                result: event.result
+              }
+            : message
+        )))
+        return
+      }
+
+      if (event.kind === 'error' || event.kind === 'cancelled') {
+        qaRequestMessageMapRef.current.delete(event.requestId)
+        if (activeQARequestIdRef.current === event.requestId) {
+          activeQARequestIdRef.current = null
+          setActiveQARequestId(null)
+          setIsAsking(false)
+        }
+        const messageText = event.kind === 'cancelled' ? '已取消回答。' : (event.error || '问答失败')
+        if (event.kind === 'error') setQaError(messageText)
+        setQaMessages(prev => prev.map(message => (
+          message.id === assistantId
+            ? {
+                ...message,
+                content: message.content || (event.kind === 'cancelled' ? messageText : ''),
+                isStreaming: false,
+                isThinking: false,
+                showThink: false,
+                error: event.kind === 'error' ? messageText : undefined
+              }
+            : message
+        )))
+      }
+    })
+
+    return cleanup
+  }, [])
+
   // 从 URL 参数获取 sessionId
   useEffect(() => {
     // 从 query 参数获取（不是 hash 参数）
@@ -1261,11 +1397,11 @@ function AISummaryWindow() {
     if (!sessionId || !question || isAsking) return
 
     setQaInput('')
-    setVectorConfirm(null)
     setQaError('')
     setIsAsking(true)
 
     const historyForRequest = getQAHistory(qaMessages)
+    const requestId = `qa-${Date.now()}-${Math.random().toString(16).slice(2)}`
     const userMessage: QAMessage = {
       id: buildMessageId(),
       role: 'user',
@@ -1278,13 +1414,14 @@ function AISummaryWindow() {
       role: 'assistant',
       content: '',
       createdAt: Date.now(),
-      isStreaming: true
+      isStreaming: true,
+      requestId
     }
 
+    qaRequestMessageMapRef.current.set(requestId, assistantId)
+    activeQARequestIdRef.current = requestId
+    setActiveQARequestId(requestId)
     setQaMessages(prev => [...prev, userMessage, assistantMessage])
-
-    let cleanupChunk: (() => void) | undefined
-    let cleanupProgress: (() => void) | undefined
 
     try {
       const { getAiApiKey, getAiProvider, getAiModel, getAiEnableThinking } = await import('../services/config')
@@ -1298,23 +1435,8 @@ function AISummaryWindow() {
       const model = await getAiModel()
       const enableThinking = await getAiEnableThinking()
 
-      cleanupProgress = window.electronAPI.ai.onSessionQAProgress((event: SessionQAProgressEvent) => {
-        setQaMessages(prev => prev.map(message => (
-          message.id === assistantId
-            ? { ...message, progressEvents: upsertQAProgressEvent(message.progressEvents, event) }
-            : message
-        )))
-      })
-
-      cleanupChunk = window.electronAPI.ai.onSessionQAChunk((chunk: string) => {
-        setQaMessages(prev => prev.map(message => (
-          message.id === assistantId
-            ? appendQAChunkToMessage(message, chunk)
-            : message
-        )))
-      })
-
-      const response = await window.electronAPI.ai.askSessionQuestion({
+      const response = await window.electronAPI.ai.startSessionQuestion({
+        requestId,
         sessionId,
         sessionName,
         question,
@@ -1327,26 +1449,17 @@ function AISummaryWindow() {
         enableThinking: enableThinking !== false
       })
 
-      if (!response.success || !response.result) {
-        throw new Error(response.error || '问答结果为空')
+      if (!response.success || !response.requestId) {
+        throw new Error(response.error || '问答任务启动失败')
       }
-
-      setQaMessages(prev => prev.map(message => (
-        message.id === assistantId
-          ? {
-              ...message,
-              content: stripSummaryContent(response.result!.answerText),
-              createdAt: response.result!.createdAt,
-              isStreaming: false,
-              isThinking: false,
-              showThink: false,
-              result: response.result
-            }
-          : message
-      )))
     } catch (e) {
       const message = String(e)
       setQaError(message)
+      qaRequestMessageMapRef.current.delete(requestId)
+      if (activeQARequestIdRef.current === requestId) {
+        activeQARequestIdRef.current = null
+        setActiveQARequestId(null)
+      }
       setQaMessages(prev => prev.map(item => (
         item.id === assistantId
           ? {
@@ -1357,98 +1470,26 @@ function AISummaryWindow() {
             }
           : item
       )))
-    } finally {
-      cleanupChunk?.()
-      cleanupProgress?.()
       setIsAsking(false)
     }
   }
 
   const handleAskQuestion = async () => {
     const question = qaInput.trim()
-    if (!sessionId || !question || isAsking || isVectorIndexing) return
+    if (!sessionId || !question || isAsking) return
 
     setQaError('')
-
-    try {
-      const stateResult = await window.electronAPI.ai.getSessionVectorIndexState(sessionId)
-      const state = stateResult.result
-      if (stateResult.success && state?.isVectorComplete) {
-        await runAskQuestion(question)
-        return
-      }
-
-      setVectorProgress(null)
-      setVectorConfirm({
-        question,
-        state
-      })
-    } catch {
-      await runAskQuestion(question)
-    }
+    await runAskQuestion(question)
   }
 
-  const handleSkipVectorIndex = async () => {
-    const question = vectorConfirm?.question
-    setVectorConfirm(null)
-    setVectorProgress(null)
-    if (question) {
-      await runAskQuestion(question)
-    }
-  }
-
-  const handlePrepareVectorIndex = async () => {
-    const question = vectorConfirm?.question
-    if (!sessionId || !question || isVectorIndexing) return
-
-    let cleanupProgress: (() => void) | undefined
-    setQaError('')
-    setIsVectorIndexing(true)
-    setVectorProgress({
-      sessionId,
-      stage: 'preparing',
-      status: 'running',
-      processedCount: vectorConfirm?.state?.vectorizedCount || 0,
-      totalCount: vectorConfirm?.state?.indexedCount || 0,
-      message: '正在准备本地语义向量索引',
-      vectorModel: vectorConfirm?.state?.vectorModel || 'bge-large-zh-v1.5-int8'
-    })
-
+  const handleCancelAsk = async () => {
+    const requestId = activeQARequestIdRef.current || activeQARequestId
+    if (!requestId) return
     try {
-      cleanupProgress = window.electronAPI.ai.onSessionVectorIndexProgress((event) => {
-        if (event.sessionId !== sessionId) return
-        setVectorProgress(event)
-      })
-
-      const result = await window.electronAPI.ai.prepareSessionVectorIndex({ sessionId })
-      if (!result.success || !result.result) {
-        throw new Error(result.error || '语义向量索引准备失败')
-      }
-
-      if (result.result.isVectorComplete) {
-        setVectorConfirm(null)
-        setVectorProgress(null)
-        setIsVectorIndexing(false)
-        await runAskQuestion(question)
-      } else {
-        setQaError('本地语义向量索引未完成，已取消本次准备')
-      }
+      await window.electronAPI.ai.cancelSessionQuestion(requestId)
     } catch (e) {
       setQaError(String(e))
-    } finally {
-      cleanupProgress?.()
-      setIsVectorIndexing(false)
     }
-  }
-
-  const handleCancelVectorIndex = async () => {
-    if (!sessionId) return
-    try {
-      await window.electronAPI.ai.cancelSessionVectorIndex(sessionId)
-    } catch {
-      // 取消失败不影响用户继续手动跳过。
-    }
-    setIsVectorIndexing(false)
   }
 
   // 删除历史记录
@@ -1539,84 +1580,6 @@ function AISummaryWindow() {
     )
   }
 
-  const renderVectorIndexDialog = () => {
-    if (!vectorConfirm) return null
-
-    const totalCount = Math.max(
-      vectorProgress?.totalCount || 0,
-      vectorConfirm.state?.indexedCount || 0
-    )
-    const processedCount = Math.max(
-      vectorProgress?.processedCount || 0,
-      vectorConfirm.state?.vectorizedCount || 0
-    )
-    const progressPercent = totalCount > 0
-      ? Math.min(100, Math.round((processedCount / totalCount) * 100))
-      : 0
-    const pendingCount = Math.max(0, totalCount - processedCount)
-    const isDownloadingModel = vectorProgress?.stage === 'downloading_model'
-
-    return (
-      <div
-        className="dialog-overlay"
-        onClick={() => {
-          if (!isVectorIndexing) {
-            setVectorConfirm(null)
-            setVectorProgress(null)
-          }
-        }}
-      >
-        <div className="dialog-box vector-index-dialog" onClick={(e) => e.stopPropagation()}>
-          <div className="dialog-header">
-            <h3>准备本地语义向量索引</h3>
-          </div>
-          <div className="dialog-content">
-            <div className="vector-index-intro">
-              <Atom size={18} />
-              <p>当前会话尚未完成本地语义向量化。建立后，本次和后续问 AI 会优先使用真实语义检索，新消息会自动增量处理。</p>
-            </div>
-
-            <div className="vector-index-stats">
-              <span>{vectorConfirm.state?.vectorModelName || vectorProgress?.vectorModel || 'BGE Small 中文'}</span>
-              {isDownloadingModel ? (
-                <span>正在下载语义模型</span>
-              ) : (
-                <>
-                  <span>已语义向量化 {processedCount} 条</span>
-                  <span>待处理 {pendingCount} 条</span>
-                </>
-              )}
-            </div>
-
-            {isVectorIndexing && (
-              <div className="vector-index-progress">
-                <div className="vector-index-progress-bar">
-                  <div style={{ width: `${progressPercent}%` }} />
-                </div>
-                <p>{vectorProgress?.message || `正在处理 ${processedCount}/${totalCount}`}</p>
-              </div>
-            )}
-          </div>
-          <div className="dialog-actions">
-            <button
-              className="dialog-btn cancel-btn"
-              onClick={isVectorIndexing ? handleCancelVectorIndex : handleSkipVectorIndex}
-            >
-              {isVectorIndexing ? '取消' : '先跳过'}
-            </button>
-            <button
-              className="dialog-btn confirm-btn"
-              onClick={handlePrepareVectorIndex}
-              disabled={isVectorIndexing}
-            >
-              {isVectorIndexing ? '处理中' : '开始语义向量化'}
-            </button>
-          </div>
-        </div>
-      </div>
-    )
-  }
-
   const renderAskPanel = () => (
     <div className="qa-panel">
       <div className="qa-thread" ref={qaContentRef}>
@@ -1655,7 +1618,7 @@ function AISummaryWindow() {
                             ) : (
                               null
                             )}
-                            {renderQAEvidenceCards(message.result?.evidenceRefs)}
+                            {renderQAEvidenceCards(message.id, message.result?.evidenceRefs)}
                           </>
                         )}
                       </>
@@ -1678,7 +1641,6 @@ function AISummaryWindow() {
           value={qaInput}
           placeholder="追问当前会话..."
           rows={2}
-          disabled={isAsking || isVectorIndexing}
           onChange={(event) => setQaInput(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -1690,11 +1652,11 @@ function AISummaryWindow() {
         <button
           className="qa-send-btn"
           type="button"
-          onClick={handleAskQuestion}
-          disabled={!qaInput.trim() || isAsking || isVectorIndexing}
-          data-tooltip="发送问题"
+          onClick={isAsking ? handleCancelAsk : handleAskQuestion}
+          disabled={!isAsking && !qaInput.trim()}
+          data-tooltip={isAsking ? '取消回答' : '发送问题'}
         >
-          {isAsking || isVectorIndexing ? <Loader2 size={16} className="spinner" /> : <Send size={16} />}
+          {isAsking ? <X size={16} /> : <Send size={16} />}
         </button>
       </div>
 
@@ -1748,12 +1710,12 @@ function AISummaryWindow() {
             </div>
           )}
           {isAsking && (
-            <div className="generating-status" data-tooltip="正在回答...">
-              <Loader2 className="spinner" size={16} />
-            </div>
+            <button className="title-btn" onClick={handleCancelAsk} data-tooltip="取消回答">
+              <X size={14} />
+            </button>
           )}
-          {isVectorIndexing && (
-            <div className="generating-status" data-tooltip="正在准备本地语义向量索引...">
+          {isAsking && (
+            <div className="generating-status" data-tooltip="正在回答...">
               <Loader2 className="spinner" size={16} />
             </div>
           )}
@@ -1807,27 +1769,34 @@ function AISummaryWindow() {
         </div>
       </div>
 
-      <div className="content">
-        {sessionId && !isGenerating && (
-          <div className="workspace-mode-switch">
+      <div className="app-layout">
+        <aside className="sidebar">
+          <div className="sidebar-nav">
             <button
               type="button"
-              className={`workspace-mode-btn ${workspaceMode === 'summary' ? 'active' : ''}`}
+              className={`nav-btn ${workspaceMode === 'summary' ? 'active' : ''}`}
               onClick={() => setWorkspaceMode('summary')}
             >
-              <LayoutDashboard size={15} />
-              <span>摘要</span>
+              <LayoutDashboard size={18} />
+              <span>智能摘要</span>
             </button>
             <button
               type="button"
-              className={`workspace-mode-btn ${workspaceMode === 'ask' ? 'active' : ''}`}
-              onClick={() => setWorkspaceMode('ask')}
+              className={`nav-btn ${workspaceMode === 'ask' ? 'active' : ''}`}
+              onClick={() => {
+                setWorkspaceMode('ask')
+                setTimeout(() => qaInputRef.current?.focus(), 0)
+              }}
             >
-              <MessageCircle size={15} />
-              <span>问 AI</span>
+              <MessageCircle size={18} />
+              <span>对话问答</span>
             </button>
           </div>
-        )}
+        </aside>
+
+        <main className="main-content">
+          <div className="workspace-container">
+            <div className="content">
 
         {workspaceMode === 'ask' && !isGenerating && renderAskPanel()}
 
@@ -2030,6 +1999,9 @@ function AISummaryWindow() {
           </div>
         )}
       </div>
+          </div>
+        </main>
+      </div>
 
       {/* 删除确认对话框 */}
       {showDeleteDialog && (
@@ -2088,8 +2060,6 @@ function AISummaryWindow() {
           </div>
         </div>
       )}
-
-      {renderVectorIndexDialog()}
     </div>
   )
 }

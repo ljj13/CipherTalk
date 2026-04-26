@@ -21,6 +21,9 @@ export interface SessionQAToolCall {
   toolName: SessionQAToolName
   args: Record<string, unknown>
   summary: string
+  status?: 'running' | 'completed' | 'failed' | 'cancelled'
+  durationMs?: number
+  evidenceCount?: number
 }
 
 export type SessionQAToolName =
@@ -37,6 +40,7 @@ export type SessionQAToolName =
 
 export type SessionQAProgressStage = 'intent' | 'tool' | 'context' | 'answer'
 export type SessionQAProgressStatus = 'running' | 'completed' | 'failed'
+export type SessionQAProgressSource = 'summary' | 'chat' | 'search_index' | 'vector' | 'aggregate' | 'model'
 
 export interface SessionQAProgressEvent {
   id: string
@@ -48,6 +52,9 @@ export interface SessionQAProgressEvent {
   query?: string
   count?: number
   createdAt: number
+  requestId?: string
+  source?: SessionQAProgressSource
+  elapsedMs?: number
 }
 
 export interface SessionQAAgentOptions {
@@ -104,6 +111,7 @@ type SessionQAIntentType =
   | 'time_range'
   | 'participant_focus'
   | 'exact_evidence'
+  | 'media_or_file'
   | 'broad_summary'
   | 'stats_or_count'
   | 'unclear'
@@ -153,7 +161,25 @@ function buildProgressEvent(
 ): SessionQAProgressEvent {
   return {
     ...event,
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    source: event.source || inferProgressSource(event)
+  }
+}
+
+function inferProgressSource(event: Omit<SessionQAProgressEvent, 'createdAt'>): SessionQAProgressSource {
+  if (event.stage === 'answer') return 'model'
+  switch (event.toolName) {
+    case 'read_summary_facts':
+      return 'summary'
+    case 'search_messages':
+    case 'read_context':
+      return 'search_index'
+    case 'prepare_vector_index':
+      return 'vector'
+    case 'aggregate_messages':
+      return 'aggregate'
+    default:
+      return 'chat'
   }
 }
 
@@ -522,6 +548,7 @@ function normalizeIntentType(value: unknown): SessionQAIntentType {
     'time_range',
     'participant_focus',
     'exact_evidence',
+    'media_or_file',
     'broad_summary',
     'stats_or_count',
     'unclear'
@@ -574,6 +601,8 @@ function buildDefaultPreferredPlan(intent: SessionQAIntentType): ToolLoopAction[
       return ['resolve_participant', 'read_by_time_range', 'answer']
     case 'exact_evidence':
       return ['search_messages', 'read_context', 'answer']
+    case 'media_or_file':
+      return ['search_messages', 'read_context', 'answer']
     case 'broad_summary':
       return ['read_summary_facts', 'read_latest', 'answer']
     case 'stats_or_count':
@@ -600,7 +629,9 @@ function routeFromHeuristics(question: string, summaryText?: string): IntentRout
     intent = 'time_range'
   } else if (/(总结|概括|关系|变化|趋势|梳理|复盘)/.test(question)) {
     intent = hasSummary ? 'summary_answerable' : 'broad_summary'
-  } else if (/(有没有|是否|说过|提到|原文|哪条|文件|链接|图片|语音|React|Markdown|http|www\.)/i.test(question)) {
+  } else if (/(文件|链接|图片|照片|视频|语音|表情|附件|http|www\.)/i.test(question)) {
+    intent = 'media_or_file'
+  } else if (/(有没有|是否|说过|提到|原文|哪条|React|Markdown)/i.test(question)) {
     intent = 'exact_evidence'
   } else if (/(谁|哪个人|他说|她说|发了什么|说了什么)/.test(question)) {
     intent = 'participant_focus'
@@ -652,7 +683,7 @@ async function routeQuestionIntent(
 结构化摘要预览：${compactText(input.structuredContext || '', 1200) || '无'}
 
 可选 intent：
-summary_answerable, recent_status, time_range, participant_focus, exact_evidence, broad_summary, stats_or_count, unclear
+summary_answerable, recent_status, time_range, participant_focus, exact_evidence, media_or_file, broad_summary, stats_or_count, unclear
 
 输出 JSON：
 {
@@ -897,7 +928,7 @@ ${buildObservationText(input.observations)}
 - 最近/刚刚/当前进展类问题优先 read_latest，不要先搜索。
 - 时间类问题优先 read_by_time_range。
 - 人物类问题先 resolve_participant，再按 sender 或时间读取。
-- 只有原话、具体事项、文件、链接、是否提到某词时才 search_messages。
+- 只有原话、具体事项、媒体/文件/链接、是否提到某词时才 search_messages。
 - 搜索命中后再 read_context；搜索 0 命中时才改写关键词继续搜。
 - 统计类问题需要 aggregate_messages 后再 answer。
 - 没有任何摘要事实、上下文、聚合结果或搜索命中前，不要 answer。
@@ -1003,6 +1034,7 @@ async function searchSessionMessages(sessionId: string, query: string, filters: 
   startTime?: number
   endTime?: number
   limit?: number
+  sessionName?: string
 } = {}): Promise<{
   payload?: McpSearchMessagesPayload
   toolCall?: SessionQAToolCall
@@ -1018,13 +1050,78 @@ async function searchSessionMessages(sessionId: string, query: string, filters: 
     ...(filters.startTime ? { startTime: filters.startTime } : {}),
     ...(filters.endTime ? { endTime: filters.endTime } : {})
   }
+  const indexState = chatSearchIndexService.getSessionSearchIndexState(sessionId)
+  const shouldUseIndex = Boolean(indexState?.isComplete)
+  if (!shouldUseIndex) {
+    chatSearchIndexService.ensureSessionIndexedInBackground(sessionId)
+    const fallbackResult = await executeMcpTool('get_messages', {
+      sessionId,
+      keyword: query,
+      limit: Math.max(filters.limit || MAX_SEARCH_HITS, MAX_SEARCH_HITS),
+      order: 'desc',
+      includeRaw: false,
+      ...(filters.startTime ? { startTime: filters.startTime } : {}),
+      ...(filters.endTime ? { endTime: filters.endTime } : {})
+    })
+    const messagesPayload = fallbackResult.payload as McpMessagesPayload
+    const session = {
+      sessionId,
+      displayName: filters.sessionName || sessionId,
+      kind: sessionId.includes('@chatroom') ? 'group' : 'friend'
+    } as const
+    const hits = (messagesPayload.items || [])
+      .filter((message) => !filters.senderUsername || message.sender.username === filters.senderUsername)
+      .slice(0, filters.limit || MAX_SEARCH_HITS)
+      .map((message, index) => ({
+        session,
+        message,
+        excerpt: compactText(message.text, 180) || `[${message.kind}]`,
+        matchedField: 'text' as const,
+        score: 520 - index
+      }))
+    const payload: McpSearchMessagesPayload = {
+      hits,
+      limit: filters.limit || MAX_SEARCH_HITS,
+      sessionsScanned: 1,
+      messagesScanned: messagesPayload.items.length,
+      truncated: messagesPayload.hasMore,
+      source: 'scan',
+      indexStatus: {
+        ready: false,
+        indexedSessions: 0,
+        indexedMessages: indexState?.indexedCount || 0
+      },
+      sessionSummaries: [{
+        session,
+        hitCount: hits.length,
+        topScore: hits[0]?.score || 0,
+        sampleExcerpts: hits.slice(0, 3).map((hit) => hit.excerpt)
+      }]
+    }
+    return {
+      payload,
+      toolCall: {
+        toolName: 'search_messages',
+        args: {
+          ...args,
+          mode: 'quick_scan_background_index'
+        },
+        summary: `搜索索引未就绪，已使用快速扫描命中 ${hits.length} 条，并在后台准备索引。`,
+        status: 'completed',
+        evidenceCount: hits.length
+      }
+    }
+  }
+
   const result = await executeMcpTool('search_messages', args)
   return {
     payload: result.payload as McpSearchMessagesPayload,
     toolCall: {
       toolName: 'search_messages',
       args,
-      summary: result.summary
+      summary: result.summary,
+      status: 'completed',
+      evidenceCount: ((result.payload as McpSearchMessagesPayload)?.hits || []).length
     }
   }
 }
@@ -1109,6 +1206,48 @@ async function loadMessagesByTimeRange(
   }
 }
 
+async function loadMessagesByTimeRangeAll(
+  sessionId: string,
+  input: {
+    startTime?: number
+    endTime?: number
+    senderUsername?: string
+    keyword?: string
+    maxMessages?: number
+  }
+): Promise<McpMessageItem[]> {
+  const limit = 200
+  const maxMessages = Math.max(limit, Math.min(input.maxMessages || 10000, 20000))
+  const items: McpMessageItem[] = []
+  let offset = 0
+
+  while (items.length < maxMessages) {
+    const result = await executeMcpTool('get_messages', {
+      sessionId,
+      offset,
+      limit,
+      order: 'asc',
+      includeRaw: false,
+      ...(input.startTime ? { startTime: input.startTime } : {}),
+      ...(input.endTime ? { endTime: input.endTime } : {}),
+      ...(input.keyword ? { keyword: input.keyword } : {})
+    })
+    const payload = result.payload as McpMessagesPayload
+    const pageItems = input.senderUsername
+      ? (payload.items || []).filter((message) => message.sender.username === input.senderUsername)
+      : payload.items || []
+    items.push(...pageItems)
+
+    if (!payload.hasMore || (payload.items || []).length === 0) {
+      break
+    }
+
+    offset += limit
+  }
+
+  return items.slice(0, maxMessages)
+}
+
 function buildSummaryFactsText(summaryText?: string, structuredContext?: string): string {
   const parts = [
     stripThinkBlocks(summaryText || '').trim(),
@@ -1145,6 +1284,7 @@ function getRouteLabel(intent: SessionQAIntentType): string {
     time_range: '时间范围',
     participant_focus: '参与者聚焦',
     exact_evidence: '精确证据',
+    media_or_file: '媒体文件',
     broad_summary: '趋势总结',
     stats_or_count: '统计计数',
     unclear: '不明确'
@@ -1201,7 +1341,7 @@ function buildInitialActionQueue(route: IntentRoute, question: string): ToolLoop
     }
   }
 
-  if (route.intent === 'exact_evidence') {
+  if (route.intent === 'exact_evidence' || route.intent === 'media_or_file') {
     if (!actions.some((item) => item.action === 'search_messages') && firstQuery) {
       insertBeforeAnswer({ action: 'search_messages', query: firstQuery, reason: '需要精确证据' })
     }
@@ -1247,7 +1387,7 @@ function buildInitialActionQueue(route: IntentRoute, question: string): ToolLoop
   }
 
   if (actions.length === 0) {
-    if (route.intent === 'exact_evidence' && firstQuery) {
+    if ((route.intent === 'exact_evidence' || route.intent === 'media_or_file') && firstQuery) {
       actions.push({ action: 'search_messages', query: firstQuery, reason: '需要精确证据' })
       actions.push({ action: 'read_context', reason: '读取搜索命中的前后文' })
     } else if (route.intent === 'recent_status') {
@@ -1858,23 +1998,48 @@ export async function answerSessionQuestionWithAgent(
     if (action.action === 'aggregate_messages') {
       toolCallsUsed += 1
       const progressId = `tool-loop-${toolCallsUsed}-aggregate`
-      const messages = dedupeMessagesByCursor(contextWindows.flatMap((window) => window.messages))
+      const inferredRange = route.timeRange || inferTimeRangeFromQuestion(options.question)
+      const senderUsername = resolvedParticipants.find((item) => item.senderUsername)?.senderUsername
+      let messages = dedupeMessagesByCursor(contextWindows.flatMap((window) => window.messages))
 
       emitProgress(options, {
         id: progressId,
         stage: 'tool',
         status: 'running',
         title: '整理统计',
-        detail: action.reason || '对已读取消息做计数、分组和趋势整理',
+        detail: route.intent === 'stats_or_count'
+          ? '正在按完整范围读取并统计消息'
+          : action.reason || '对已读取消息做计数、分组和趋势整理',
         toolName: 'aggregate_messages',
         count: messages.length
       })
+
+      if (route.intent === 'stats_or_count') {
+        try {
+          const directMessages = await loadMessagesByTimeRangeAll(options.sessionId, {
+            startTime: inferredRange?.startTime,
+            endTime: inferredRange?.endTime,
+            senderUsername,
+            maxMessages: 10000
+          })
+          if (directMessages.length > messages.length) {
+            messages = dedupeMessagesByCursor(directMessages)
+          }
+        } catch (error) {
+          observations.push({
+            title: '完整统计读取失败',
+            detail: `回退到已读取上下文统计：${compactText(String(error), 160)}。`
+          })
+        }
+      }
 
       aggregateText = aggregateMessages(messages, action.metric)
       toolCalls.push({
         toolName: 'aggregate_messages',
         args: { metric: action.metric || 'summary', messageCount: messages.length },
-        summary: aggregateText
+        summary: aggregateText,
+        status: messages.length > 0 ? 'completed' : 'failed',
+        evidenceCount: messages.length
       })
 
       emitProgress(options, {
@@ -1909,7 +2074,6 @@ export async function answerSessionQuestionWithAgent(
       searchedQueries.add(queryKey)
       toolCallsUsed += 1
       const progressId = `tool-loop-${toolCallsUsed}-search`
-      await ensureSearchIndexReady()
 
       emitProgress(options, {
         id: progressId,
@@ -1923,6 +2087,7 @@ export async function answerSessionQuestionWithAgent(
 
       try {
         const search = await searchSessionMessages(options.sessionId, query, {
+          sessionName: options.sessionName || options.sessionId,
           semanticQuery: `${query} ${options.question}`,
           startTime: route.timeRange?.startTime,
           endTime: route.timeRange?.endTime,

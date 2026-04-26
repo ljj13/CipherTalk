@@ -738,6 +738,17 @@ export class ChatSearchIndexService {
     }
   }
 
+  getSessionSearchIndexState(sessionId: string): ChatSearchIndexState | null {
+    const db = this.getDb()
+    return this.getSessionState(db, sessionId)
+  }
+
+  ensureSessionIndexedInBackground(sessionId: string): void {
+    void this.ensureSessionIndexed(sessionId).catch((error) => {
+      console.warn('[ChatSearchIndex] 后台搜索索引准备失败:', error)
+    })
+  }
+
   private async yieldToEventLoop(): Promise<void> {
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
   }
@@ -788,7 +799,7 @@ export class ChatSearchIndexService {
     `)
     const upsertVec = db.prepare(`
       INSERT OR REPLACE INTO message_embedding_vec(vector_id, session_key, session_id, vector_model, embedding)
-      VALUES (?, ?, ?, ?, ?)
+      VALUES (CAST(? AS INTEGER), CAST(? AS INTEGER), ?, ?, ?)
     `)
 
     const run = db.transaction((items: Array<Pick<MessageIndexRow, 'id' | 'session_id' | 'search_text'> & { indexed_at?: number }>) => {
@@ -807,7 +818,7 @@ export class ChatSearchIndexService {
         )
         const vectorRow = selectVectorId.get(row.id, profile.id) as { id?: number } | undefined
         if (vectorRow?.id) {
-          upsertVec.run(vectorRow.id, vectorSessionKey(row.session_id), row.session_id, profile.id, float32ArrayToBuffer(vector))
+          upsertVec.run(Number(vectorRow.id), vectorSessionKey(row.session_id), row.session_id, profile.id, float32ArrayToBuffer(vector))
         }
       }
     })
@@ -1545,7 +1556,7 @@ export class ChatSearchIndexService {
     const scanLimit = Math.max(options.limit * VECTOR_SEARCH_OVERFETCH, options.limit + 20)
     const sqlFilters: string[] = [
       'vec.embedding MATCH @queryEmbedding',
-      'vec.session_key = @sessionKey',
+      'vec.session_key = CAST(@sessionKey AS INTEGER)',
       'vec.session_id = @sessionId',
       'vec.vector_model = @vectorModel',
       'k = @scanLimit'

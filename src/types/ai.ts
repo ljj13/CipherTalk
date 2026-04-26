@@ -143,6 +143,8 @@ export interface SessionQAHistoryMessage {
   content: string
 }
 
+export type SessionQARequestId = string
+
 export interface SessionQAToolCall {
   toolName:
     | 'read_summary_facts'
@@ -157,10 +159,14 @@ export interface SessionQAToolCall {
     | 'prepare_vector_index'
   args: Record<string, unknown>
   summary: string
+  status?: 'running' | 'completed' | 'failed' | 'cancelled'
+  durationMs?: number
+  evidenceCount?: number
 }
 
 export type SessionQAProgressStage = 'intent' | 'tool' | 'context' | 'answer'
 export type SessionQAProgressStatus = 'running' | 'completed' | 'failed'
+export type SessionQAProgressSource = 'summary' | 'chat' | 'search_index' | 'vector' | 'aggregate' | 'model'
 
 export interface SessionQAProgressEvent {
   id: string
@@ -172,6 +178,34 @@ export interface SessionQAProgressEvent {
   query?: string
   count?: number
   createdAt: number
+  requestId?: SessionQARequestId
+  source?: SessionQAProgressSource
+  elapsedMs?: number
+}
+
+export type SessionQAJobEventKind = 'progress' | 'chunk' | 'final' | 'error' | 'cancelled'
+
+export interface SessionQAJobEvent {
+  requestId: SessionQARequestId
+  seq: number
+  kind: SessionQAJobEventKind
+  createdAt: number
+  progress?: SessionQAProgressEvent
+  chunk?: string
+  result?: SessionQAResult
+  error?: string
+}
+
+export interface SessionQAStartResult {
+  success: boolean
+  requestId?: SessionQARequestId
+  error?: string
+}
+
+export interface SessionQACancelResult {
+  success: boolean
+  requestId?: SessionQARequestId
+  error?: string
 }
 
 export interface SessionVectorIndexState {

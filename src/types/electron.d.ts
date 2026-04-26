@@ -6,7 +6,10 @@ import type {
   EmbeddingModelProfile,
   EmbeddingModelStatus,
   SessionQAHistoryMessage,
+  SessionQAJobEvent,
   SessionQAProgressEvent,
+  SessionQACancelResult,
+  SessionQAStartResult,
   SessionQAResult,
   SessionVectorIndexProgressEvent,
   SessionVectorIndexState,
@@ -1079,6 +1082,20 @@ export interface ElectronAPI {
       result?: SessionQAResult
       error?: string
     }>
+    startSessionQuestion: (options: {
+      requestId?: string
+      sessionId: string
+      sessionName?: string
+      question: string
+      summaryText?: string
+      structuredAnalysis?: SummaryStructuredAnalysis
+      history?: SessionQAHistoryMessage[]
+      provider: string
+      apiKey: string
+      model: string
+      enableThinking?: boolean
+    }) => Promise<SessionQAStartResult>
+    cancelSessionQuestion: (requestId: string) => Promise<SessionQACancelResult>
     getSessionVectorIndexState: (sessionId: string) => Promise<{
       success: boolean
       result?: SessionVectorIndexState
@@ -1139,6 +1156,7 @@ export interface ElectronAPI {
     onSummaryChunk: (callback: (chunk: string) => void) => () => void
     onSessionQAChunk: (callback: (chunk: string) => void) => () => void
     onSessionQAProgress: (callback: (event: SessionQAProgressEvent) => void) => () => void
+    onSessionQAEvent: (callback: (event: SessionQAJobEvent) => void) => () => void
     onSessionVectorIndexProgress: (callback: (event: SessionVectorIndexProgressEvent) => void) => () => void
     onEmbeddingModelDownloadProgress: (callback: (event: EmbeddingModelDownloadProgress) => void) => () => void
   }
