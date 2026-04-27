@@ -14,7 +14,8 @@ import type {
   SessionQAAgentOptions,
   SessionQAToolCall,
   ToolObservation,
-  TimeRangeHint
+  TimeRangeHint,
+  TokenUsage
 } from './types'
 import type { McpMessageItem, McpSearchMessagesPayload } from '../../mcp/types'
 import type { SummaryEvidenceRef } from '../types/analysis'
@@ -25,8 +26,10 @@ import { stripThinkBlocks } from './utils/text'
 import {
   MAX_TOOL_CALLS,
   MAX_TOOL_DECISION_ATTEMPTS,
-  MAX_SEARCH_RETRIES
+  MAX_SEARCH_RETRIES,
+  DEFAULT_TOKEN_BUDGET
 } from './types'
+import { AgentLogger } from './logger'
 
 /**
  * Agent 运行时上下文
@@ -63,6 +66,14 @@ export class AgentContext {
   decisionAttempts = 0
   searchRetries = 0
 
+  // ─── Token 预算追踪 ───────────────────────────────────────────
+  private decisionTokens = 0
+  private answerTokens = 0
+  private readonly tokenBudget: number
+
+  // ─── 结构化日志 ────────────────────────────────────────────
+  readonly logger: AgentLogger
+
   // ─── 超时与取消 ────────────────────────────────────────────
   readonly startTime = Date.now()
   private readonly abortController: AbortController
@@ -85,6 +96,18 @@ export class AgentContext {
         }, { once: true })
       }
     }
+
+    // Token 预算
+    this.tokenBudget = DEFAULT_TOKEN_BUDGET
+
+    // 结构化日志
+    this.logger = new AgentLogger(options.sessionId)
+    this.logger.lifecycle('问答 Agent 启动', {
+      sessionId: options.sessionId,
+      question: options.question.slice(0, 120),
+      intent: route.intent,
+      model: options.model
+    })
   }
 
   // ─── 取消与超时检查 ─────────────────────────────────────────
@@ -130,7 +153,50 @@ export class AgentContext {
     if (this.isCancelled || this.isTimedOut) return false
     if (this.toolCallsUsed >= MAX_TOOL_CALLS) return false
     if (this.decisionAttempts >= MAX_TOOL_DECISION_ATTEMPTS) return false
+    if (this.isTokenBudgetExceeded) return false
     return true
+  }
+
+  // ─── Token 预算管理 ────────────────────────────────────────
+
+  /**
+   * 简单估算文本的 Token 数
+   * 中文约 1.5 字符 = 1 token，英文约 4 字符 = 1 token
+   */
+  estimateTokens(text: string): number {
+    if (!text) return 0
+    const chineseChars = (text.match(/[\u4e00-\u9fa5]/g) || []).length
+    const otherChars = text.length - chineseChars
+    return Math.ceil(chineseChars / 1.5 + otherChars / 4)
+  }
+
+  /** 记录决策阶段 Token 消耗 */
+  trackDecisionTokens(promptText: string, responseText: string) {
+    const tokens = this.estimateTokens(promptText) + this.estimateTokens(responseText)
+    this.decisionTokens += tokens
+    this.logger.decision(`决策 Token +${tokens}，累计 ${this.decisionTokens}`, { tokens, total: this.decisionTokens })
+  }
+
+  /** 记录回答阶段 Token 消耗 */
+  trackAnswerTokens(promptText: string, responseText: string) {
+    const tokens = this.estimateTokens(promptText) + this.estimateTokens(responseText)
+    this.answerTokens += tokens
+    this.logger.answer(`回答 Token +${tokens}，累计 ${this.answerTokens}`, { tokens, total: this.answerTokens })
+  }
+
+  /** 是否超出 Token 预算 */
+  get isTokenBudgetExceeded(): boolean {
+    return (this.decisionTokens + this.answerTokens) > this.tokenBudget
+  }
+
+  /** 获取 Token 使用统计 */
+  getTokenUsage(): TokenUsage {
+    return {
+      decisionTokens: this.decisionTokens,
+      answerTokens: this.answerTokens,
+      totalTokens: this.decisionTokens + this.answerTokens,
+      budgetExceeded: this.isTokenBudgetExceeded
+    }
   }
 
   // ─── 证据管理 ──────────────────────────────────────────────

@@ -41,6 +41,7 @@ import { loadSessionStatistics, loadKeywordStatistics, loadMessagesByTimeRange, 
 import { resolveParticipantName, findResolvedSenderUsername } from './tools/participant'
 import { aggregateMessages } from './tools/aggregate'
 import { buildAnswerPrompt } from './prompts/answer'
+import { classifyAgentError, shouldRetryToolCall, getRetryDelayMs } from './errors'
 import type { SummaryEvidenceRef } from '../types/analysis'
 
 // ─── 辅助函数 ────────────────────────────────────────────────
@@ -408,7 +409,8 @@ export async function answerSessionQuestionWithAgent(
           emitProgress(options, { id: 'answer', stage: 'answer', status: 'running', title: '生成回答', detail: 'Agent 已决定直接回答' })
           ctx.emitVisibleText(agentDecision.action.content)
           emitProgress(options, { id: 'answer', stage: 'answer', status: 'completed', title: '生成回答', detail: '回答生成完成' })
-          return { answerText: stripThinkBlocks(ctx.answerText), evidenceRefs: dedupeEvidenceRefs(ctx.evidenceCandidates), toolCalls: ctx.toolCalls, promptText: ctx.lastAgentPrompt }
+          ctx.logger.lifecycle('Agent 直接回答完成', { ...ctx.getTokenUsage() })
+          return { answerText: stripThinkBlocks(ctx.answerText), evidenceRefs: dedupeEvidenceRefs(ctx.evidenceCandidates), toolCalls: ctx.toolCalls, promptText: ctx.lastAgentPrompt, tokenUsage: ctx.getTokenUsage() }
         } else {
           ctx.observations.push({ title: '开始回答', detail: agentDecision.action.reason || 'Agent 判断已有可用证据，进入最终回答。' })
           break
@@ -463,7 +465,8 @@ export async function answerSessionQuestionWithAgent(
         ctx.emitVisibleText(`\n\n> ⚠️ ${error.message}，以下为基于已收集证据的部分回答。`)
       } else {
         ctx.emitVisibleText(`\n\n> ⚠️ ${error.message}`)
-        return { answerText: stripThinkBlocks(ctx.answerText), evidenceRefs: dedupeEvidenceRefs(ctx.evidenceCandidates), toolCalls: ctx.toolCalls, promptText: ctx.lastAgentPrompt }
+        ctx.logger.warn('Agent 中断（无证据）', { code: error.code, elapsed: ctx.elapsedMs })
+        return { answerText: stripThinkBlocks(ctx.answerText), evidenceRefs: dedupeEvidenceRefs(ctx.evidenceCandidates), toolCalls: ctx.toolCalls, promptText: ctx.lastAgentPrompt, tokenUsage: ctx.getTokenUsage() }
       }
     } else {
       throw error
@@ -506,13 +509,27 @@ export async function answerSessionQuestionWithAgent(
   })
 
   const finalAnswerText = stripThinkBlocks(ctx.answerText)
+  ctx.trackAnswerTokens(promptText, finalAnswerText)
 
   emitProgress(options, { id: 'answer', stage: 'answer', status: 'completed', title: '生成回答', detail: '回答生成完成' })
+
+  const usage = ctx.getTokenUsage()
+  ctx.logger.lifecycle('问答 Agent 完成', {
+    elapsed: ctx.elapsedMs,
+    toolCalls: ctx.toolCallsUsed,
+    decisionAttempts: ctx.decisionAttempts,
+    evidenceQuality: ctx.evidenceQuality,
+    decisionTokens: usage.decisionTokens,
+    answerTokens: usage.answerTokens,
+    totalTokens: usage.totalTokens,
+    budgetExceeded: usage.budgetExceeded
+  })
 
   return {
     answerText: finalAnswerText,
     evidenceRefs: dedupeEvidenceRefs(ctx.evidenceCandidates),
     toolCalls: ctx.toolCalls,
-    promptText: ctx.lastAgentPrompt ? `${ctx.lastAgentPrompt}\n\n--- final answer prompt ---\n${promptText}` : promptText
+    promptText: ctx.lastAgentPrompt ? `${ctx.lastAgentPrompt}\n\n--- final answer prompt ---\n${promptText}` : promptText,
+    tokenUsage: ctx.getTokenUsage()
   }
 }

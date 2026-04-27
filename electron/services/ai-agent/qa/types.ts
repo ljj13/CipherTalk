@@ -79,6 +79,20 @@ export interface SessionQAAgentResult {
   evidenceRefs: SummaryEvidenceRef[]
   toolCalls: SessionQAToolCall[]
   promptText: string
+  /** Token 使用统计 */
+  tokenUsage: TokenUsage
+}
+
+/** Token 使用统计 */
+export interface TokenUsage {
+  /** 决策阶段估算 token */
+  decisionTokens: number
+  /** 回答阶段估算 token */
+  answerTokens: number
+  /** 总估算 token */
+  totalTokens: number
+  /** 是否触发预算限制 */
+  budgetExceeded: boolean
 }
 
 // ─── 内部类型 ───────────────────────────────────────────────
@@ -197,3 +211,20 @@ export const MAX_AGENT_ANSWER_MAX_TOKENS = 65536
 export const DEFAULT_TIMEOUT_MS = 120_000
 /** 单次工具调用超时：30 秒 */
 export const TOOL_CALL_TIMEOUT_MS = 30_000
+/** 默认 Token 预算上限（决策循环总计） */
+export const DEFAULT_TOKEN_BUDGET = 200_000
+
+// ─── 错误分类 ────────────────────────────────────────────────
+
+/** Agent 错误严重级别 */
+export type AgentErrorSeverity = 'retryable' | 'non_retryable' | 'degraded'
+
+/** 分类后的 Agent 错误 */
+export interface ClassifiedAgentError {
+  severity: AgentErrorSeverity
+  category: 'network' | 'rate_limit' | 'auth' | 'parse' | 'database' | 'timeout' | 'unknown'
+  message: string
+  originalError: unknown
+  shouldRetry: boolean
+  retryDelayMs?: number
+}
