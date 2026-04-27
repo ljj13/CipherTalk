@@ -341,7 +341,8 @@
               animation: spin 1s linear infinite;
             }
 
-            &.vector-index-btn {
+            &.vector-index-btn,
+            &.memory-build-btn {
               position: relative;
 
               &.complete {
@@ -385,6 +386,11 @@
               &.pending .vector-index-badge {
                 background: #d97706;
               }
+            }
+
+            &.memory-build-btn.complete {
+              color: #0891b2;
+              background: rgba(8, 145, 178, 0.12);
             }
           }
 
@@ -1194,7 +1200,8 @@
     }
   }
 
-  .vector-index-btn {
+  .vector-index-btn,
+  .memory-build-btn {
     overflow: visible;
 
     &.complete {
@@ -1235,6 +1242,10 @@
     &.pending .vector-index-badge {
       background: #d97706;
     }
+  }
+
+  .memory-build-btn.complete {
+    color: #0891b2;
   }
 }
 

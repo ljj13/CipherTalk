@@ -10,7 +10,12 @@ import { getImageXorKey, getImageAesKey, getQuoteStyle } from '../services/confi
 import { LRUCache } from '../utils/lruCache'
 import { LivePhotoIcon } from '../components/LivePhotoIcon'
 import type { ChatSession, Message } from '../types/models'
-import type { SessionVectorIndexProgressEvent, SessionVectorIndexState } from '../types/ai'
+import type {
+  SessionMemoryBuildProgressEvent,
+  SessionMemoryBuildState,
+  SessionVectorIndexProgressEvent,
+  SessionVectorIndexState
+} from '../types/ai'
 import { List, RowComponentProps } from 'react-window'
 import './ChatPage.scss'
 
@@ -358,6 +363,9 @@ function ChatPage(_props: ChatPageProps) {
   const [vectorIndexState, setVectorIndexState] = useState<SessionVectorIndexState | null>(null)
   const [vectorIndexProgress, setVectorIndexProgress] = useState<SessionVectorIndexProgressEvent | null>(null)
   const [isPreparingVectorIndex, setIsPreparingVectorIndex] = useState(false)
+  const [memoryBuildState, setMemoryBuildState] = useState<SessionMemoryBuildState | null>(null)
+  const [memoryBuildProgress, setMemoryBuildProgress] = useState<SessionMemoryBuildProgressEvent | null>(null)
+  const [isPreparingMemoryBuild, setIsPreparingMemoryBuild] = useState(false)
 
   const showTopToast = useCallback((text: string, success = true) => {
     setTopToast({ text, success })
@@ -374,6 +382,19 @@ function ChatPage(_props: ChatPageProps) {
       }
     } catch (error) {
       console.error('获取会话向量索引状态失败:', error)
+    }
+  }, [])
+
+  const refreshMemoryBuildState = useCallback(async (sessionId: string) => {
+    try {
+      const result = await window.electronAPI.ai.getSessionMemoryBuildState(sessionId)
+      if (currentSessionIdRef.current !== sessionId) return
+      if (result.success && result.result) {
+        setMemoryBuildState(result.result)
+        setIsPreparingMemoryBuild(result.result.isRunning)
+      }
+    } catch (error) {
+      console.error('获取会话记忆状态失败:', error)
     }
   }, [])
 
@@ -394,6 +415,29 @@ function ChatPage(_props: ChatPageProps) {
       }
     }).catch((error) => {
       if (!cancelled) console.error('加载会话向量索引状态失败:', error)
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentSessionId])
+
+  useEffect(() => {
+    let cancelled = false
+    setMemoryBuildState(null)
+    setMemoryBuildProgress(null)
+    setIsPreparingMemoryBuild(false)
+
+    if (!currentSessionId) return
+
+    window.electronAPI.ai.getSessionMemoryBuildState(currentSessionId).then((result) => {
+      if (cancelled) return
+      if (result.success && result.result) {
+        setMemoryBuildState(result.result)
+        setIsPreparingMemoryBuild(result.result.isRunning)
+      }
+    }).catch((error) => {
+      if (!cancelled) console.error('加载会话记忆状态失败:', error)
     })
 
     return () => {
@@ -447,6 +491,35 @@ function ChatPage(_props: ChatPageProps) {
     })
   }, [refreshVectorIndexState, showTopToast])
 
+  useEffect(() => {
+    return window.electronAPI.ai.onSessionMemoryBuildProgress((event) => {
+      const activeSessionId = currentSessionIdRef.current
+      if (!event || !activeSessionId || event.sessionId !== activeSessionId) return
+
+      setMemoryBuildProgress(event)
+      setIsPreparingMemoryBuild(event.status === 'running')
+      setMemoryBuildState((prev) => ({
+        sessionId: event.sessionId,
+        messageCount: event.messageCount,
+        blockCount: event.blockCount,
+        factCount: event.factCount,
+        totalCount: event.totalCount || prev?.totalCount || 0,
+        processedCount: event.processedCount,
+        isRunning: event.status === 'running',
+        updatedAt: Date.now(),
+        completedAt: event.status === 'completed' ? Date.now() : prev?.completedAt,
+        lastError: event.status === 'failed' ? event.message : prev?.lastError
+      }))
+
+      if (event.status === 'completed') {
+        void refreshMemoryBuildState(event.sessionId)
+      } else if (event.status === 'failed') {
+        showTopToast(event.message || '会话记忆构建失败', false)
+        void refreshMemoryBuildState(event.sessionId)
+      }
+    })
+  }, [refreshMemoryBuildState, showTopToast])
+
   const vectorIndexTotal = vectorIndexProgress?.totalCount || vectorIndexState?.indexedCount || 0
   const vectorIndexDone = vectorIndexProgress?.processedCount ?? vectorIndexState?.vectorizedCount ?? 0
   const vectorIndexPercent = vectorIndexTotal > 0
@@ -468,6 +541,23 @@ function ChatPage(_props: ChatPageProps) {
         : hasPendingVectorMessages
           ? `增量向量化：待处理 ${vectorIndexState?.pendingCount || 0} 条`
           : '增量向量化当前聊天'
+
+  const memoryBuildTotal = memoryBuildProgress?.totalCount || memoryBuildState?.totalCount || 0
+  const memoryBuildDone = memoryBuildProgress?.processedCount ?? memoryBuildState?.processedCount ?? 0
+  const memoryBuildPercent = memoryBuildTotal > 0
+    ? Math.min(100, Math.max(0, Math.round((memoryBuildDone / memoryBuildTotal) * 100)))
+    : memoryBuildState && memoryBuildState.totalCount > 0 ? 100 : 0
+  const memoryBuildCount = (memoryBuildState?.messageCount || 0) + (memoryBuildState?.blockCount || 0) + (memoryBuildState?.factCount || 0)
+  const memoryBuildBadgeLabel = isPreparingMemoryBuild
+    ? `${memoryBuildPercent}%`
+    : memoryBuildCount > 0
+      ? memoryBuildCount > 99 ? '99+' : String(memoryBuildCount)
+      : ''
+  const memoryButtonTitle = isPreparingMemoryBuild
+    ? `正在构建会话记忆：${memoryBuildProgress?.message || `${memoryBuildDone}/${memoryBuildTotal}`}`
+    : memoryBuildCount > 0
+      ? `重建会话记忆：消息 ${memoryBuildState?.messageCount || 0}，片段 ${memoryBuildState?.blockCount || 0}，事实 ${memoryBuildState?.factCount || 0}`
+      : '构建当前聊天三层记忆'
 
   const handleVectorIndexClick = useCallback(async () => {
     if (!currentSessionId) return
@@ -551,6 +641,50 @@ function ChatPage(_props: ChatPageProps) {
     vectorIndexState?.indexedCount,
     vectorIndexState?.vectorizedCount,
     vectorIndexState?.vectorModel
+  ])
+
+  const handleMemoryBuildClick = useCallback(async () => {
+    if (!currentSessionId || isPreparingMemoryBuild) return
+
+    setIsPreparingMemoryBuild(true)
+    setMemoryBuildProgress({
+      sessionId: currentSessionId,
+      stage: 'preparing',
+      status: 'running',
+      processedCount: memoryBuildState?.processedCount || 0,
+      totalCount: memoryBuildState?.totalCount || 0,
+      message: '正在准备会话记忆构建',
+      messageCount: memoryBuildState?.messageCount || 0,
+      blockCount: memoryBuildState?.blockCount || 0,
+      factCount: memoryBuildState?.factCount || 0
+    })
+
+    try {
+      const result = await window.electronAPI.ai.prepareSessionMemory({ sessionId: currentSessionId })
+      if (currentSessionIdRef.current !== currentSessionId) return
+      if (result.success && result.result) {
+        setMemoryBuildState(result.result)
+        setIsPreparingMemoryBuild(result.result.isRunning)
+        setMemoryBuildProgress(null)
+        showTopToast(`会话记忆已构建：${result.result.totalCount} 条`, true)
+      } else {
+        setIsPreparingMemoryBuild(false)
+        showTopToast(result.error || '会话记忆构建失败', false)
+      }
+    } catch (error) {
+      if (currentSessionIdRef.current !== currentSessionId) return
+      setIsPreparingMemoryBuild(false)
+      showTopToast(`会话记忆构建失败: ${String(error)}`, false)
+    }
+  }, [
+    currentSessionId,
+    isPreparingMemoryBuild,
+    memoryBuildState?.blockCount,
+    memoryBuildState?.factCount,
+    memoryBuildState?.messageCount,
+    memoryBuildState?.processedCount,
+    memoryBuildState?.totalCount,
+    showTopToast
   ])
 
   useEffect(() => {
@@ -1999,6 +2133,22 @@ function ChatPage(_props: ChatPageProps) {
                   )}
                   {vectorIndexBadgeLabel && (
                     <span className="vector-index-badge">{vectorIndexBadgeLabel}</span>
+                  )}
+                </button>
+                <button
+                  className={`icon-btn memory-build-btn ${isPreparingMemoryBuild ? 'running active' : ''} ${memoryBuildCount > 0 ? 'complete' : ''}`}
+                  onClick={handleMemoryBuildClick}
+                  disabled={!currentSessionId || isPreparingMemoryBuild}
+                  title={memoryButtonTitle}
+                  aria-label="构建当前聊天三层记忆"
+                >
+                  {isPreparingMemoryBuild ? (
+                    <Radar size={18} className="vector-index-radar" />
+                  ) : (
+                    <Database size={18} />
+                  )}
+                  {memoryBuildBadgeLabel && (
+                    <span className="vector-index-badge">{memoryBuildBadgeLabel}</span>
                   )}
                 </button>
                 {!isGroupChat(currentSession.username) && (

@@ -13,6 +13,8 @@ import type {
   SessionQACancelResult,
   SessionQAStartResult,
   SessionQAResult,
+  SessionMemoryBuildProgressEvent,
+  SessionMemoryBuildState,
   SessionVectorIndexProgressEvent,
   SessionVectorIndexState,
   SummaryResult,
@@ -1137,6 +1139,16 @@ export interface ElectronAPI {
       result?: SessionVectorIndexState
       error?: string
     }>
+    getSessionMemoryBuildState: (sessionId: string) => Promise<{
+      success: boolean
+      result?: SessionMemoryBuildState
+      error?: string
+    }>
+    prepareSessionMemory: (options: { sessionId: string }) => Promise<{
+      success: boolean
+      result?: SessionMemoryBuildState
+      error?: string
+    }>
     getEmbeddingModelProfiles: () => Promise<{
       success: boolean
       result?: EmbeddingModelProfile[]
@@ -1185,6 +1197,7 @@ export interface ElectronAPI {
     onSessionQAEvent: (callback: (event: SessionQAJobEvent) => void) => () => void
     onSessionQAConversationUpdated: (callback: (event: SessionQAConversationDetail) => void) => () => void
     onSessionVectorIndexProgress: (callback: (event: SessionVectorIndexProgressEvent) => void) => () => void
+    onSessionMemoryBuildProgress: (callback: (event: SessionMemoryBuildProgressEvent) => void) => () => void
     onEmbeddingModelDownloadProgress: (callback: (event: EmbeddingModelDownloadProgress) => void) => () => void
   }
 

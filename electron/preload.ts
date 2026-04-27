@@ -44,6 +44,18 @@ type SessionVectorIndexProgressEvent = {
   vectorModel: string
 }
 
+type SessionMemoryBuildProgressEvent = {
+  sessionId: string
+  stage: string
+  status: string
+  processedCount: number
+  totalCount: number
+  message: string
+  messageCount: number
+  blockCount: number
+  factCount: number
+}
+
 type EmbeddingModelDownloadProgress = {
   profileId: string
   displayName: string
@@ -603,6 +615,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getSessionVectorIndexState: (sessionId: string) => ipcRenderer.invoke('ai:getSessionVectorIndexState', sessionId),
     prepareSessionVectorIndex: (options: { sessionId: string }) => ipcRenderer.invoke('ai:prepareSessionVectorIndex', options),
     cancelSessionVectorIndex: (sessionId: string) => ipcRenderer.invoke('ai:cancelSessionVectorIndex', sessionId),
+    getSessionMemoryBuildState: (sessionId: string) => ipcRenderer.invoke('ai:getSessionMemoryBuildState', sessionId),
+    prepareSessionMemory: (options: { sessionId: string }) => ipcRenderer.invoke('ai:prepareSessionMemory', options),
     getEmbeddingModelProfiles: () => ipcRenderer.invoke('ai:getEmbeddingModelProfiles'),
     setEmbeddingModelProfile: (profileId: string) => ipcRenderer.invoke('ai:setEmbeddingModelProfile', profileId),
     getEmbeddingDeviceStatus: () => ipcRenderer.invoke('ai:getEmbeddingDeviceStatus'),
@@ -636,6 +650,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     onSessionVectorIndexProgress: (callback: (event: SessionVectorIndexProgressEvent) => void) => {
       ipcRenderer.on('ai:sessionVectorIndexProgress', (_, event) => callback(event))
       return () => ipcRenderer.removeAllListeners('ai:sessionVectorIndexProgress')
+    },
+    onSessionMemoryBuildProgress: (callback: (event: SessionMemoryBuildProgressEvent) => void) => {
+      ipcRenderer.on('ai:sessionMemoryBuildProgress', (_, event) => callback(event))
+      return () => ipcRenderer.removeAllListeners('ai:sessionMemoryBuildProgress')
     },
     onEmbeddingModelDownloadProgress: (callback: (event: EmbeddingModelDownloadProgress) => void) => {
       ipcRenderer.on('ai:embeddingModelDownloadProgress', (_, event) => callback(event))

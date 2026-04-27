@@ -288,6 +288,44 @@ export interface SessionVectorIndexProgressEvent {
   vectorModel: string
 }
 
+export type SessionMemoryBuildProgressStage =
+  | 'preparing'
+  | 'indexing_messages'
+  | 'building_messages'
+  | 'building_blocks'
+  | 'building_facts'
+  | 'completed'
+
+export type SessionMemoryBuildProgressStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+
+export interface SessionMemoryBuildState {
+  sessionId: string
+  messageCount: number
+  blockCount: number
+  factCount: number
+  totalCount: number
+  processedCount: number
+  isRunning: boolean
+  updatedAt: number
+  completedAt?: number
+  lastError?: string
+}
+
+export interface SessionMemoryBuildProgressEvent {
+  sessionId: string
+  stage: SessionMemoryBuildProgressStage
+  status: SessionMemoryBuildProgressStatus
+  processedCount: number
+  totalCount: number
+  message: string
+  messageCount: number
+  blockCount: number
+  factCount: number
+}
+
 export interface EmbeddingModelProfile {
   id: string
   displayName: string

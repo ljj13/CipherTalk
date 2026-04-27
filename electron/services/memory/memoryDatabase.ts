@@ -20,6 +20,22 @@ import {
   type MemoryVectorStoreName
 } from './memorySchema'
 
+export type MemoryKeywordSearchOptions = {
+  query: string
+  sessionId?: string
+  sourceTypes?: MemorySourceType[]
+  startTimeMs?: number
+  endTimeMs?: number
+  limit?: number
+}
+
+export type MemoryKeywordSearchHit = {
+  item: MemoryItem
+  rank: number
+  score: number
+  retrievalSource: 'memory_fts' | 'memory_like'
+}
+
 function nowMs(): number {
   return Date.now()
 }
@@ -99,6 +115,67 @@ function parseEvidenceRefsJson(value: string): MemoryEvidenceRef[] {
   } catch {
     return []
   }
+}
+
+function toTimestampSeconds(value?: number): number | null {
+  if (!Number.isFinite(Number(value)) || Number(value) <= 0) return null
+  const numberValue = Number(value)
+  return numberValue > 10_000_000_000 ? Math.floor(numberValue / 1000) : Math.floor(numberValue)
+}
+
+function escapeFtsPhrase(value: string): string {
+  return `"${String(value || '').replace(/"/g, '""')}"`
+}
+
+function buildMemoryFtsQuery(query: string): string {
+  const normalized = String(query || '')
+    .replace(/[\u200b-\u200f\ufeff]/g, '')
+    .replace(/[，。！？；：、“”‘’（）()[\]{}<>《》|\\/+=*_~`#$%^&-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!normalized) return ''
+
+  const terms = normalized
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean)
+  return terms.length > 1
+    ? terms.map(escapeFtsPhrase).join(' AND ')
+    : escapeFtsPhrase(normalized)
+}
+
+function buildMemoryFilterSql(
+  options: Pick<MemoryKeywordSearchOptions, 'sessionId' | 'sourceTypes' | 'startTimeMs' | 'endTimeMs'>,
+  params: Record<string, unknown>
+): string {
+  const clauses: string[] = []
+  if (options.sessionId) {
+    clauses.push('m.session_id = @sessionId')
+    params.sessionId = options.sessionId
+  }
+
+  const sourceTypes = Array.from(new Set((options.sourceTypes || []).filter((type) => MEMORY_SOURCE_TYPES.includes(type))))
+  if (sourceTypes.length > 0) {
+    const placeholders = sourceTypes.map((_, index) => `@sourceType${index}`)
+    sourceTypes.forEach((sourceType, index) => {
+      params[`sourceType${index}`] = sourceType
+    })
+    clauses.push(`m.source_type IN (${placeholders.join(', ')})`)
+  }
+
+  const startTime = toTimestampSeconds(options.startTimeMs)
+  if (startTime) {
+    clauses.push('COALESCE(m.time_end, m.time_start, 0) >= @startTime')
+    params.startTime = startTime
+  }
+
+  const endTime = toTimestampSeconds(options.endTimeMs)
+  if (endTime) {
+    clauses.push('COALESCE(m.time_start, m.time_end, 0) <= @endTime')
+    params.endTime = endTime
+  }
+
+  return clauses.length ? `AND ${clauses.join(' AND ')}` : ''
 }
 
 function safeSourceType(value: string): MemorySourceType {
@@ -265,10 +342,53 @@ export class MemoryDatabase {
         ON memory_embeddings(vector_store, vector_ref);
     `)
 
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS memory_items_fts USING fts5(
+        title,
+        content,
+        entities,
+        tags,
+        tokenize = 'unicode61 remove_diacritics 2'
+      );
+    `)
+    this.syncMemoryFtsIndex(db)
+
     db.prepare(`
       INSERT OR REPLACE INTO memory_meta(key, value, updated_at)
       VALUES ('schema_version', ?, ?)
     `).run(MEMORY_SCHEMA_VERSION, nowMs())
+  }
+
+  private syncMemoryFtsIndex(db: Database.Database): void {
+    const row = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM memory_items m
+      LEFT JOIN memory_items_fts f ON f.rowid = m.id
+      WHERE f.rowid IS NULL
+    `).get() as { count: number } | undefined
+    if (!Number(row?.count || 0)) return
+
+    db.prepare(`
+      INSERT INTO memory_items_fts(rowid, title, content, entities, tags)
+      SELECT id, title, content, entities_json, tags_json
+      FROM memory_items
+      WHERE id NOT IN (SELECT rowid FROM memory_items_fts)
+    `).run()
+  }
+
+  private upsertMemoryFtsRow(item: MemoryItem): void {
+    const db = this.getDb()
+    db.prepare('DELETE FROM memory_items_fts WHERE rowid = ?').run(item.id)
+    db.prepare(`
+      INSERT INTO memory_items_fts(rowid, title, content, entities, tags)
+      VALUES (@id, @title, @content, @entities, @tags)
+    `).run({
+      id: item.id,
+      title: item.title,
+      content: item.content,
+      entities: safeJsonStringify(item.entities || [], []),
+      tags: safeJsonStringify(item.tags || [], [])
+    })
   }
 
   upsertMemoryItem(input: MemoryItemInput): MemoryItem {
@@ -338,6 +458,7 @@ export class MemoryDatabase {
 
     const item = this.getMemoryItemByUid(memoryUid)
     if (!item) throw new Error('Failed to load upserted memory item')
+    this.upsertMemoryFtsRow(item)
     return item
   }
 
@@ -408,8 +529,80 @@ export class MemoryDatabase {
     return Number(row?.count || 0)
   }
 
+  searchMemoryItemsByKeyword(options: MemoryKeywordSearchOptions): MemoryKeywordSearchHit[] {
+    const query = String(options.query || '').trim()
+    if (!query) return []
+
+    const db = this.getDb()
+    const limit = Math.max(1, Math.min(Math.floor(options.limit || 80), 500))
+    const rowsById = new Map<number, MemoryKeywordSearchHit>()
+    const params: Record<string, unknown> = { limit }
+    const filterSql = buildMemoryFilterSql(options, params)
+    const ftsQuery = buildMemoryFtsQuery(query)
+
+    if (ftsQuery) {
+      const ftsRows = db.prepare(`
+        SELECT m.*, bm25(memory_items_fts) AS fts_rank
+        FROM memory_items_fts
+        JOIN memory_items m ON m.id = memory_items_fts.rowid
+        WHERE memory_items_fts MATCH @ftsQuery
+          ${filterSql}
+        ORDER BY fts_rank ASC, COALESCE(m.time_end, m.time_start, m.updated_at) DESC, m.id DESC
+        LIMIT @limit
+      `).all({
+        ...params,
+        ftsQuery
+      }) as Array<MemoryItemRow & { fts_rank: number }>
+
+      ftsRows.forEach((row, index) => {
+        rowsById.set(Number(row.id), {
+          item: toMemoryItem(row),
+          rank: index + 1,
+          score: Number((1000 + Math.max(0, 100 - Number(row.fts_rank || 0))).toFixed(4)),
+          retrievalSource: 'memory_fts'
+        })
+      })
+    }
+
+    const likeParams: Record<string, unknown> = { ...params, likeQuery: `%${query}%` }
+    const likeFilterSql = buildMemoryFilterSql(options, likeParams)
+    const likeRows = db.prepare(`
+      SELECT m.*
+      FROM memory_items m
+      WHERE (
+        m.title LIKE @likeQuery
+        OR m.content LIKE @likeQuery
+        OR m.entities_json LIKE @likeQuery
+        OR m.tags_json LIKE @likeQuery
+      )
+        ${likeFilterSql}
+      ORDER BY COALESCE(m.time_end, m.time_start, m.updated_at) DESC, m.id DESC
+      LIMIT @limit
+    `).all(likeParams) as MemoryItemRow[]
+
+    let likeRank = 1
+    for (const row of likeRows) {
+      const id = Number(row.id)
+      if (rowsById.has(id)) continue
+      rowsById.set(id, {
+        item: toMemoryItem(row),
+        rank: likeRank,
+        score: 500,
+        retrievalSource: 'memory_like'
+      })
+      likeRank += 1
+    }
+
+    return Array.from(rowsById.values())
+      .sort((a, b) => b.score - a.score || b.item.importance - a.item.importance || b.item.updatedAt - a.item.updatedAt)
+      .slice(0, limit)
+      .map((hit, index) => ({ ...hit, rank: index + 1 }))
+  }
+
   deleteMemoryItem(id: number): boolean {
-    const result = this.getDb().prepare('DELETE FROM memory_items WHERE id = ?').run(id)
+    const db = this.getDb()
+    db.prepare('DELETE FROM memory_items_fts WHERE rowid = ?').run(id)
+    const result = db.prepare('DELETE FROM memory_items WHERE id = ?').run(id)
     return result.changes > 0
   }
 

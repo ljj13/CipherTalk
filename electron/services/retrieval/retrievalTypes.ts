@@ -1,3 +1,75 @@
+import type { Message } from '../chatService'
+import type { MemoryEvidenceRef, MemoryItem, MemorySourceType } from '../memory/memorySchema'
+
+export type RetrievalSourceName = 'memory_fts' | 'memory_like' | 'message_ann'
+
+export type RetrievalEngineOptions = {
+  query: string
+  semanticQuery?: string
+  keywordQueries?: string[]
+  semanticQueries?: string[]
+  sessionId?: string
+  sourceTypes?: MemorySourceType[]
+  startTimeMs?: number
+  endTimeMs?: number
+  direction?: 'in' | 'out'
+  senderUsername?: string
+  limit?: number
+  keywordLimit?: number
+  annLimit?: number
+  rrfK?: number
+  rerank?: boolean
+  rerankLimit?: number
+  expandEvidence?: boolean
+}
+
+export type RetrievalCandidate = {
+  key: string
+  memory: MemoryItem
+  sources: RetrievalSourceName[]
+  sourceRanks: Partial<Record<RetrievalSourceName, number>>
+  sourceScores: Partial<Record<RetrievalSourceName, number>>
+  rrfScore: number
+}
+
+export type RetrievalExpandedEvidence = {
+  ref: MemoryEvidenceRef
+  before: Message[]
+  anchor: Message | null
+  after: Message[]
+}
+
+export type RetrievalHit = RetrievalCandidate & {
+  rank: number
+  score: number
+  rerankScore?: number
+  evidence: RetrievalExpandedEvidence[]
+}
+
+export type RetrievalSourceStats = {
+  name: RetrievalSourceName
+  attempted: boolean
+  hitCount: number
+  skippedReason?: string
+  error?: string
+}
+
+export type RetrievalRerankStats = {
+  attempted: boolean
+  applied: boolean
+  skippedReason?: string
+  error?: string
+}
+
+export type RetrievalEngineResult = {
+  query: string
+  semanticQuery: string
+  hits: RetrievalHit[]
+  sourceStats: RetrievalSourceStats[]
+  rerank: RetrievalRerankStats
+  latencyMs: number
+}
+
 export type RetrievalEvalEvidenceRef = {
   localId: number
   createTime: number
