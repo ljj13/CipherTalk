@@ -4435,6 +4435,21 @@ function registerIpcHandlers() {
     }
   })
 
+  ipcMain.handle('ai:setEmbeddingVectorDim', async (_, profileId: string, dim: number) => {
+    try {
+      const { localEmbeddingModelService } = await import('./services/search/embeddingModelService')
+      const result = localEmbeddingModelService.setVectorDim(profileId, dim)
+      return {
+        success: true,
+        result,
+        vectorModelId: localEmbeddingModelService.getVectorModelId(profileId)
+      }
+    } catch (e) {
+      console.error('[AI] 设置语义向量维度失败:', e)
+      return { success: false, error: String(e) }
+    }
+  })
+
   ipcMain.handle('ai:getEmbeddingDeviceStatus', async () => {
     try {
       const { localEmbeddingModelService } = await import('./services/search/embeddingModelService')

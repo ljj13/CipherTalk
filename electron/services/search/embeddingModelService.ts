@@ -25,6 +25,11 @@ export type EmbeddingModelStatus = {
   displayName: string
   modelId: string
   dim: number
+  baseDim: number
+  supportedDims: number[]
+  vectorModelId: string
+  performanceTier: string
+  performanceLabel: string
   dtype: string
   sizeLabel: string
   enabled: boolean
@@ -53,12 +58,16 @@ export type EmbeddingModelProfile = {
   remotePathTemplate: string
   revision: string
   dim: number
+  baseDim: number
+  supportedDims: number[]
   maxTokens: number
   maxTextChars: number
   dtype: 'q8' | 'fp32'
   pooling: 'mean' | 'last_token'
   queryInstruction?: string
   sizeLabel: string
+  performanceTier: 'fast' | 'balanced' | 'quality' | 'heavy'
+  performanceLabel: string
   enabled: boolean
 }
 
@@ -75,18 +84,22 @@ const EMBEDDING_MODEL_PROFILES: EmbeddingModelProfile[] = [
   {
     id: 'qwen3-embedding-0.6b-onnx-q8',
     displayName: 'Qwen3 Embedding 0.6B · 新一代',
-    description: '1024 维多语言语义向量，支持 query instruction，作为新记忆检索体系主模型路线。',
+    description: '1024/768/512/256 维多语言语义向量，支持 query instruction，作为新记忆检索体系主模型路线。',
     modelId: 'onnx-community/Qwen3-Embedding-0.6B-ONNX',
     remoteHosts: [HUGGINGFACE_HOST],
     remotePathTemplate: HUGGINGFACE_PATH_TEMPLATE,
     revision: 'main',
     dim: 1024,
+    baseDim: 1024,
+    supportedDims: [1024, 768, 512, 256],
     maxTokens: 8192,
     maxTextChars: 2400,
     dtype: 'q8',
     pooling: 'last_token',
     queryInstruction: 'Given a chat history search query, retrieve relevant conversation messages that answer the query',
     sizeLabel: '约 614 MB',
+    performanceTier: 'quality',
+    performanceLabel: '高召回',
     enabled: true
   },
   {
@@ -98,11 +111,15 @@ const EMBEDDING_MODEL_PROFILES: EmbeddingModelProfile[] = [
     remotePathTemplate: MODELSCOPE_PATH_TEMPLATE,
     revision: MODELSCOPE_REVISION,
     dim: 1024,
+    baseDim: 1024,
+    supportedDims: [1024],
     maxTokens: 512,
     maxTextChars: 480,
     dtype: 'q8',
     pooling: 'mean',
     sizeLabel: '约 330 MB',
+    performanceTier: 'balanced',
+    performanceLabel: '均衡',
     enabled: true
   },
   {
@@ -114,11 +131,15 @@ const EMBEDDING_MODEL_PROFILES: EmbeddingModelProfile[] = [
     remotePathTemplate: MODELSCOPE_PATH_TEMPLATE,
     revision: MODELSCOPE_REVISION,
     dim: 1024,
+    baseDim: 1024,
+    supportedDims: [1024],
     maxTokens: 512,
     maxTextChars: 480,
     dtype: 'fp32',
     pooling: 'mean',
     sizeLabel: '约 1.2 GB',
+    performanceTier: 'heavy',
+    performanceLabel: '高质量',
     enabled: true
   },
   {
@@ -130,11 +151,15 @@ const EMBEDDING_MODEL_PROFILES: EmbeddingModelProfile[] = [
     remotePathTemplate: MODELSCOPE_PATH_TEMPLATE,
     revision: MODELSCOPE_REVISION,
     dim: 1024,
+    baseDim: 1024,
+    supportedDims: [1024],
     maxTokens: 8192,
     maxTextChars: 2400,
     dtype: 'q8',
     pooling: 'mean',
     sizeLabel: '约 600 MB',
+    performanceTier: 'quality',
+    performanceLabel: '长文本',
     enabled: true
   }
 ]
@@ -143,6 +168,15 @@ function safeProfileId(value: unknown): EmbeddingModelProfileId {
   const id = String(value || '').trim() as EmbeddingModelProfileId
   const profile = EMBEDDING_MODEL_PROFILES.find((item) => item.id === id && item.enabled)
   return profile?.id || DEFAULT_EMBEDDING_MODEL_PROFILE
+}
+
+function getProfileBase(profileId: string): EmbeddingModelProfile {
+  return EMBEDDING_MODEL_PROFILES.find((profile) => profile.id === safeProfileId(profileId))!
+}
+
+function safeVectorDim(profile: EmbeddingModelProfile, value: unknown): number {
+  const dim = Math.floor(Number(value) || 0)
+  return profile.supportedDims.includes(dim) ? dim : profile.dim
 }
 
 function safeEmbeddingDevice(value: unknown): EmbeddingDevice {
@@ -289,6 +323,16 @@ function normalizeVector(vector: Float32Array): Float32Array {
   return vector
 }
 
+function resizeVector(vector: Float32Array, targetDim: number): Float32Array {
+  const dim = Math.floor(Number(targetDim) || 0)
+  if (!Number.isInteger(dim) || dim <= 0 || dim === vector.length) return vector
+  if (dim > vector.length) {
+    throw new Error(`Embedding 输出维度不足：${vector.length}/${dim}`)
+  }
+
+  return normalizeVector(Float32Array.from(vector.slice(0, dim)))
+}
+
 export function hashEmbeddingContent(value: string): string {
   return createHash('sha256').update(value || '').digest('hex')
 }
@@ -378,12 +422,51 @@ export class LocalEmbeddingModelService {
   private dmlFailureReason: string | null = null
 
   listProfiles(): EmbeddingModelProfile[] {
-    return EMBEDDING_MODEL_PROFILES.map((profile) => ({ ...profile }))
+    return EMBEDDING_MODEL_PROFILES.map((profile) => this.withConfiguredDim(profile))
   }
 
   getProfile(profileId?: string): EmbeddingModelProfile {
     const id = safeProfileId(profileId || this.getCurrentProfileId())
-    return EMBEDDING_MODEL_PROFILES.find((profile) => profile.id === id)!
+    return this.withConfiguredDim(getProfileBase(id))
+  }
+
+  private withConfiguredDim(profile: EmbeddingModelProfile): EmbeddingModelProfile {
+    const configService = new ConfigService()
+    try {
+      const configured = configService.get('aiEmbeddingVectorDims' as any) as Record<string, unknown> | undefined
+      const dim = safeVectorDim(profile, configured?.[profile.id])
+      return { ...profile, dim }
+    } catch {
+      return { ...profile, dim: profile.dim }
+    } finally {
+      configService.close()
+    }
+  }
+
+  getVectorModelId(profileId?: string): string {
+    const profile = this.getProfile(profileId)
+    return profile.dim === profile.baseDim ? profile.id : `${profile.id}@${profile.dim}d`
+  }
+
+  getCurrentVectorDim(profileId?: string): number {
+    return this.getProfile(profileId).dim
+  }
+
+  setVectorDim(profileId: string, dim: number): number {
+    const profile = getProfileBase(profileId)
+    const nextDim = safeVectorDim(profile, dim)
+    const configService = new ConfigService()
+    try {
+      const stored = configService.get('aiEmbeddingVectorDims' as any) as Record<string, unknown> | undefined
+      const next = {
+        ...(stored && typeof stored === 'object' && !Array.isArray(stored) ? stored : {}),
+        [profile.id]: nextDim
+      }
+      configService.set('aiEmbeddingVectorDims' as any, next as any)
+      return nextDim
+    } finally {
+      configService.close()
+    }
   }
 
   getCurrentProfileId(): EmbeddingModelProfileId {
@@ -491,6 +574,11 @@ export class LocalEmbeddingModelService {
       displayName: profile.displayName,
       modelId: profile.modelId,
       dim: profile.dim,
+      baseDim: profile.baseDim,
+      supportedDims: profile.supportedDims,
+      vectorModelId: this.getVectorModelId(profile.id),
+      performanceTier: profile.performanceTier,
+      performanceLabel: profile.performanceLabel,
       dtype: profile.dtype,
       sizeLabel: profile.sizeLabel,
       enabled: profile.enabled,
@@ -585,9 +673,10 @@ export class LocalEmbeddingModelService {
       max_length: profile.maxTokens
     })
     const output = await runtime.model(modelInputs)
-    return profile.pooling === 'last_token'
+    const vectors = profile.pooling === 'last_token'
       ? lastTokenPoolNormalize(output, modelInputs.attention_mask, texts.length)
       : meanPoolNormalize(output, modelInputs.attention_mask, texts.length)
+    return vectors.map((vector) => resizeVector(vector, profile.dim))
   }
 
   private async getPipeline(

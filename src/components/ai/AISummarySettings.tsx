@@ -363,6 +363,27 @@ function AISummarySettings({
     showMessage('语义模型设置已保存', true)
   }
 
+  const handleEmbeddingDimChange = async (dim: string | number) => {
+    if (!embeddingProfile) return
+    const nextDim = Number(dim)
+    if (!Number.isInteger(nextDim) || !embeddingProfile.supportedDims.includes(nextDim)) return
+
+    const result = await window.electronAPI.ai.setEmbeddingVectorDim(embeddingProfile.id, nextDim)
+    if (!result.success || !result.result) {
+      showMessage(result.error || '语义向量维度设置失败', false)
+      return
+    }
+
+    setEmbeddingProfiles((profiles) => profiles.map((profile) => (
+      profile.id === embeddingProfile.id ? { ...profile, dim: result.result || nextDim } : profile
+    )))
+    setEmbeddingStatus((status) => status && status.profileId === embeddingProfile.id
+      ? { ...status, dim: result.result || nextDim, vectorModelId: result.vectorModelId || status.vectorModelId }
+      : status)
+    await loadEmbeddingStatus(embeddingProfile.id)
+    showMessage(`语义向量维度已切换为 ${result.result || nextDim} 维，后续索引会按新维度重建`, true)
+  }
+
   const handleDownloadEmbeddingModel = async () => {
     if (!embeddingProfileId || isDownloadingEmbedding) return
     setIsDownloadingEmbedding(true)
@@ -646,6 +667,16 @@ function AISummarySettings({
   const embeddingProgressPercent = embeddingProgress?.percent
     ?? (embeddingProgress?.total ? Math.round(((embeddingProgress.loaded || 0) / embeddingProgress.total) * 100) : 0)
   const embeddingProfile = embeddingProfiles.find(item => item.id === embeddingProfileId)
+  const embeddingDimOptions = (embeddingProfile?.supportedDims || [embeddingProfile?.dim || 1024])
+    .map((dim) => ({ value: dim, label: `${dim} 维` }))
+  const embeddingPerformanceClass = embeddingProfile?.performanceTier || embeddingStatus?.performanceTier || 'balanced'
+  const embeddingPerformanceLabel = embeddingProfile?.performanceLabel || embeddingStatus?.performanceLabel || '均衡'
+  const embeddingDeviceLabel = embeddingDeviceStatus
+    ? `${embeddingDeviceStatus.provider}${embeddingDeviceStatus.effectiveDevice !== embeddingDeviceStatus.currentDevice ? ' 回退' : ''}`
+    : (embeddingDevice === 'dml' ? 'DirectML' : 'CPU')
+  const embeddingVolumeLabel = embeddingStatus?.exists
+    ? formatBytes(embeddingStatus.sizeBytes)
+    : (embeddingProfile?.sizeLabel || embeddingStatus?.sizeLabel || '未知')
   const timeRangeOptions = [
     { value: 1, label: '最近 1 天' },
     { value: 3, label: '最近 3 天' },
@@ -889,12 +920,31 @@ function AISummarySettings({
                 <span className="model-name">{profile.displayName}</span>
                 <span className="model-size">{profile.sizeLabel}</span>
               </div>
+              <div className="semantic-model-meta">
+                <span>{profile.dim} 维</span>
+                <span>{profile.dtype.toUpperCase()}</span>
+                <span>{profile.performanceLabel}</span>
+              </div>
               <span className="model-desc">{profile.enabled ? profile.description : '即将支持'}</span>
             </div>
             {embeddingProfileId === profile.id && <div className="model-check"><Check size={14} /></div>}
           </label>
         ))}
       </div>
+
+      {embeddingProfile && embeddingDimOptions.length > 1 && (
+        <div className="form-group semantic-vector-dim">
+          <label>向量维度</label>
+          <CustomSelect
+            value={embeddingProfile.dim}
+            onChange={handleEmbeddingDimChange}
+            options={embeddingDimOptions}
+          />
+          <div className="form-hint">
+            低维度会减少索引体积和计算开销；切换后当前语义索引会在下次向量化时按新维度重建。
+          </div>
+        </div>
+      )}
 
       <h4 className="subsection-title semantic-vector-subtitle">向量计算模式</h4>
       <div className="model-type-grid semantic-device-grid">
@@ -949,6 +999,21 @@ function AISummarySettings({
         </div>
       )}
 
+      <div className="semantic-vector-overview">
+        <div className="semantic-vector-stat">
+          <span className="stat-label">模型体积</span>
+          <strong>{embeddingVolumeLabel}</strong>
+        </div>
+        <div className="semantic-vector-stat">
+          <span className="stat-label">当前设备</span>
+          <strong>{embeddingDeviceLabel}</strong>
+        </div>
+        <div className={`semantic-vector-stat performance-${embeddingPerformanceClass}`}>
+          <span className="stat-label">性能档位</span>
+          <strong>{embeddingPerformanceLabel}</strong>
+        </div>
+      </div>
+
       <div className="stt-model-status semantic-vector-model-status">
         {embeddingStatus ? (
           <div className="model-info">
@@ -969,6 +1034,7 @@ function AISummarySettings({
               模型大小: {formatBytes(embeddingStatus.sizeBytes)}
               <span> · {embeddingStatus.dim || embeddingProfile?.dim || 1024} 维</span>
             </p>
+            <p className="model-size">索引模型: {embeddingStatus.vectorModelId || embeddingProfile?.id}</p>
             <p className="model-path">模型目录: {embeddingStatus.modelDir}</p>
           </div>
         ) : (

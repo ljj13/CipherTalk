@@ -546,6 +546,7 @@ export class ChatSearchIndexService {
 
     const nextDbPath = join(basePath, INDEX_DB_NAME)
     if (this.db && this.dbPath === nextDbPath) {
+      this.ensureVectorCollection(this.db)
       return this.db
     }
 
@@ -653,11 +654,19 @@ export class ChatSearchIndexService {
         ON session_vector_state(session_id);
     `)
 
-    this.vectorStore.ensureCollection(db, {
-      dim: localEmbeddingModelService.getProfile().dim
-    })
+    this.ensureVectorCollection(db)
 
     db.prepare('INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)').run('schema_version', INDEX_SCHEMA_VERSION)
+  }
+
+  private ensureVectorCollection(db: Database.Database): void {
+    const state = this.vectorStore.ensureCollection(db, {
+      dim: this.getCurrentVectorProfile().dim
+    })
+    if (state.recreated) {
+      db.prepare('DELETE FROM message_vector_index').run()
+      db.prepare('DELETE FROM session_vector_state').run()
+    }
   }
 
   private resetSchema(db: Database.Database): void {
@@ -697,7 +706,7 @@ export class ChatSearchIndexService {
   }
 
   private getCurrentVectorModelId(): string {
-    return this.getCurrentVectorProfile().id
+    return localEmbeddingModelService.getVectorModelId(this.getCurrentVectorProfile().id)
   }
 
   private getSessionVectorHashRows(
@@ -828,7 +837,7 @@ export class ChatSearchIndexService {
       pendingCount: Math.max(0, indexedCount - vectorizedCount),
       isVectorComplete: isComplete,
       isVectorRunning: isRunning,
-      vectorModel: profile.id,
+      vectorModel: this.getCurrentVectorModelId(),
       vectorModelName: profile.displayName,
       vectorDim: profile.dim,
       vectorIndexVersion: INDEX_SCHEMA_VERSION,
@@ -869,7 +878,7 @@ export class ChatSearchIndexService {
     const profile = this.getCurrentVectorProfile()
     await onProgress?.({
       ...progress,
-      vectorModel: profile.id,
+      vectorModel: this.getCurrentVectorModelId(),
       vectorModelName: profile.displayName,
       vectorDim: profile.dim,
       vectorIndexVersion: INDEX_SCHEMA_VERSION,
@@ -889,6 +898,7 @@ export class ChatSearchIndexService {
     }
 
     const profile = this.getCurrentVectorProfile()
+    const vectorModelId = this.getCurrentVectorModelId()
     const embeddings = await localEmbeddingModelService.embedTexts(rows.map((row) => row.search_text), profile.id)
 
     const upsertVector = db.prepare(`
@@ -925,7 +935,7 @@ export class ChatSearchIndexService {
         const vector = embeddings[index]
         const embedding = float32ArrayToBuffer(vector)
         const contentHash = row.content_hash || hashEmbeddingContent(row.search_text)
-        const existing = selectExistingVector.get(row.id, profile.id) as { id?: number; content_hash?: string } | undefined
+        const existing = selectExistingVector.get(row.id, vectorModelId) as { id?: number; content_hash?: string } | undefined
         if (existing?.id && existing.content_hash !== contentHash) {
           this.vectorStore.deleteByVectorId(db, Number(existing.id))
           deleteVector.run(Number(existing.id))
@@ -933,19 +943,19 @@ export class ChatSearchIndexService {
         upsertVector.run(
           row.id,
           row.session_id,
-          profile.id,
+          vectorModelId,
           embedding,
           vector.length,
           contentHash,
           row.indexed_at || now
         )
-        const vectorRow = selectVectorId.get(row.id, profile.id) as { id?: number } | undefined
+        const vectorRow = selectVectorId.get(row.id, vectorModelId) as { id?: number } | undefined
         if (vectorRow?.id) {
           this.vectorStore.upsert(db, {
             vectorId: Number(vectorRow.id),
             sessionKey: vectorSessionKey(row.session_id),
             sessionId: row.session_id,
-            modelId: profile.id,
+            modelId: vectorModelId,
             embedding
           })
         }
@@ -1344,14 +1354,15 @@ export class ChatSearchIndexService {
 
   clearSemanticVectorIndex(vectorModel = this.getCurrentVectorModelId()): { success: boolean; deletedCount: number; vectorModel: string } {
     const db = this.getDb()
-    const row = db.prepare('SELECT COUNT(*) AS count FROM message_vector_index WHERE vector_model = ?').get(vectorModel) as { count?: number }
-    this.vectorStore.clearModel(db, vectorModel)
-    db.prepare('DELETE FROM message_vector_index WHERE vector_model = ?').run(vectorModel)
-    db.prepare('DELETE FROM session_vector_state WHERE vector_model = ?').run(vectorModel)
+    const resolvedVectorModel = vectorModel.includes('@') ? vectorModel : localEmbeddingModelService.getVectorModelId(vectorModel)
+    const row = db.prepare('SELECT COUNT(*) AS count FROM message_vector_index WHERE vector_model = ?').get(resolvedVectorModel) as { count?: number }
+    this.vectorStore.clearModel(db, resolvedVectorModel)
+    db.prepare('DELETE FROM message_vector_index WHERE vector_model = ?').run(resolvedVectorModel)
+    db.prepare('DELETE FROM session_vector_state WHERE vector_model = ?').run(resolvedVectorModel)
     return {
       success: true,
       deletedCount: Number(row?.count || 0),
-      vectorModel
+      vectorModel: resolvedVectorModel
     }
   }
 
@@ -1677,7 +1688,7 @@ export class ChatSearchIndexService {
         indexedCount: state.indexedCount,
         vectorizedCount,
         truncated: false,
-        model: profile.id
+        model: this.getCurrentVectorModelId()
       }
     }
 
@@ -1698,7 +1709,7 @@ export class ChatSearchIndexService {
     const scanLimit = Math.max(options.limit * VECTOR_SEARCH_OVERFETCH, options.limit + 20)
     const params: Record<string, unknown> = {
       sessionId: options.sessionId,
-      vectorModel: profile.id
+      vectorModel: this.getCurrentVectorModelId()
     }
 
     const postFilters: string[] = []
@@ -1774,7 +1785,7 @@ export class ChatSearchIndexService {
       indexedCount: state.indexedCount,
       vectorizedCount,
       truncated: rows.length > scanLimit,
-      model: profile.id
+      model: this.getCurrentVectorModelId()
     }
   }
 

@@ -1,6 +1,7 @@
 import type Database from 'better-sqlite3'
 import type {
   VectorCollectionOptions,
+  VectorCollectionState,
   VectorSearchHit,
   VectorSearchOptions,
   VectorStore,
@@ -34,8 +35,36 @@ export class SqliteVec0VectorStore implements VectorStore {
     return this.error
   }
 
-  ensureCollection(db: Database.Database, options: VectorCollectionOptions): void {
-    if (!this.available) return
+  ensureCollection(db: Database.Database, options: VectorCollectionOptions): VectorCollectionState {
+    if (!this.available) return { recreated: false }
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS vector_store_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `)
+
+    const desiredDim = Math.max(1, Math.floor(Number(options.dim) || 0))
+    const tableRow = db.prepare(`
+      SELECT sql FROM sqlite_master
+      WHERE type = 'table' AND name = 'message_embedding_vec'
+    `).get() as { sql?: string } | undefined
+    const existingDim = tableRow?.sql
+      ? Number(String(tableRow.sql).match(/embedding\s+FLOAT\[(\d+)\]/i)?.[1] || 0)
+      : 0
+    const metaRow = db.prepare('SELECT value FROM vector_store_meta WHERE key = ?').get('message_embedding_vec_dim') as { value?: string } | undefined
+    const metaDim = Number(metaRow?.value || 0)
+    const hasDimensionMismatch = !!tableRow && (
+      (Number.isInteger(existingDim) && existingDim > 0 && existingDim !== desiredDim)
+      || (Number.isInteger(metaDim) && metaDim > 0 && metaDim !== desiredDim)
+    )
+    let recreated = false
+
+    if (hasDimensionMismatch) {
+      db.exec('DROP TABLE IF EXISTS message_embedding_vec;')
+      recreated = true
+    }
 
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS message_embedding_vec USING vec0(
@@ -43,9 +72,12 @@ export class SqliteVec0VectorStore implements VectorStore {
         session_key INTEGER PARTITION KEY,
         session_id TEXT,
         vector_model TEXT,
-        embedding FLOAT[${options.dim}] distance_metric=cosine
+        embedding FLOAT[${desiredDim}] distance_metric=cosine
       );
     `)
+
+    db.prepare('INSERT OR REPLACE INTO vector_store_meta(key, value) VALUES (?, ?)').run('message_embedding_vec_dim', String(desiredDim))
+    return { recreated }
   }
 
   upsert(db: Database.Database, item: VectorUpsertItem): void {

@@ -1160,6 +1160,12 @@ export interface ElectronAPI {
       result?: string
       error?: string
     }>
+    setEmbeddingVectorDim: (profileId: string, dim: number) => Promise<{
+      success: boolean
+      result?: number
+      vectorModelId?: string
+      error?: string
+    }>
     getEmbeddingDeviceStatus: () => Promise<{
       success: boolean
       result?: EmbeddingDeviceStatus

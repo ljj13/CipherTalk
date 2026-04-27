@@ -346,12 +346,16 @@ export interface EmbeddingModelProfile {
   remotePathTemplate: string
   revision: string
   dim: number
+  baseDim: number
+  supportedDims: number[]
   maxTokens: number
   maxTextChars: number
   dtype: string
   pooling?: 'mean' | 'last_token'
   queryInstruction?: string
   sizeLabel: string
+  performanceTier: 'fast' | 'balanced' | 'quality' | 'heavy' | string
+  performanceLabel: string
   enabled: boolean
 }
 
@@ -360,6 +364,11 @@ export interface EmbeddingModelStatus {
   displayName: string
   modelId: string
   dim: number
+  baseDim: number
+  supportedDims: number[]
+  vectorModelId: string
+  performanceTier: string
+  performanceLabel: string
   dtype: string
   sizeLabel: string
   enabled: boolean
