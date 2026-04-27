@@ -473,7 +473,12 @@ function ChatPage(_props: ChatPageProps) {
         isVectorComplete: event.status === 'completed',
         isVectorRunning: event.status === 'running',
         vectorModel: event.vectorModel || prev?.vectorModel || '',
-        vectorModelName: prev?.vectorModelName,
+        vectorModelName: event.vectorModelName || prev?.vectorModelName,
+        vectorDim: event.vectorDim ?? prev?.vectorDim ?? 0,
+        vectorIndexVersion: event.vectorIndexVersion || prev?.vectorIndexVersion || '',
+        vectorStoreName: event.vectorStoreName || prev?.vectorStoreName || '',
+        vectorModelDtype: event.vectorModelDtype || prev?.vectorModelDtype,
+        vectorModelSizeLabel: event.vectorModelSizeLabel || prev?.vectorModelSizeLabel,
         vectorProviderAvailable: prev?.vectorProviderAvailable,
         vectorProviderError: prev?.vectorProviderError
       }))
@@ -532,7 +537,17 @@ function ChatPage(_props: ChatPageProps) {
       ? vectorIndexState && vectorIndexState.pendingCount > 99 ? '99+' : String(vectorIndexState?.pendingCount || 0)
       : ''
   const isVectorProviderUnavailable = vectorIndexState?.vectorProviderAvailable === false
-  const vectorButtonTitle = isVectorProviderUnavailable
+  const vectorIndexMetaTitle = vectorIndexState
+    ? [
+        `模型：${vectorIndexState.vectorModelName || vectorIndexState.vectorModel || '未知'}`,
+        `维度：${vectorIndexState.vectorDim || '未知'}`,
+        `索引版本：${vectorIndexState.vectorIndexVersion || '未知'}`,
+        `后端：${vectorIndexState.vectorStoreName || '未知'}`,
+        vectorIndexState.vectorModelDtype ? `精度：${vectorIndexState.vectorModelDtype}` : '',
+        vectorIndexState.vectorModelSizeLabel ? `大小：${vectorIndexState.vectorModelSizeLabel}` : ''
+      ].filter(Boolean).join('；')
+    : ''
+  const vectorButtonStatusTitle = isVectorProviderUnavailable
     ? `本地语义向量不可用：${vectorIndexState?.vectorProviderError || 'sqlite-vec 未加载'}`
     : isPreparingVectorIndex
       ? `取消向量化：${vectorIndexProgress?.message || `${vectorIndexDone}/${vectorIndexTotal}`}`
@@ -541,6 +556,9 @@ function ChatPage(_props: ChatPageProps) {
         : hasPendingVectorMessages
           ? `增量向量化：待处理 ${vectorIndexState?.pendingCount || 0} 条`
           : '增量向量化当前聊天'
+  const vectorButtonTitle = vectorIndexMetaTitle
+    ? `${vectorButtonStatusTitle}\n${vectorIndexMetaTitle}`
+    : vectorButtonStatusTitle
 
   const memoryBuildTotal = memoryBuildProgress?.totalCount || memoryBuildState?.totalCount || 0
   const memoryBuildDone = memoryBuildProgress?.processedCount ?? memoryBuildState?.processedCount ?? 0
@@ -602,7 +620,13 @@ function ChatPage(_props: ChatPageProps) {
       processedCount: vectorIndexState?.vectorizedCount || 0,
       totalCount: vectorIndexState?.indexedCount || 0,
       message: '正在增量检查向量索引',
-      vectorModel: vectorIndexState?.vectorModel || ''
+      vectorModel: vectorIndexState?.vectorModel || '',
+      vectorModelName: vectorIndexState?.vectorModelName,
+      vectorDim: vectorIndexState?.vectorDim,
+      vectorIndexVersion: vectorIndexState?.vectorIndexVersion,
+      vectorStoreName: vectorIndexState?.vectorStoreName,
+      vectorModelDtype: vectorIndexState?.vectorModelDtype,
+      vectorModelSizeLabel: vectorIndexState?.vectorModelSizeLabel
     })
 
     try {
@@ -619,7 +643,13 @@ function ChatPage(_props: ChatPageProps) {
             processedCount: result.result?.vectorizedCount || 0,
             totalCount: result.result?.indexedCount || 0,
             message: '已转入后台向量化',
-            vectorModel: result.result?.vectorModel || ''
+            vectorModel: result.result?.vectorModel || '',
+            vectorModelName: result.result?.vectorModelName,
+            vectorDim: result.result?.vectorDim,
+            vectorIndexVersion: result.result?.vectorIndexVersion,
+            vectorStoreName: result.result?.vectorStoreName,
+            vectorModelDtype: result.result?.vectorModelDtype,
+            vectorModelSizeLabel: result.result?.vectorModelSizeLabel
           })
         } else {
           setVectorIndexProgress(null)

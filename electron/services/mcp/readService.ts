@@ -10,11 +10,14 @@ import { groupAnalyticsService } from '../groupAnalyticsService'
 import { imageDecryptService } from '../imageDecryptService'
 import { snsService } from '../snsService'
 import { localRerankerService, type RerankDocument } from '../retrieval/rerankerService'
+import { retrievalEngine } from '../retrieval/retrievalEngine'
+import type { RetrievalExpandedEvidence, RetrievalHit } from '../retrieval/retrievalTypes'
 import { chatSearchIndexService } from '../search/chatSearchIndexService'
 import { videoService } from '../videoService'
 import { McpToolError } from './result'
 import {
   MCP_CONTACT_KINDS,
+  MCP_MEMORY_SOURCE_TYPES,
   MCP_MESSAGE_KINDS,
   type McpContactItem,
   type McpContactKind,
@@ -39,6 +42,12 @@ import {
   type McpKeywordStatisticsItem,
   type McpKeywordStatisticsPayload,
   type McpKeywordStatisticsSample,
+  type McpMemoryEvidenceRef,
+  type McpMemoryExpandedEvidence,
+  type McpMemoryItem,
+  type McpMemorySearchHit,
+  type McpMemorySearchPayload,
+  type McpMemorySourceType,
   type McpParticipantStatisticsItem,
   type McpStreamPartialPayloadMap,
   type McpStreamProgressPayload,
@@ -146,6 +155,24 @@ const searchMessagesArgsSchema = z.object({
   rerank: z.boolean().optional()
 })
 
+const searchMemoryArgsSchema = z.object({
+  query: z.string().trim().min(1),
+  semanticQuery: z.string().trim().min(1).optional(),
+  keywordQueries: z.array(z.string().trim().min(1)).max(12).optional(),
+  semanticQueries: z.array(z.string().trim().min(1)).max(12).optional(),
+  sessionId: z.string().trim().min(1).optional(),
+  sourceTypes: z.array(z.enum(MCP_MEMORY_SOURCE_TYPES)).optional(),
+  startTime: z.number().int().positive().optional(),
+  endTime: z.number().int().positive().optional(),
+  direction: z.enum(['in', 'out']).optional(),
+  senderUsername: z.string().trim().min(1).optional(),
+  limit: z.number().int().positive().optional(),
+  rerank: z.boolean().optional(),
+  expandEvidence: z.boolean().optional(),
+  includeRaw: z.boolean().optional(),
+  includeMediaPaths: z.boolean().optional()
+})
+
 const analyticsTimeRangeArgsSchema = z.object({
   startTime: z.number().int().positive().optional(),
   endTime: z.number().int().positive().optional()
@@ -212,6 +239,7 @@ type ExportChatArgs = z.infer<typeof exportChatArgsSchema>
 type GetMessagesArgs = z.infer<typeof getMessagesArgsSchema>
 type ListContactsArgs = z.infer<typeof listContactsArgsSchema>
 type SearchMessagesArgs = z.infer<typeof searchMessagesArgsSchema>
+type SearchMemoryArgs = z.infer<typeof searchMemoryArgsSchema>
 type GetMomentsTimelineArgs = z.infer<typeof getMomentsTimelineArgsSchema>
 type GetSessionContextArgs = z.infer<typeof getSessionContextArgsSchema>
 type GetSessionStatisticsArgs = z.infer<typeof getSessionStatisticsArgsSchema>
@@ -1401,6 +1429,76 @@ async function normalizeMessages(
   return Promise.all(messages.map((message) => normalizeMessage(sessionId, message, options)))
 }
 
+function toMcpMemoryEvidenceRef(ref: RetrievalExpandedEvidence['ref']): McpMemoryEvidenceRef {
+  return {
+    sessionId: ref.sessionId,
+    localId: ref.localId,
+    createTime: ref.createTime,
+    sortSeq: ref.sortSeq,
+    ...(ref.senderUsername ? { senderUsername: ref.senderUsername } : {}),
+    ...(ref.excerpt ? { excerpt: ref.excerpt } : {})
+  }
+}
+
+function toMcpMemoryItem(hit: RetrievalHit): McpMemoryItem {
+  const memory = hit.memory
+  return {
+    id: memory.id,
+    memoryUid: memory.memoryUid,
+    sourceType: memory.sourceType as McpMemorySourceType,
+    sessionId: memory.sessionId,
+    contactId: memory.contactId,
+    groupId: memory.groupId,
+    title: memory.title,
+    content: memory.content,
+    entities: memory.entities,
+    tags: memory.tags,
+    importance: memory.importance,
+    confidence: memory.confidence,
+    timeStart: memory.timeStart,
+    timeStartMs: memory.timeStart ? toTimestampMs(memory.timeStart) : null,
+    timeEnd: memory.timeEnd,
+    timeEndMs: memory.timeEnd ? toTimestampMs(memory.timeEnd) : null,
+    sourceRefs: memory.sourceRefs.map(toMcpMemoryEvidenceRef),
+    updatedAt: memory.updatedAt
+  }
+}
+
+function compactScoreMap(values: Partial<Record<string, number>>): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const [key, value] of Object.entries(values)) {
+    if (Number.isFinite(Number(value))) {
+      result[key] = Number(value)
+    }
+  }
+  return result
+}
+
+async function toMcpExpandedEvidence(
+  evidence: RetrievalExpandedEvidence,
+  options: MessageNormalizeOptions
+): Promise<McpMemoryExpandedEvidence> {
+  return {
+    ref: toMcpMemoryEvidenceRef(evidence.ref),
+    before: await normalizeMessages(evidence.ref.sessionId, evidence.before, options),
+    anchor: evidence.anchor ? await normalizeMessage(evidence.ref.sessionId, evidence.anchor, options) : null,
+    after: await normalizeMessages(evidence.ref.sessionId, evidence.after, options)
+  }
+}
+
+async function toMcpMemorySearchHit(hit: RetrievalHit, options: MessageNormalizeOptions): Promise<McpMemorySearchHit> {
+  return {
+    rank: hit.rank,
+    score: hit.score,
+    ...(hit.rerankScore != null ? { rerankScore: hit.rerankScore } : {}),
+    sources: hit.sources,
+    sourceRanks: compactScoreMap(hit.sourceRanks),
+    sourceScores: compactScoreMap(hit.sourceScores),
+    memory: toMcpMemoryItem(hit),
+    evidence: await Promise.all(hit.evidence.map((item) => toMcpExpandedEvidence(item, options)))
+  }
+}
+
 function toUnixSeconds(value?: number): number | undefined {
   if (!value || !Number.isFinite(value) || value <= 0) return undefined
   return value >= 1_000_000_000_000 ? Math.floor(value / 1000) : Math.floor(value)
@@ -2445,6 +2543,80 @@ export class McpReadService {
       limit,
       hasMore: reachedEnd ? matched.length > offset + items.length : true
     }
+  }
+
+  async searchMemory(rawArgs: SearchMemoryArgs, defaultIncludeMediaPaths: boolean, reporter?: McpStreamReporter): Promise<McpMemorySearchPayload> {
+    const args = searchMemoryArgsSchema.safeParse(rawArgs)
+    if (!args.success) {
+      throw new McpToolError('BAD_REQUEST', 'Invalid search_memory arguments.', args.error.message)
+    }
+
+    const includeMediaPaths = args.data.includeMediaPaths ?? defaultIncludeMediaPaths
+    const includeRaw = Boolean(args.data.includeRaw)
+    const limit = Math.min(args.data.limit ?? 20, MAX_SEARCH_LIMIT)
+    let sessionId = args.data.sessionId
+
+    await reportProgress(reporter, {
+      stage: 'resolving_input',
+      message: sessionId
+        ? `Resolving session for memory search: ${sessionId}.`
+        : `Preparing memory search for "${args.data.query}".`
+    })
+
+    if (sessionId) {
+      const [{ items: sessions, map: sessionMap }, { items: contacts, map: contactMap }] = await Promise.all([
+        getSessionCatalog(),
+        getContactCatalog()
+      ])
+      const resolved = await resolveSessionRefStrictWithProgress(sessionId, sessions, sessionMap, contacts, contactMap, reporter)
+      sessionId = resolved.sessionId
+    }
+
+    await reportProgress(reporter, {
+      stage: 'scanning_messages',
+      message: `Searching memory_items for "${args.data.query}".`
+    })
+
+    const result = await retrievalEngine.search({
+      query: args.data.query,
+      semanticQuery: args.data.semanticQuery,
+      keywordQueries: args.data.keywordQueries,
+      semanticQueries: args.data.semanticQueries,
+      sessionId,
+      sourceTypes: args.data.sourceTypes,
+      startTimeMs: args.data.startTime ? toTimestampMs(args.data.startTime) : undefined,
+      endTimeMs: args.data.endTime ? toTimestampMs(args.data.endTime) : undefined,
+      direction: args.data.direction,
+      senderUsername: args.data.senderUsername,
+      limit,
+      rerank: args.data.rerank,
+      expandEvidence: args.data.expandEvidence
+    })
+
+    const hits = await Promise.all(result.hits.map((hit) => toMcpMemorySearchHit(hit, {
+      includeMediaPaths,
+      includeRaw
+    })))
+    const payload: McpMemorySearchPayload = {
+      query: result.query,
+      semanticQuery: result.semanticQuery,
+      hits,
+      limit,
+      truncated: result.hits.length > limit,
+      sourceStats: result.sourceStats.map((stat) => ({ ...stat })),
+      rerank: { ...result.rerank },
+      latencyMs: result.latencyMs
+    }
+
+    await reportPartial(reporter, 'search_memory', payload)
+    await reportProgress(reporter, {
+      stage: 'completed',
+      message: `Loaded ${payload.hits.length} memory hits.`,
+      messagesScanned: payload.hits.length,
+      truncated: payload.truncated
+    })
+
+    return payload
   }
 
   async searchMessages(rawArgs: SearchMessagesArgs, defaultIncludeMediaPaths: boolean, reporter?: McpStreamReporter): Promise<McpSearchMessagesPayload> {

@@ -8,6 +8,7 @@ export const MCP_TOOL_NAMES = [
   'get_messages',
   'list_contacts',
   'search_messages',
+  'search_memory',
   'get_session_context',
   'get_session_statistics',
   'get_keyword_statistics',
@@ -50,9 +51,20 @@ export const MCP_MESSAGE_KINDS = [
   'unknown'
 ] as const
 
+export const MCP_MEMORY_SOURCE_TYPES = [
+  'message',
+  'conversation_block',
+  'fact',
+  'relationship',
+  'profile',
+  'timeline_summary',
+  'media'
+] as const
+
 export type McpToolName = (typeof MCP_TOOL_NAMES)[number]
 export type McpContactKind = (typeof MCP_CONTACT_KINDS)[number]
 export type McpMessageKind = (typeof MCP_MESSAGE_KINDS)[number]
+export type McpMemorySourceType = (typeof MCP_MEMORY_SOURCE_TYPES)[number]
 export type McpSearchMatchMode = 'substring' | 'exact'
 export type McpStreamEventType = 'meta' | 'progress' | 'partial' | 'complete' | 'error'
 export type McpStreamProgressStage =
@@ -416,6 +428,76 @@ export interface McpSearchMessagesPayload {
   }>
 }
 
+export interface McpMemoryEvidenceRef {
+  sessionId: string
+  localId: number
+  createTime: number
+  sortSeq: number
+  senderUsername?: string
+  excerpt?: string
+}
+
+export interface McpMemoryItem {
+  id: number
+  memoryUid: string
+  sourceType: McpMemorySourceType
+  sessionId: string | null
+  contactId: string | null
+  groupId: string | null
+  title: string
+  content: string
+  entities: string[]
+  tags: string[]
+  importance: number
+  confidence: number
+  timeStart: number | null
+  timeStartMs: number | null
+  timeEnd: number | null
+  timeEndMs: number | null
+  sourceRefs: McpMemoryEvidenceRef[]
+  updatedAt: number
+}
+
+export interface McpMemoryExpandedEvidence {
+  ref: McpMemoryEvidenceRef
+  before: McpMessageItem[]
+  anchor: McpMessageItem | null
+  after: McpMessageItem[]
+}
+
+export interface McpMemorySearchHit {
+  rank: number
+  score: number
+  rerankScore?: number
+  sources: string[]
+  sourceRanks: Record<string, number>
+  sourceScores: Record<string, number>
+  memory: McpMemoryItem
+  evidence: McpMemoryExpandedEvidence[]
+}
+
+export interface McpMemorySearchPayload {
+  query: string
+  semanticQuery: string
+  hits: McpMemorySearchHit[]
+  limit: number
+  truncated: boolean
+  sourceStats: Array<{
+    name: string
+    attempted: boolean
+    hitCount: number
+    skippedReason?: string
+    error?: string
+  }>
+  rerank: {
+    attempted: boolean
+    applied: boolean
+    skippedReason?: string
+    error?: string
+  }
+  latencyMs: number
+}
+
 export interface McpTimeRange {
   startTime?: number
   startTimeMs?: number
@@ -565,6 +647,7 @@ export interface McpStreamPartialPayloadMap {
   list_contacts: Partial<McpContactsPayload>
   get_messages: Partial<McpMessagesPayload>
   search_messages: Partial<McpSearchMessagesPayload>
+  search_memory: Partial<McpMemorySearchPayload>
   get_session_context: Partial<McpSessionContextPayload>
   get_session_statistics: Partial<McpSessionStatisticsPayload>
   get_keyword_statistics: Partial<McpKeywordStatisticsPayload>
@@ -576,6 +659,7 @@ export type McpStreamPartialPayload =
   | McpStreamPartialPayloadMap['list_contacts']
   | McpStreamPartialPayloadMap['get_messages']
   | McpStreamPartialPayloadMap['search_messages']
+  | McpStreamPartialPayloadMap['search_memory']
   | McpStreamPartialPayloadMap['get_session_context']
   | McpStreamPartialPayloadMap['get_session_statistics']
   | McpStreamPartialPayloadMap['get_keyword_statistics']

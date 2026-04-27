@@ -13,6 +13,7 @@ import type {
   McpMomentsTimelinePayload,
   McpMessagesPayload,
   McpKeywordStatisticsPayload,
+  McpMemorySearchPayload,
   McpResolveSessionPayload,
   McpStreamEvent,
   McpSearchMessagesPayload,
@@ -316,6 +317,13 @@ export class McpReadService {
     })
   }
 
+  async searchMemory(rawArgs: Record<string, unknown>, defaultIncludeMediaPaths: boolean): Promise<McpMemorySearchPayload> {
+    return this.callProxy<McpMemorySearchPayload>('search_memory', {
+      ...rawArgs,
+      includeMediaPaths: rawArgs.includeMediaPaths ?? defaultIncludeMediaPaths
+    })
+  }
+
   async getSessionContext(rawArgs: Record<string, unknown>, defaultIncludeMediaPaths: boolean): Promise<McpSessionContextPayload> {
     return this.callProxy<McpSessionContextPayload>('get_session_context', {
       ...rawArgs,
@@ -340,5 +348,16 @@ export class McpReadService {
       ...rawArgs,
       includeMediaPaths: rawArgs.includeMediaPaths ?? defaultIncludeMediaPaths
     }, options) as Promise<McpSearchMessagesPayload>
+  }
+
+  async streamSearchMemory(
+    rawArgs: Record<string, unknown>,
+    defaultIncludeMediaPaths: boolean,
+    options: StreamToolOptions = {}
+  ): Promise<McpMemorySearchPayload> {
+    return this.streamTool('search_memory', {
+      ...rawArgs,
+      includeMediaPaths: rawArgs.includeMediaPaths ?? defaultIncludeMediaPaths
+    }, options) as Promise<McpMemorySearchPayload>
   }
 }

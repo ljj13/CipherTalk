@@ -42,6 +42,12 @@ type SessionVectorIndexProgressEvent = {
   totalCount: number
   message: string
   vectorModel: string
+  vectorModelName?: string
+  vectorDim?: number
+  vectorIndexVersion?: string
+  vectorStoreName?: string
+  vectorModelDtype?: string
+  vectorModelSizeLabel?: string
 }
 
 type SessionMemoryBuildProgressEvent = {

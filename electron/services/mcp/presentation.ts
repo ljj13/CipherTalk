@@ -1,9 +1,12 @@
 import { z } from 'zod'
 import {
   MCP_CONTACT_KINDS,
+  MCP_MEMORY_SOURCE_TYPES,
   MCP_MESSAGE_KINDS,
   type McpContactItem,
   type McpContactsPayload,
+  type McpMemorySearchHit,
+  type McpMemorySearchPayload,
   type McpMessageItem,
   type McpMessagesPayload,
   type McpMomentItem,
@@ -219,6 +222,69 @@ const searchRerankStatusSchema = z.object({
   error: z.string().optional()
 }).passthrough()
 
+const memoryEvidenceRefSchema = z.object({
+  sessionId: z.string(),
+  localId: z.number(),
+  createTime: z.number(),
+  sortSeq: z.number(),
+  senderUsername: z.string().optional(),
+  excerpt: z.string().optional()
+}).passthrough()
+
+const memoryItemSchema = z.object({
+  id: z.number(),
+  memoryUid: z.string(),
+  sourceType: z.enum(MCP_MEMORY_SOURCE_TYPES),
+  sessionId: z.string().nullable(),
+  contactId: z.string().nullable(),
+  groupId: z.string().nullable(),
+  title: z.string(),
+  content: z.string(),
+  entities: z.array(z.string()),
+  tags: z.array(z.string()),
+  importance: z.number(),
+  confidence: z.number(),
+  timeStart: z.number().nullable(),
+  timeStartMs: z.number().nullable(),
+  timeEnd: z.number().nullable(),
+  timeEndMs: z.number().nullable(),
+  sourceRefs: z.array(memoryEvidenceRefSchema),
+  updatedAt: z.number()
+}).passthrough()
+
+const memoryExpandedEvidenceSchema = z.object({
+  ref: memoryEvidenceRefSchema,
+  before: z.array(messageItemSchema),
+  anchor: messageItemSchema.nullable(),
+  after: z.array(messageItemSchema)
+}).passthrough()
+
+const memorySearchHitSchema = z.object({
+  rank: z.number(),
+  score: z.number(),
+  rerankScore: z.number().optional(),
+  sources: z.array(z.string()),
+  sourceRanks: z.record(z.string(), z.number()),
+  sourceScores: z.record(z.string(), z.number()),
+  memory: memoryItemSchema,
+  evidence: z.array(memoryExpandedEvidenceSchema)
+}).passthrough()
+
+const retrievalSourceStatsSchema = z.object({
+  name: z.string(),
+  attempted: z.boolean(),
+  hitCount: z.number(),
+  skippedReason: z.string().optional(),
+  error: z.string().optional()
+}).passthrough()
+
+const retrievalRerankSchema = z.object({
+  attempted: z.boolean(),
+  applied: z.boolean(),
+  skippedReason: z.string().optional(),
+  error: z.string().optional()
+}).passthrough()
+
 const participantStatisticsSchema = z.object({
   senderUsername: z.string().nullable(),
   displayName: z.string(),
@@ -330,6 +396,16 @@ export const toolOutputSchemas = {
     vectorSearch: searchVectorStatusSchema.optional(),
     rerank: searchRerankStatusSchema.optional(),
     sessionSummaries: z.array(searchSessionSummarySchema).optional()
+  }).passthrough(),
+  search_memory: z.object({
+    query: z.string(),
+    semanticQuery: z.string(),
+    hits: z.array(memorySearchHitSchema),
+    limit: z.number(),
+    truncated: z.boolean(),
+    sourceStats: z.array(retrievalSourceStatsSchema),
+    rerank: retrievalRerankSchema,
+    latencyMs: z.number()
   }).passthrough(),
   get_session_context: z.object({
     session: sessionRefSchema,
@@ -464,6 +540,13 @@ function buildSearchHitLine(hit: McpSearchHit, index: number): string {
   return `${index + 1}. ${compactText(hit.session.displayName || hit.session.sessionId, hit.session.sessionId)} | ${formatDateTime(hit.message.timestampMs)} | ${hit.matchedField}${source}: ${excerpt}`
 }
 
+function buildMemoryHitLine(hit: McpMemorySearchHit, index: number): string {
+  const memory = hit.memory
+  const time = memory.timeStartMs || memory.timeEndMs ? formatDateTime(memory.timeStartMs || memory.timeEndMs || 0) : 'unknown time'
+  const excerpt = compactText(memory.content || memory.title, '无记忆正文')
+  return `${index + 1}. ${memory.sourceType} | ${time} | score=${hit.score} | ${compactText(memory.title || memory.memoryUid, memory.memoryUid)}: ${excerpt}`
+}
+
 function buildSearchPreview(payload: McpSearchMessagesPayload): string {
   const vector = payload.vectorSearch
   const vectorSummary = vector
@@ -475,6 +558,20 @@ function buildSearchPreview(payload: McpSearchMessagesPayload): string {
     : ''
   const summary = `Loaded ${payload.hits.length} message hits.${vectorSummary}${rerankSummary}`
   const lines = payload.hits.slice(0, PREVIEW_LIMIT).map((hit, index) => buildSearchHitLine(hit, index))
+  return `${summary}${previewLines(lines)}`
+}
+
+function buildMemorySearchPreview(payload: McpMemorySearchPayload): string {
+  const rerank = payload.rerank.applied
+    ? ' Rerank=applied.'
+    : payload.rerank.attempted
+      ? ` Rerank=attempted${payload.rerank.error ? `, error=${payload.rerank.error}` : ''}.`
+      : ` Rerank=not called${payload.rerank.skippedReason ? `, reason=${payload.rerank.skippedReason}` : ''}.`
+  const sourceSummary = payload.sourceStats
+    .map((item) => `${item.name}=${item.hitCount}${item.skippedReason ? `(${item.skippedReason})` : ''}`)
+    .join(', ')
+  const summary = `Loaded ${payload.hits.length} memory hits.${rerank} Sources: ${sourceSummary || 'none'}.`
+  const lines = payload.hits.slice(0, PREVIEW_LIMIT).map((hit, index) => buildMemoryHitLine(hit, index))
   return `${summary}${previewLines(lines)}`
 }
 
@@ -514,6 +611,8 @@ export function buildToolResultText(toolName: McpToolName, payload: unknown): st
       return buildMessagesPreview(payload as McpMessagesPayload)
     case 'search_messages':
       return buildSearchPreview(payload as McpSearchMessagesPayload)
+    case 'search_memory':
+      return buildMemorySearchPreview(payload as McpMemorySearchPayload)
     case 'get_session_context':
       return buildSessionContextPreview(payload as McpSessionContextPayload)
     case 'get_session_statistics':

@@ -6,6 +6,7 @@ interface BuildLegacySummaryPromptOptions {
   messageCount: number
   formattedMessages: string
   inputMessageScopeNote?: string
+  memoryContext?: string
   customRequirement?: string
 }
 
@@ -16,6 +17,7 @@ interface BuildStructuredSummaryPromptOptions {
   blockCount: number
   analysis: StructuredAnalysis
   inputMessageScopeNote?: string
+  memoryContext?: string
   customRequirement?: string
 }
 
@@ -24,6 +26,10 @@ export function buildLegacySummaryUserPrompt(options: BuildLegacySummaryPromptOp
 
   if (options.inputMessageScopeNote && options.inputMessageScopeNote.trim()) {
     userPrompt += `\n\n补充说明：${options.inputMessageScopeNote.trim()}`
+  }
+
+  if (options.memoryContext && options.memoryContext.trim()) {
+    userPrompt += `\n\n本地长期记忆上下文：\n${options.memoryContext.trim()}`
   }
 
   userPrompt += `\n\n${options.formattedMessages}\n\n请按照系统提示的格式生成摘要。`
@@ -40,6 +46,10 @@ export function buildStructuredSummaryUserPrompt(options: BuildStructuredSummary
 
   if (options.inputMessageScopeNote && options.inputMessageScopeNote.trim()) {
     userPrompt += `\n\n补充说明：${options.inputMessageScopeNote.trim()}`
+  }
+
+  if (options.memoryContext && options.memoryContext.trim()) {
+    userPrompt += `\n\n本地长期记忆上下文：\n${options.memoryContext.trim()}`
   }
 
  userPrompt += `\n\n说明：

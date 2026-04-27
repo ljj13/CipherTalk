@@ -75,6 +75,11 @@ export async function executeMcpTool(
       const payload = await readService.searchMessages(args as any, defaults.mcpExposeMediaPaths, reporter)
       return { summary: buildToolResultText('search_messages', payload), payload }
     }
+    case 'search_memory': {
+      const defaults = getMcpConfigSnapshot()
+      const payload = await readService.searchMemory(args as any, defaults.mcpExposeMediaPaths, reporter)
+      return { summary: buildToolResultText('search_memory', payload), payload }
+    }
     case 'get_session_context': {
       const defaults = getMcpConfigSnapshot()
       const payload = await readService.getSessionContext(args as any, defaults.mcpExposeMediaPaths, reporter)

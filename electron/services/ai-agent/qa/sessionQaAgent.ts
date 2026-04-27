@@ -5,13 +5,18 @@ import type {
   McpContactsPayload,
   McpCursor,
   McpKeywordStatisticsPayload,
+  McpMessageKind,
   McpMessageItem,
   McpMessagesPayload,
+  McpSearchHit,
   McpSearchMessagesPayload,
   McpSessionContextPayload,
   McpSessionStatisticsPayload
 } from '../../mcp/types'
+import type { Message } from '../../chatService'
 import { chatSearchIndexService } from '../../search/chatSearchIndexService'
+import { retrievalEngine } from '../../retrieval/retrievalEngine'
+import type { RetrievalEngineResult, RetrievalExpandedEvidence, RetrievalHit } from '../../retrieval/retrievalTypes'
 import type { StructuredAnalysis, SummaryEvidenceRef } from '../types/analysis'
 
 export interface SessionQAHistoryMessage {
@@ -262,6 +267,108 @@ function formatTime(timestampMs: number): string {
   const hour = String(date.getHours()).padStart(2, '0')
   const minute = String(date.getMinutes()).padStart(2, '0')
   return `${year}-${month}-${day} ${hour}:${minute}`
+}
+
+function toTimestampMs(timestamp: number): number {
+  if (!timestamp) return 0
+  return timestamp > 10_000_000_000 ? timestamp : timestamp * 1000
+}
+
+function detectQaMessageKind(message: Pick<Message, 'localType' | 'rawContent' | 'parsedContent'>): McpMessageKind {
+  const localType = Number(message.localType || 0)
+  const raw = String(message.rawContent || message.parsedContent || '')
+  const appTypeMatch = raw.match(/<type>(\d+)<\/type>/)
+  const appMsgType = appTypeMatch?.[1]
+
+  if (localType === 1) return 'text'
+  if (localType === 3) return 'image'
+  if (localType === 34) return 'voice'
+  if (localType === 42) return 'contact_card'
+  if (localType === 43) return 'video'
+  if (localType === 47) return 'emoji'
+  if (localType === 48) return 'location'
+  if (localType === 50) return 'voip'
+  if (localType === 10000 || localType === 10002) return 'system'
+  if (localType === 244813135921) return 'quote'
+
+  if (localType === 49 || appMsgType) {
+    switch (appMsgType) {
+      case '3':
+        return 'app_music'
+      case '5':
+      case '49':
+        return 'app_link'
+      case '6':
+        return 'app_file'
+      case '19':
+        return 'app_chat_record'
+      case '33':
+      case '36':
+        return 'app_mini_program'
+      case '57':
+        return 'app_quote'
+      case '62':
+        return 'app_pat'
+      case '87':
+        return 'app_announcement'
+      case '115':
+        return 'app_gift'
+      case '2000':
+        return 'app_transfer'
+      case '2001':
+        return 'app_red_packet'
+      default:
+        return 'app'
+    }
+  }
+
+  return 'unknown'
+}
+
+function messageToMcpItem(sessionId: string, message: Message): McpMessageItem {
+  const direction = Number(message.isSend) === 1 ? 'out' : 'in'
+  return {
+    messageId: Number(message.localId || message.serverId || 0),
+    timestamp: Number(message.createTime || 0),
+    timestampMs: toTimestampMs(Number(message.createTime || 0)),
+    direction,
+    kind: detectQaMessageKind(message),
+    text: String(message.parsedContent || message.rawContent || ''),
+    sender: {
+      username: message.senderUsername ?? null,
+      displayName: direction === 'out' ? '我' : (message.senderUsername || (sessionId.includes('@chatroom') ? null : sessionId)),
+      isSelf: direction === 'out'
+    },
+    cursor: {
+      localId: Number(message.localId || 0),
+      createTime: Number(message.createTime || 0),
+      sortSeq: Number(message.sortSeq || 0)
+    }
+  }
+}
+
+function evidenceRefToMcpItem(ref: SummaryEvidenceRef | RetrievalExpandedEvidence['ref']): McpMessageItem {
+  const createTime = Number(ref.createTime || 0)
+  const senderUsername = 'senderUsername' in ref ? ref.senderUsername : undefined
+  const previewText = 'previewText' in ref ? ref.previewText : ('excerpt' in ref ? ref.excerpt : '')
+  return {
+    messageId: Number(ref.localId || 0),
+    timestamp: createTime,
+    timestampMs: toTimestampMs(createTime),
+    direction: 'in',
+    kind: 'text',
+    text: String(previewText || ''),
+    sender: {
+      username: senderUsername || null,
+      displayName: senderUsername || null,
+      isSelf: false
+    },
+    cursor: {
+      localId: Number(ref.localId || 0),
+      createTime,
+      sortSeq: Number(ref.sortSeq || 0)
+    }
+  }
 }
 
 function describeSender(message: McpMessageItem): string {
@@ -1391,6 +1498,155 @@ async function loadLatestContext(sessionId: string, limit = MAX_CONTEXT_MESSAGES
   }
 }
 
+function retrievalSourceLabel(hit: RetrievalHit): McpSearchHit['retrievalSource'] {
+  return hit.sources.includes('message_ann') ? 'vector_index' : 'keyword_index'
+}
+
+function retrievalHitToMcpSearchHit(sessionId: string, sessionName: string, hit: RetrievalHit): McpSearchHit {
+  const expanded = hit.evidence[0]
+  const anchor = expanded?.anchor
+    ? messageToMcpItem(sessionId, expanded.anchor)
+    : expanded?.ref
+      ? evidenceRefToMcpItem(expanded.ref)
+      : hit.memory.sourceRefs[0]
+        ? evidenceRefToMcpItem(hit.memory.sourceRefs[0])
+        : {
+            messageId: hit.memory.id,
+            timestamp: Number(hit.memory.timeStart || hit.memory.timeEnd || 0),
+            timestampMs: toTimestampMs(Number(hit.memory.timeStart || hit.memory.timeEnd || 0)),
+            direction: 'in' as const,
+            kind: 'text' as const,
+            text: hit.memory.content,
+            sender: {
+              username: null,
+              displayName: null,
+              isSelf: false
+            },
+            cursor: {
+              localId: hit.memory.id,
+              createTime: Number(hit.memory.timeStart || hit.memory.timeEnd || 0),
+              sortSeq: hit.memory.id
+            }
+          }
+
+  return {
+    session: {
+      sessionId,
+      displayName: sessionName || sessionId,
+      kind: sessionId.includes('@chatroom') ? 'group' : 'friend'
+    },
+    message: anchor,
+    excerpt: compactText(hit.memory.content || hit.memory.title, 240),
+    matchedField: 'text',
+    score: Number((hit.score * 1000).toFixed(2)),
+    retrievalSource: retrievalSourceLabel(hit)
+  }
+}
+
+function retrievalEvidenceToContextWindow(sessionId: string, query: string, hit: RetrievalHit): ContextWindow | null {
+  const messages: McpMessageItem[] = []
+  let anchor: McpMessageItem | undefined
+
+  for (const evidence of hit.evidence.slice(0, 2)) {
+    messages.push(...evidence.before.map((message) => messageToMcpItem(sessionId, message)))
+    if (evidence.anchor) {
+      const anchorItem = messageToMcpItem(sessionId, evidence.anchor)
+      anchor = anchor || anchorItem
+      messages.push(anchorItem)
+    } else {
+      const fallbackAnchor = evidenceRefToMcpItem(evidence.ref)
+      anchor = anchor || fallbackAnchor
+      messages.push(fallbackAnchor)
+    }
+    messages.push(...evidence.after.map((message) => messageToMcpItem(sessionId, message)))
+  }
+
+  const deduped = dedupeMessagesByCursor(messages)
+  if (deduped.length === 0) return null
+
+  return {
+    source: 'search',
+    query,
+    label: `${hit.memory.sourceType}:${hit.memory.id}`,
+    anchor,
+    messages: deduped
+  }
+}
+
+function buildRetrievalDiagnostics(result: RetrievalEngineResult): string[] {
+  const sourceLines = result.sourceStats
+    .map((stat) => {
+      if (!stat.attempted) return `${stat.name}: skipped=${stat.skippedReason || 'unknown'}`
+      const error = stat.error ? `, error=${compactText(stat.error, 80)}` : ''
+      return `${stat.name}: hits=${stat.hitCount}${error}`
+    })
+  const rerank = result.rerank.applied
+    ? 'rerank: applied'
+    : result.rerank.attempted
+      ? `rerank: attempted${result.rerank.error ? `, error=${compactText(result.rerank.error, 80)}` : ''}`
+      : `rerank: skipped=${result.rerank.skippedReason || 'unknown'}`
+  return [
+    `memory retrieval: hits=${result.hits.length}, latency=${result.latencyMs}ms`,
+    ...sourceLines,
+    rerank
+  ]
+}
+
+function retrievalResultToSearchPayload(
+  sessionId: string,
+  sessionName: string,
+  result: RetrievalEngineResult,
+  limit: number
+): McpSearchMessagesPayload {
+  const hits = result.hits.slice(0, limit).map((hit) => retrievalHitToMcpSearchHit(sessionId, sessionName, hit))
+  const vectorStat = result.sourceStats.find((stat) => stat.name === 'message_ann')
+
+  return {
+    hits,
+    limit,
+    sessionsScanned: 1,
+    messagesScanned: result.hits.length,
+    truncated: result.hits.length > limit,
+    source: 'index',
+    indexStatus: {
+      ready: true,
+      indexedSessions: 1,
+      indexedMessages: result.hits.length
+    },
+    vectorSearch: {
+      requested: true,
+      attempted: Boolean(vectorStat?.attempted),
+      providerAvailable: vectorStat?.skippedReason !== 'vector_provider_unavailable',
+      indexComplete: vectorStat?.skippedReason !== 'vector_index_incomplete',
+      hitCount: vectorStat?.hitCount || 0,
+      indexedMessages: result.hits.length,
+      vectorizedMessages: vectorStat?.hitCount || 0,
+      skippedReason: vectorStat && !vectorStat.attempted ? vectorStat.skippedReason : undefined,
+      error: vectorStat?.error
+    },
+    rerank: {
+      requested: true,
+      attempted: result.rerank.attempted,
+      enabled: result.rerank.skippedReason !== 'config_disabled' && result.rerank.skippedReason !== 'disabled',
+      modelAvailable: !result.rerank.error,
+      candidateCount: result.hits.length,
+      rerankedCount: result.rerank.applied ? result.hits.length : 0,
+      skippedReason: result.rerank.skippedReason,
+      error: result.rerank.error
+    },
+    sessionSummaries: [{
+      session: {
+        sessionId,
+        displayName: sessionName || sessionId,
+        kind: sessionId.includes('@chatroom') ? 'group' : 'friend'
+      },
+      hitCount: hits.length,
+      topScore: hits[0]?.score || 0,
+      sampleExcerpts: hits.slice(0, 3).map((hit) => hit.excerpt)
+    }]
+  }
+}
+
 async function searchSessionMessages(sessionId: string, query: string, filters: {
   semanticQuery?: string
   senderUsername?: string
@@ -1401,7 +1657,59 @@ async function searchSessionMessages(sessionId: string, query: string, filters: 
 } = {}): Promise<{
   payload?: McpSearchMessagesPayload
   toolCall?: SessionQAToolCall
+  contextWindows?: ContextWindow[]
+  diagnostics?: string[]
 }> {
+  try {
+    const retrieval = await retrievalEngine.search({
+      sessionId,
+      query,
+      semanticQuery: filters.semanticQuery || query,
+      keywordQueries: [query],
+      semanticQueries: [filters.semanticQuery || query],
+      startTimeMs: filters.startTime ? filters.startTime * 1000 : undefined,
+      endTimeMs: filters.endTime ? filters.endTime * 1000 : undefined,
+      senderUsername: filters.senderUsername,
+      limit: filters.limit || MAX_SEARCH_HITS,
+      rerank: true,
+      expandEvidence: true
+    })
+
+    if (retrieval.hits.length > 0) {
+      const payload = retrievalResultToSearchPayload(
+        sessionId,
+        filters.sessionName || sessionId,
+        retrieval,
+        filters.limit || MAX_SEARCH_HITS
+      )
+      const contextWindows = retrieval.hits
+        .slice(0, MAX_CONTEXT_WINDOWS)
+        .map((hit) => retrievalEvidenceToContextWindow(sessionId, query, hit))
+        .filter((window): window is ContextWindow => Boolean(window))
+      const diagnostics = buildRetrievalDiagnostics(retrieval)
+      return {
+        payload,
+        contextWindows,
+        diagnostics,
+        toolCall: {
+          toolName: 'search_messages',
+          args: {
+            sessionId,
+            query,
+            retrievalEngine: 'memory_hybrid',
+            semanticQuery: filters.semanticQuery || query,
+            limit: filters.limit || MAX_SEARCH_HITS
+          },
+          summary: `新记忆检索命中 ${payload.hits.length} 条；${diagnostics.join('；')}`,
+          status: 'completed',
+          evidenceCount: payload.hits.length
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[SessionQAAgent] 新记忆检索失败，回退旧 search_messages:', error)
+  }
+
   const args = {
     sessionId,
     query,
@@ -2789,6 +3097,7 @@ export async function answerSessionQuestionWithAgent(
       })
 
       try {
+        await ensureSearchIndexReady()
         const search = await searchSessionMessages(options.sessionId, query, {
           sessionName: options.sessionName || options.sessionId,
           semanticQuery: `${query} ${options.question}`,
@@ -2803,6 +3112,15 @@ export async function answerSessionQuestionWithAgent(
           searchPayloads.push({ query, payload: search.payload })
           addKnownHits(query, search.payload)
         }
+        if (search.contextWindows?.length) {
+          for (const window of search.contextWindows) {
+            contextWindows.push(window)
+            addContextEvidence(window.messages)
+            if (window.anchor) {
+              readContextKeys.add(getMessageCursorKey(window.anchor))
+            }
+          }
+        }
 
         emitProgress(options, {
           id: progressId,
@@ -2813,12 +3131,19 @@ export async function answerSessionQuestionWithAgent(
           toolName: 'search_messages',
           query,
           count: search.payload?.hits.length || 0,
-          diagnostics: getSearchDiagnostics(search.payload)
+          diagnostics: [
+            ...(search.diagnostics || []),
+            ...getSearchDiagnostics(search.payload)
+          ]
         })
 
         observations.push({
           title: '搜索相关消息',
-          detail: summarizeSearchObservation(query, search.payload, knownHits)
+          detail: [
+            summarizeSearchObservation(query, search.payload, knownHits),
+            search.contextWindows?.length ? `新检索链路已展开 ${search.contextWindows.length} 个证据上下文窗口。` : '',
+            search.diagnostics?.length ? search.diagnostics.join('\n') : ''
+          ].filter(Boolean).join('\n')
         })
 
         if ((search.payload?.hits.length || 0) === 0 && searchRetries < MAX_SEARCH_RETRIES && toolCallsUsed < MAX_TOOL_CALLS - 1) {

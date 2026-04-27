@@ -3,7 +3,7 @@ import { buildToolResultText, toolOutputSchemas } from './presentation'
 import { createToolError, createToolSuccess } from './result'
 import { getMcpConfigSnapshot } from './runtime'
 import { McpReadService } from './service'
-import { MCP_CONTACT_KINDS, MCP_MESSAGE_KINDS } from './types'
+import { MCP_CONTACT_KINDS, MCP_MEMORY_SOURCE_TYPES, MCP_MESSAGE_KINDS } from './types'
 
 const readService = new McpReadService()
 
@@ -238,6 +238,37 @@ export function registerCipherTalkMcpTools(server: any) {
       const defaults = getMcpConfigSnapshot()
       const payload = await readService.searchMessages((args || {}) as any, defaults.mcpExposeMediaPaths)
       return createToolSuccess(buildToolResultText('search_messages', payload), payload)
+    } catch (error) {
+      return createToolError(error)
+    }
+  })
+
+  server.registerTool('search_memory', {
+    title: 'Search Memory',
+    description: 'Search structured Agent memory_items with hybrid FTS/ANN/RRF/rerank and optional evidence expansion. Returns message, conversation_block, fact, timeline_summary, profile, and other memory hits.',
+    inputSchema: {
+      query: z.string().trim().min(1).describe('Required memory search query.'),
+      semanticQuery: z.string().trim().min(1).optional().describe('Optional semantic query. Defaults to query.'),
+      keywordQueries: z.array(z.string().trim().min(1)).max(12).optional().describe('Optional extra keyword queries for FTS recall.'),
+      semanticQueries: z.array(z.string().trim().min(1)).max(12).optional().describe('Optional extra semantic queries for ANN recall.'),
+      sessionId: z.string().trim().min(1).optional().describe('Optional session identifier. Accepts sessionId, contactId, display name, remark, or nickname when uniquely resolvable.'),
+      sourceTypes: z.array(z.enum(MCP_MEMORY_SOURCE_TYPES)).optional().describe('Optional memory source type filters.'),
+      startTime: z.number().int().positive().optional().describe('Optional start timestamp in seconds or milliseconds.'),
+      endTime: z.number().int().positive().optional().describe('Optional end timestamp in seconds or milliseconds.'),
+      direction: z.enum(['in', 'out']).optional().describe('Optional direction filter for ANN message recall.'),
+      senderUsername: z.string().trim().min(1).optional().describe('Optional sender username filter for ANN message recall.'),
+      limit: z.number().int().positive().optional().describe('Maximum number of memory hits to return.'),
+      rerank: z.boolean().optional().describe('When true, rerank recall candidates with the local Qwen3 reranker if available.'),
+      expandEvidence: z.boolean().optional().describe('When true, expand memory source refs into surrounding chat context. Defaults to true.'),
+      includeRaw: z.boolean().optional().describe('Include raw message content in expanded evidence when true.'),
+      includeMediaPaths: z.boolean().optional().describe('Resolve media local paths in expanded evidence when true.')
+    },
+    outputSchema: toolOutputSchemas.search_memory
+  }, async (args: unknown) => {
+    try {
+      const defaults = getMcpConfigSnapshot()
+      const payload = await readService.searchMemory((args || {}) as any, defaults.mcpExposeMediaPaths)
+      return createToolSuccess(buildToolResultText('search_memory', payload), payload)
     } catch (error) {
       return createToolError(error)
     }

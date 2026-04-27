@@ -42,6 +42,9 @@ import {
   type SessionQAProgressEvent,
   type SessionQAToolCall
 } from '../ai-agent/qa/sessionQaAgent'
+import { hashMemoryContent, memoryDatabase } from '../memory/memoryDatabase'
+import { memoryBuildService } from '../memory/memoryBuildService'
+import type { MemoryEvidenceRef, MemoryItem, MemoryItemInput, MemorySourceType } from '../memory/memorySchema'
 import type {
   SessionQAConversationDetail,
   SessionQAConversationSummary
@@ -131,6 +134,23 @@ interface StructuredAnalysisAttempt {
   blockCount: number
   effectiveMessageCount: number
   evidenceResolved: boolean
+}
+
+const SUMMARY_MEMORY_CONTEXT_LIMIT = 18
+const SUMMARY_MEMORY_TEXT_LIMIT = 6000
+const TIMELINE_SUMMARY_TEXT_LIMIT = 12000
+
+function compactSummaryMemoryText(value: string, limit: number): string {
+  const normalized = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return ''
+  return normalized.length > limit ? `${normalized.slice(0, limit - 1)}…` : normalized
+}
+
+function overlapsSummaryRange(memory: MemoryItem, startTime: number, endTime: number): boolean {
+  const memoryStart = Number(memory.timeStart || memory.timeEnd || 0)
+  const memoryEnd = Number(memory.timeEnd || memory.timeStart || 0)
+  if (!memoryStart && !memoryEnd) return true
+  return memoryEnd >= startTime && memoryStart <= endTime
 }
 
 /**
@@ -368,6 +388,118 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
     return timeRangeDays > 0 ? `最近${timeRangeDays}天` : '全部消息'
   }
 
+  private buildSummaryMemoryContext(sessionId: string, startTime: number, endTime: number): string {
+    try {
+      const sourceTypes: MemorySourceType[] = ['timeline_summary', 'conversation_block', 'fact']
+      const items = sourceTypes.flatMap((sourceType) => memoryDatabase.listMemoryItems({
+        sessionId,
+        sourceType,
+        limit: sourceType === 'fact' ? 80 : 40
+      }))
+        .filter((item) => overlapsSummaryRange(item, startTime, endTime))
+        .sort((a, b) =>
+          b.importance - a.importance
+          || Number(b.timeEnd || b.timeStart || 0) - Number(a.timeEnd || a.timeStart || 0)
+          || b.updatedAt - a.updatedAt
+        )
+        .slice(0, SUMMARY_MEMORY_CONTEXT_LIMIT)
+
+      if (items.length === 0) return ''
+
+      const lines = items.map((item, index) => {
+        const time = item.timeStart || item.timeEnd
+          ? `${item.timeStart || ''}${item.timeEnd && item.timeEnd !== item.timeStart ? `-${item.timeEnd}` : ''}`
+          : 'unknown'
+        const refs = item.sourceRefs.slice(0, 3)
+          .map((ref) => `${ref.createTime}:${compactSummaryMemoryText(ref.excerpt || '', 80)}`)
+          .filter(Boolean)
+          .join('；')
+        return [
+          `${index + 1}. [${item.sourceType}] ${item.title || '无标题'} | time=${time} | importance=${item.importance}`,
+          compactSummaryMemoryText(item.content, 360),
+          refs ? `证据索引：${refs}` : ''
+        ].filter(Boolean).join('\n')
+      })
+
+      return compactSummaryMemoryText([
+        '以下为本地长期记忆中已存在的同会话时间线、对话块和事实，可用于避免重复分析、补足上下文和校对摘要结论。它们仍必须服从本次输入消息证据，不得据此臆造本次消息中不存在的细节。',
+        ...lines
+      ].join('\n\n'), SUMMARY_MEMORY_TEXT_LIMIT)
+    } catch (error) {
+      console.warn('[AIService] 读取摘要长期记忆上下文失败，继续使用原始摘要链路:', error)
+      return ''
+    }
+  }
+
+  private buildTimelineSummaryMemoryInput(input: {
+    summaryId: number
+    sessionId: string
+    timeRangeStart: number
+    timeRangeEnd: number
+    timeRangeDays: number
+    summaryText: string
+    structuredAnalysis?: StructuredAnalysis
+  }): MemoryItemInput {
+    const title = `摘要 ${this.buildTimeRangeLabel(input.timeRangeDays)} ${input.timeRangeStart}-${input.timeRangeEnd}`
+    const structured = input.structuredAnalysis
+      ? `\n\n结构化事实：\n${JSON.stringify(input.structuredAnalysis)}`
+      : ''
+    const content = compactSummaryMemoryText(`${input.summaryText}${structured}`, TIMELINE_SUMMARY_TEXT_LIMIT)
+    const evidenceRefs = this.collectSummaryEvidenceRefs(input.structuredAnalysis)
+
+    return {
+      memoryUid: `timeline_summary:${input.sessionId}:${input.summaryId}`,
+      sourceType: 'timeline_summary',
+      sessionId: input.sessionId,
+      contactId: input.sessionId.includes('@chatroom') ? null : input.sessionId,
+      groupId: input.sessionId.includes('@chatroom') ? input.sessionId : null,
+      title,
+      content,
+      contentHash: hashMemoryContent(title, content),
+      tags: ['timeline_summary', `summary:${input.summaryId}`, this.buildTimeRangeLabel(input.timeRangeDays)],
+      importance: 0.7,
+      confidence: 1,
+      timeStart: input.timeRangeStart,
+      timeEnd: input.timeRangeEnd,
+      sourceRefs: evidenceRefs
+    }
+  }
+
+  private collectSummaryEvidenceRefs(analysis?: StructuredAnalysis): MemoryEvidenceRef[] {
+    if (!analysis) return []
+    const refs: MemoryEvidenceRef[] = []
+    for (const group of [analysis.decisions, analysis.todos, analysis.risks, analysis.events]) {
+      for (const item of group || []) {
+        for (const ref of item.evidenceRefs || []) {
+          refs.push({
+            sessionId: ref.sessionId,
+            localId: ref.localId,
+            createTime: ref.createTime,
+            sortSeq: ref.sortSeq,
+            ...(ref.senderUsername ? { senderUsername: ref.senderUsername } : {}),
+            excerpt: compactSummaryMemoryText(ref.previewText || '', 160)
+          })
+        }
+      }
+    }
+
+    const seen = new Set<string>()
+    return refs.filter((ref) => {
+      const key = `${ref.sessionId}:${ref.localId}:${ref.createTime}:${ref.sortSeq}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    }).slice(0, 30)
+  }
+
+  private async refreshSummaryMemories(sessionId: string): Promise<void> {
+    try {
+      await memoryBuildService.prepareSessionMemory(sessionId)
+    } catch (error) {
+      console.warn('[AIService] 摘要后同步 memory_items 失败:', error)
+    }
+  }
+
   private async tryGenerateStructuredAnalysis(
     provider: AIProvider,
     model: string,
@@ -461,6 +593,7 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
     // 使用会话名称优化提示词
     const targetName = options.sessionName || options.sessionId
     const timeRangeLabel = this.buildTimeRangeLabel(options.timeRangeDays)
+    const memoryContext = this.buildSummaryMemoryContext(options.sessionId, startTime, endTime)
     const structuredAnalysisResult = await this.tryGenerateStructuredAnalysis(
       provider,
       model,
@@ -477,6 +610,7 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
           blockCount: structuredAnalysisResult.blockCount,
           analysis: structuredAnalysisResult.finalAnalysis,
           inputMessageScopeNote: options.inputMessageScopeNote,
+          memoryContext,
           customRequirement: options.customRequirement
         })
       : buildLegacySummaryUserPrompt({
@@ -485,6 +619,7 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
           messageCount: messages.length,
           formattedMessages,
           inputMessageScopeNote: options.inputMessageScopeNote,
+          memoryContext,
           customRequirement: options.customRequirement
         })
 
@@ -569,6 +704,21 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
       aiDatabase.saveAnalysisArtifacts(analysisArtifactsPayload)
     } catch (error) {
       console.warn('[AIService] 分析产物写入失败，将由后续 catch-up 补录:', error)
+    }
+
+    try {
+      memoryDatabase.upsertMemoryItem(this.buildTimelineSummaryMemoryInput({
+        summaryId,
+        sessionId: options.sessionId,
+        timeRangeStart: startTime,
+        timeRangeEnd: endTime,
+        timeRangeDays: options.timeRangeDays,
+        summaryText,
+        structuredAnalysis: structuredAnalysisResult?.finalAnalysis
+      }))
+      void this.refreshSummaryMemories(options.sessionId)
+    } catch (error) {
+      console.warn('[AIService] 摘要记忆写入失败:', error)
     }
 
     // 更新使用统计

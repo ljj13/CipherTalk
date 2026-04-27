@@ -261,6 +261,11 @@ export interface SessionVectorIndexState {
   isVectorRunning: boolean
   vectorModel: string
   vectorModelName?: string
+  vectorDim: number
+  vectorIndexVersion: string
+  vectorStoreName: string
+  vectorModelDtype?: string
+  vectorModelSizeLabel?: string
   vectorProviderAvailable?: boolean
   vectorProviderError?: string
 }
@@ -286,6 +291,12 @@ export interface SessionVectorIndexProgressEvent {
   totalCount: number
   message: string
   vectorModel: string
+  vectorModelName?: string
+  vectorDim?: number
+  vectorIndexVersion?: string
+  vectorStoreName?: string
+  vectorModelDtype?: string
+  vectorModelSizeLabel?: string
 }
 
 export type SessionMemoryBuildProgressStage =

@@ -81,6 +81,12 @@ export interface ChatVectorIndexProgress {
   totalCount: number
   message: string
   vectorModel: string
+  vectorModelName?: string
+  vectorDim?: number
+  vectorIndexVersion?: string
+  vectorStoreName?: string
+  vectorModelDtype?: string
+  vectorModelSizeLabel?: string
 }
 
 export interface ChatVectorIndexState {
@@ -92,6 +98,11 @@ export interface ChatVectorIndexState {
   isVectorRunning: boolean
   vectorModel: string
   vectorModelName?: string
+  vectorDim: number
+  vectorIndexVersion: string
+  vectorStoreName: string
+  vectorModelDtype?: string
+  vectorModelSizeLabel?: string
   vectorProviderAvailable?: boolean
   vectorProviderError?: string
 }
@@ -819,6 +830,11 @@ export class ChatSearchIndexService {
       isVectorRunning: isRunning,
       vectorModel: profile.id,
       vectorModelName: profile.displayName,
+      vectorDim: profile.dim,
+      vectorIndexVersion: INDEX_SCHEMA_VERSION,
+      vectorStoreName: this.vectorStore.name,
+      vectorModelDtype: profile.dtype,
+      vectorModelSizeLabel: profile.sizeLabel,
       vectorProviderAvailable: this.vectorStore.isAvailable(),
       vectorProviderError: this.vectorStore.getError()
     }
@@ -844,13 +860,22 @@ export class ChatSearchIndexService {
   }
 
   private async reportVectorProgress(
-    progress: Omit<ChatVectorIndexProgress, 'vectorModel'>,
+    progress: Omit<
+      ChatVectorIndexProgress,
+      'vectorModel' | 'vectorModelName' | 'vectorDim' | 'vectorIndexVersion' | 'vectorStoreName' | 'vectorModelDtype' | 'vectorModelSizeLabel'
+    >,
     onProgress?: (progress: ChatVectorIndexProgress) => void | Promise<void>
   ): Promise<void> {
     const profile = this.getCurrentVectorProfile()
     await onProgress?.({
       ...progress,
-      vectorModel: profile.id
+      vectorModel: profile.id,
+      vectorModelName: profile.displayName,
+      vectorDim: profile.dim,
+      vectorIndexVersion: INDEX_SCHEMA_VERSION,
+      vectorStoreName: this.vectorStore.name,
+      vectorModelDtype: profile.dtype,
+      vectorModelSizeLabel: profile.sizeLabel
     })
   }
 
