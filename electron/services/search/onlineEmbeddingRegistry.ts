@@ -136,48 +136,18 @@ const PROVIDERS: OnlineEmbeddingProviderInfo[] = [
   {
     id: 'volcengine',
     displayName: '火山引擎',
-    description: '火山方舟 OpenAI 兼容向量接口，可填写端点 ID 或模型名。',
+    description: '火山方舟原生多模态向量接口，使用 /embeddings/multimodal。',
     defaultBaseURL: 'https://ark.cn-beijing.volces.com/api/v3',
     website: 'https://www.volcengine.com/product/ark',
-    allowCustomModel: true,
     models: [
       {
-        id: 'doubao-embedding',
-        displayName: 'doubao-embedding',
+        id: 'doubao-embedding-vision-251215',
+        displayName: 'doubao-embedding-vision-251215',
         supportedDims: [2048, 1024],
         defaultDim: 2048,
-        maxBatchSize: 10,
-        maxTokens: 8192,
-        supportsDimensions: false,
-        allowCustomDim: true
-      },
-      {
-        id: 'doubao-embedding-large',
-        displayName: 'doubao-embedding-large',
-        supportedDims: [4096, 2048, 1024],
-        defaultDim: 4096,
-        maxBatchSize: 10,
-        maxTokens: 8192,
-        supportsDimensions: false,
-        allowCustomDim: true
-      },
-      {
-        id: 'bge-m3',
-        displayName: 'bge-m3',
-        supportedDims: [1024],
-        defaultDim: 1024,
-        maxBatchSize: 10,
-        maxTokens: 8192,
-        supportsDimensions: false
-      },
-      {
-        id: 'bge-large-zh',
-        displayName: 'bge-large-zh',
-        supportedDims: [1024],
-        defaultDim: 1024,
-        maxBatchSize: 10,
-        maxTokens: 512,
-        supportsDimensions: false
+        maxBatchSize: 1,
+        maxTokens: 131072,
+        supportsDimensions: true
       }
     ]
   }
