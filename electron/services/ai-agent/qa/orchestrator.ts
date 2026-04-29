@@ -757,6 +757,14 @@ export async function answerSessionQuestionWithAgent(
   let route = heuristicRoute
   let aiIntentResult: AIIntentRouterResult | null = null
 
+  emitProgress(options, {
+    id: 'intent-route',
+    stage: 'intent',
+    status: 'running',
+    title: '识别问题意图',
+    detail: '正在判断是否需要读取聊天记录'
+  })
+
   if (!(heuristicRoute.intent === 'direct_answer' && !heuristicRoute.needsSearch)) {
     try {
       aiIntentResult = await refineRouteWithAIIntent({
@@ -777,9 +785,33 @@ export async function answerSessionQuestionWithAgent(
     route = enforceConcreteEvidenceRoute(route, options.question)
   }
 
-  const contactMap = route.intent === 'direct_answer' && !route.needsSearch
-    ? new Map<string, string>()
-    : await loadSessionContactMap(options.sessionId)
+  emitProgress(options, {
+    id: 'intent-route',
+    stage: 'intent',
+    status: 'completed',
+    title: '识别问题意图',
+    detail: `${getRouteLabel(route.intent)}；${route.needsSearch ? '需要读取聊天记录' : '无需读取聊天记录'}`
+  })
+
+  let contactMap = new Map<string, string>()
+  if (!(route.intent === 'direct_answer' && !route.needsSearch)) {
+    emitProgress(options, {
+      id: 'load-contact-map',
+      stage: 'context',
+      status: 'running',
+      title: '加载联系人信息',
+      detail: '正在加载当前会话的联系人映射'
+    })
+    contactMap = await loadSessionContactMap(options.sessionId)
+    emitProgress(options, {
+      id: 'load-contact-map',
+      stage: 'context',
+      status: 'completed',
+      title: '加载联系人信息',
+      detail: `已加载 ${contactMap.size} 个联系人映射`,
+      count: contactMap.size
+    })
+  }
   if (options.sessionName && !contactMap.has(options.sessionId)) {
     contactMap.set(options.sessionId, options.sessionName)
   }
@@ -830,12 +862,20 @@ export async function answerSessionQuestionWithAgent(
 
       let nativeResponse
       let streamedDecisionText = ''
+      const decisionProgressId = `decision-${ctx.decisionAttempts}`
+      emitProgress(options, {
+        id: decisionProgressId,
+        stage: 'thought',
+        status: 'running',
+        title: '等待模型决策',
+        detail: `第 ${ctx.decisionAttempts} 轮，正在判断下一步工具或回答`
+      })
       try {
         const toolOptions: ChatWithToolsOptions = {
           model: options.model,
           temperature: 0.2,
           maxTokens: agentDecisionMaxTokens,
-          enableThinking: false,
+          enableThinking: options.enableThinking !== false,
           tools: nativeTools,
           toolChoice: 'auto'
         }
@@ -847,7 +887,25 @@ export async function answerSessionQuestionWithAgent(
         } else {
           nativeResponse = await options.provider.chatWithTools(toolLoopMessages, toolOptions)
         }
+        const toolCallCount = Array.isArray((nativeResponse.message as any)?.tool_calls)
+          ? (nativeResponse.message as any).tool_calls.length
+          : 0
+        emitProgress(options, {
+          id: decisionProgressId,
+          stage: 'thought',
+          status: 'completed',
+          title: '等待模型决策',
+          detail: toolCallCount > 0 ? `模型请求调用 ${toolCallCount} 个工具` : '模型未请求工具调用',
+          count: toolCallCount
+        })
       } catch (error) {
+        emitProgress(options, {
+          id: decisionProgressId,
+          stage: 'thought',
+          status: 'failed',
+          title: '等待模型决策',
+          detail: compactText(String(error), 120)
+        })
         if ((error instanceof Error && error.message === NATIVE_TOOL_CALLING_UNSUPPORTED_MESSAGE) || isNativeToolCallingUnsupportedError(error)) {
           throw new Error(NATIVE_TOOL_CALLING_UNSUPPORTED_MESSAGE)
         }

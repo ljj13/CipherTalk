@@ -42,6 +42,7 @@ import {
   type SessionQAMessageRecord,
   type SessionQAProgressEvent,
   type SessionQAResult,
+  type SessionQATimelineItem,
   type SessionProfileMemoryState,
   type SummaryEvidenceRef,
   type SummaryResult,
@@ -73,6 +74,7 @@ interface QAMessage {
   error?: string
   result?: SessionQAResult
   progressEvents?: SessionQAProgressEvent[]
+  timelineEvents?: SessionQATimelineItem[]
   requestId?: string
   thinkContent?: string
   isThinking?: boolean
@@ -142,6 +144,11 @@ function getSummaryPlainText(content: string) {
 
 function stripSummaryContent(content: string) {
   return splitSummaryContent(content).mainContent
+}
+
+function normalizeMarkdownTables(text: string) {
+  return text
+    .replace(/([：:])\n(\|[^\n]+\|\n\|[\s:|-]+\|)/g, '$1\n\n$2')
 }
 
 function formatConfidence(value?: number) {
@@ -599,6 +606,58 @@ function upsertQAProgressEvent(
   )
 }
 
+function upsertQATimelineItems(
+  events: SessionQATimelineItem[] = [],
+  incoming: SessionQATimelineItem[] = []
+) {
+  if (incoming.length === 0) return events
+
+  const byId = new Map(events.map((item) => [item.id, item]))
+  incoming.forEach((item) => {
+    const existing = byId.get(item.id)
+    byId.set(item.id, existing
+      ? { ...item, order: existing.order, createdAt: existing.createdAt || item.createdAt }
+      : item)
+  })
+
+  return Array.from(byId.values()).sort((a, b) =>
+    a.order - b.order
+    || a.createdAt - b.createdAt
+    || a.id.localeCompare(b.id)
+  )
+}
+
+function createLocalQATimelineProgress(requestId: string, createdAt: number): {
+  progress: SessionQAProgressEvent
+  timelineItem: SessionQATimelineItem
+} {
+  const progress: SessionQAProgressEvent = {
+    id: 'job-start',
+    stage: 'intent',
+    status: 'running',
+    title: '准备问答任务',
+    displayName: '准备问答任务',
+    nodeName: '准备问答任务',
+    detail: '正在提交问题并创建问答任务',
+    source: 'model',
+    requestId,
+    createdAt
+  }
+
+  return {
+    progress,
+    timelineItem: {
+      type: 'progress',
+      id: `progress:${progress.id}`,
+      order: 0,
+      createdAt,
+      requestId,
+      channel: 'answer',
+      event: progress
+    }
+  }
+}
+
 function appendQAChunkToMessage(message: QAMessage, chunk: string): QAMessage {
   let remaining = chunk
   let next: QAMessage = { ...message }
@@ -668,6 +727,7 @@ function mapStoredQAMessage(record: SessionQAMessageRecord): QAMessage {
     isThinking: false,
     showThink: false,
     progressEvents: record.progressEvents,
+    timelineEvents: record.timelineEvents,
     requestId: record.requestId
   }
 }
@@ -700,6 +760,7 @@ function AISummaryWindow() {
   const [isAsking, setIsAsking] = useState(false)
   const [activeQARequestId, setActiveQARequestId] = useState<string | null>(null)
   const [expandedQAProgressIds, setExpandedQAProgressIds] = useState<Set<string>>(() => new Set())
+  const [collapsedQAThinkIds, setCollapsedQAThinkIds] = useState<Set<string>>(() => new Set())
   const [expandedQAEvidenceIds, setExpandedQAEvidenceIds] = useState<Set<string>>(() => new Set())
   const [qaError, setQaError] = useState('')
   const [profileMemoryState, setProfileMemoryState] = useState<SessionProfileMemoryState | null>(null)
@@ -759,7 +820,7 @@ function AISummaryWindow() {
     }))
 
   const renderMarkdown = (text: string) => {
-    const html = marked.parse(text) as string
+    const html = marked.parse(normalizeMarkdownTables(text)) as string
     return { __html: DOMPurify.sanitize(html) }
   }
 
@@ -1073,12 +1134,20 @@ function AISummaryWindow() {
     )
   }
 
-  const toggleQAThinkPanel = (messageId: string) => {
-    setQaMessages(prev => prev.map(message => (
-      message.id === messageId
-        ? { ...message, showThink: !message.showThink }
-        : message
-    )))
+  const toggleQAThinkPanel = (panelId: string) => {
+    setCollapsedQAThinkIds(prev => {
+      const next = new Set(prev)
+      if (next.has(panelId)) {
+        next.delete(panelId)
+      } else {
+        next.add(panelId)
+      }
+      return next
+    })
+  }
+
+  const isQAThinkPanelExpanded = (panelId: string) => {
+    return !collapsedQAThinkIds.has(panelId)
   }
 
   const toggleQAProgressEvent = (eventId: string) => {
@@ -1190,11 +1259,12 @@ function AISummaryWindow() {
       return null
     }
 
-    const expanded = message.showThink !== false
+    const panelId = `${message.id}:legacy-think`
+    const expanded = isQAThinkPanelExpanded(panelId)
 
     return (
       <div className={`think-panel qa-think-panel ${!expanded ? 'collapsed' : ''} ${message.isThinking ? 'thinking' : ''}`}>
-        <div className="think-header" onClick={() => toggleQAThinkPanel(message.id)}>
+        <div className="think-header" onClick={() => toggleQAThinkPanel(panelId)}>
           <div className="think-title">
             {message.isThinking ? (
               <Loader2 size={14} className="think-icon animate-spin" />
@@ -1217,15 +1287,167 @@ function AISummaryWindow() {
   }
 
   const renderQATimeline = (message: QAMessage) => {
-    type QATimelineItem =
+    type LegacyQATimelineItem =
       | { type: 'progress'; id: string; events: SessionQAProgressEvent[] }
       | { type: 'thought'; event: SessionQAProgressEvent }
       | { type: 'answer'; content: string }
 
+    type TimelineRenderItem =
+      | { type: 'progress'; id: string; events: SessionQAProgressEvent[] }
+      | { type: 'text'; item: SessionQATimelineItem & { type: 'text' } }
+      | { type: 'think'; id: string; items: SessionQATimelineItem[] }
+
+    const renderAnswerTextItem = (item: SessionQATimelineItem & { type: 'text' }) => {
+      if (!item.content) return null
+      return (
+        <div key={item.id} className="qa-bubble">
+          <div
+            className="qa-answer markdown-body"
+            dangerouslySetInnerHTML={renderMarkdown(item.content)}
+          />
+        </div>
+      )
+    }
+
+    const renderTimelineThinkGroup = (group: Extract<TimelineRenderItem, { type: 'think' }>) => {
+      const expanded = isQAThinkPanelExpanded(group.id)
+      const lastTimelineItem = message.timelineEvents?.[message.timelineEvents.length - 1]
+      const isThinkingGroup = message.isThinking && group.items.some((item) => item.id === lastTimelineItem?.id)
+
+      return (
+        <div
+          key={group.id}
+          className={`think-panel qa-think-panel qa-timeline-think-panel ${!expanded ? 'collapsed' : ''} ${isThinkingGroup ? 'thinking' : ''}`}
+        >
+          <div className="think-header" onClick={() => toggleQAThinkPanel(group.id)}>
+            <div className="think-title">
+              {isThinkingGroup ? (
+                <Loader2 size={14} className="think-icon animate-spin" />
+              ) : (
+                <Atom size={14} className="think-icon" />
+              )}
+              <span>{isThinkingGroup ? '深度思考中...' : '深度思考'}</span>
+            </div>
+            <ChevronDown
+              size={16}
+              className={`toggle-icon ${expanded ? 'expanded' : ''}`}
+            />
+          </div>
+          <div className="think-content">
+            {group.items.map((item) => {
+              if (item.type === 'progress') {
+                return renderQAProgressTimeline(`${group.id}-${item.id}`, [item.event])
+              }
+
+              return (
+                <div
+                  key={item.id}
+                  className="qa-think-text markdown-body"
+                  dangerouslySetInnerHTML={renderMarkdown(item.content)}
+                />
+              )
+            })}
+          </div>
+        </div>
+      )
+    }
+
+    const timelineEvents = [...(message.timelineEvents || [])]
+      .sort((a, b) =>
+        a.order - b.order
+        || a.createdAt - b.createdAt
+        || a.id.localeCompare(b.id)
+      )
+
+    if (timelineEvents.length > 0) {
+      const renderItems: TimelineRenderItem[] = []
+      let pendingProgressEvents: SessionQAProgressEvent[] = []
+      let pendingThinkItems: SessionQATimelineItem[] = []
+
+      const flushProgressEvents = () => {
+        if (pendingProgressEvents.length === 0) return
+        const firstEventId = pendingProgressEvents[0]?.id || String(renderItems.length)
+        renderItems.push({
+          type: 'progress',
+          id: `${message.id}-progress-${firstEventId}-${renderItems.length}`,
+          events: pendingProgressEvents
+        })
+        pendingProgressEvents = []
+      }
+
+      const flushThinkItems = () => {
+        if (pendingThinkItems.length === 0) return
+        renderItems.push({
+          type: 'think',
+          id: `${message.id}-think-${pendingThinkItems[0]?.id || renderItems.length}`,
+          items: pendingThinkItems
+        })
+        pendingThinkItems = []
+      }
+
+      timelineEvents.forEach((item) => {
+        if (item.channel === 'think') {
+          flushProgressEvents()
+          pendingThinkItems.push(item)
+          return
+        }
+
+        flushThinkItems()
+        if (item.type === 'progress') {
+          pendingProgressEvents.push(item.event)
+          return
+        }
+
+        flushProgressEvents()
+        renderItems.push({ type: 'text', item })
+      })
+      flushThinkItems()
+      flushProgressEvents()
+
+      const hasEvidence = (message.result?.evidenceRefs?.length || 0) > 0
+      const hasRenderableItems = renderItems.length > 0 || message.error || hasEvidence
+
+      if (!hasRenderableItems && message.isStreaming) {
+        return (
+          <div className="qa-streaming-placeholder">
+            <Loader2 size={14} className="spinner" />
+          </div>
+        )
+      }
+
+      if (!hasRenderableItems) return null
+
+      return (
+        <div className="qa-timeline">
+          {renderItems.map((item) => {
+            if (item.type === 'progress') {
+              return renderQAProgressTimeline(item.id, item.events)
+            }
+
+            if (item.type === 'think') {
+              return renderTimelineThinkGroup(item)
+            }
+
+            return renderAnswerTextItem(item.item)
+          })}
+          {message.error && (
+            <div className="qa-bubble">
+              <div className="qa-error">{message.error}</div>
+            </div>
+          )}
+          {hasEvidence && (
+            <div className="qa-bubble qa-evidence-bubble">
+              {renderQAEvidenceCards(message.id, message.result?.evidenceRefs)}
+            </div>
+          )}
+        </div>
+      )
+    }
+
     const progressItems = [...(message.progressEvents || [])]
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
 
-    const timelineItems: QATimelineItem[] = []
+    const timelineItems: LegacyQATimelineItem[] = []
     let pendingProgressEvents: SessionQAProgressEvent[] = []
 
     const flushProgressEvents = () => {
@@ -1251,6 +1473,7 @@ function AISummaryWindow() {
 
     const hasAnswerBody = Boolean(
       message.error ||
+      (message.timelineEvents?.length || 0) > 0 ||
       message.thinkContent ||
       message.content ||
       (message.result?.evidenceRefs?.length || 0) > 0
@@ -1727,13 +1950,39 @@ function AISummaryWindow() {
       if (event.kind === 'progress' && event.progress) {
         setQaMessages(prev => prev.map(message => (
           message.id === assistantId
-            ? { ...message, progressEvents: upsertQAProgressEvent(message.progressEvents, event.progress!) }
+            ? {
+                ...message,
+                progressEvents: upsertQAProgressEvent(message.progressEvents, event.progress!),
+                timelineEvents: upsertQATimelineItems(message.timelineEvents, event.timelineItems || [])
+              }
             : message
         )))
         return
       }
 
       if (event.kind === 'chunk' && event.chunk) {
+        const isThinkBoundaryChunk = event.chunk.includes('<think>') || event.chunk.includes('</think>')
+        if (event.timelineItems?.length) {
+          setQaMessages(prev => prev.map(message => (
+            message.id === assistantId
+              ? {
+                  ...appendQAChunkToMessage(message, event.chunk!),
+                  timelineEvents: upsertQATimelineItems(message.timelineEvents, event.timelineItems)
+                }
+              : message
+          )))
+          return
+        }
+
+        if (isThinkBoundaryChunk) {
+          setQaMessages(prev => prev.map(message => (
+            message.id === assistantId
+              ? appendQAChunkToMessage(message, event.chunk!)
+              : message
+          )))
+          return
+        }
+
         const previous = qaChunkBufferRef.current.get(assistantId) || ''
         qaChunkBufferRef.current.set(assistantId, `${previous}${event.chunk}`)
         scheduleQAChunkFlush()
@@ -1752,6 +2001,7 @@ function AISummaryWindow() {
           message.id === assistantId
             ? {
                 ...message,
+                timelineEvents: upsertQATimelineItems(message.timelineEvents, event.timelineItems || []),
                 content: stripSummaryContent(event.result!.answerText),
                 createdAt: event.result!.createdAt,
                 isStreaming: false,
@@ -1778,6 +2028,7 @@ function AISummaryWindow() {
           message.id === assistantId
             ? {
                 ...message,
+                timelineEvents: upsertQATimelineItems(message.timelineEvents, event.timelineItems || []),
                 content: message.content || (event.kind === 'cancelled' ? messageText : ''),
                 isStreaming: false,
                 isThinking: false,
@@ -2315,13 +2566,17 @@ function AISummaryWindow() {
       createdAt: Date.now()
     }
     const assistantId = buildMessageId()
+    const assistantCreatedAt = Date.now()
+    const initialTimeline = createLocalQATimelineProgress(requestId, assistantCreatedAt)
     const assistantMessage: QAMessage = {
       id: assistantId,
       role: 'assistant',
       content: '',
-      createdAt: Date.now(),
+      createdAt: assistantCreatedAt,
       isStreaming: true,
-      requestId
+      requestId,
+      progressEvents: [initialTimeline.progress],
+      timelineEvents: [initialTimeline.timelineItem]
     }
 
     qaRequestMessageMapRef.current.set(requestId, assistantId)
@@ -2364,6 +2619,28 @@ function AISummaryWindow() {
       }
     } catch (e) {
       const message = String(e)
+      const failedAt = Date.now()
+      const failedProgress: SessionQAProgressEvent = {
+        id: 'job-start',
+        stage: 'intent',
+        status: 'failed',
+        title: '问答任务未启动',
+        displayName: '问答任务未启动',
+        nodeName: '问答任务未启动',
+        detail: message,
+        source: 'model',
+        requestId,
+        createdAt: failedAt
+      }
+      const failedTimelineItem: SessionQATimelineItem = {
+        type: 'progress',
+        id: `progress:${failedProgress.id}`,
+        order: 0,
+        createdAt: failedAt,
+        requestId,
+        channel: 'answer',
+        event: failedProgress
+      }
       setQaError(message)
       qaRequestMessageMapRef.current.delete(requestId)
       if (activeQARequestIdRef.current === requestId) {
@@ -2375,6 +2652,8 @@ function AISummaryWindow() {
           ? {
               ...item,
               content: '',
+              progressEvents: upsertQAProgressEvent(item.progressEvents, failedProgress),
+              timelineEvents: upsertQATimelineItems(item.timelineEvents, [failedTimelineItem]),
               isStreaming: false,
               error: message
             }

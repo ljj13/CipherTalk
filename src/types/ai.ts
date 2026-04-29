@@ -156,6 +156,7 @@ export interface SessionQAMessageRecord {
   evidenceRefs?: SummaryEvidenceRef[]
   toolCalls?: SessionQAToolCall[]
   progressEvents?: SessionQAProgressEvent[]
+  timelineEvents?: SessionQATimelineItem[]
   tokensUsed?: number
   cost?: number
   provider?: string
@@ -231,6 +232,30 @@ export interface SessionQAProgressEvent {
   diagnostics?: string[]
 }
 
+export type SessionQATimelineChannel = 'answer' | 'think'
+
+export interface SessionQATimelineTextItem {
+  type: 'text'
+  id: string
+  order: number
+  createdAt: number
+  requestId?: SessionQARequestId
+  channel: SessionQATimelineChannel
+  content: string
+}
+
+export interface SessionQATimelineProgressItem {
+  type: 'progress'
+  id: string
+  order: number
+  createdAt: number
+  requestId?: SessionQARequestId
+  channel?: SessionQATimelineChannel
+  event: SessionQAProgressEvent
+}
+
+export type SessionQATimelineItem = SessionQATimelineTextItem | SessionQATimelineProgressItem
+
 export type SessionQAJobEventKind = 'progress' | 'chunk' | 'final' | 'error' | 'cancelled'
 
 export interface SessionQAJobEvent {
@@ -239,6 +264,7 @@ export interface SessionQAJobEvent {
   kind: SessionQAJobEventKind
   createdAt: number
   progress?: SessionQAProgressEvent
+  timelineItems?: SessionQATimelineItem[]
   chunk?: string
   result?: SessionQAResult
   error?: string

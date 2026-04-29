@@ -1,4 +1,4 @@
-import { BaseAIProvider } from './base'
+import { BaseAIProvider, type ChatOptions, type ChatWithToolsOptions } from './base'
 
 /**
  * 通义千问提供商元数据
@@ -74,6 +74,18 @@ export class QwenProvider extends BaseAIProvider {
 
   protected resolveModelId(displayName: string): string {
     return this.getModelId(displayName)
+  }
+
+  protected getChatRequestExtraParams(options?: ChatOptions): Record<string, unknown> {
+    return {
+      enable_thinking: options?.enableThinking !== false
+    }
+  }
+
+  protected getToolRequestExtraParams(options: ChatWithToolsOptions): Record<string, unknown> {
+    return {
+      enable_thinking: options.enableThinking !== false
+    }
   }
 
   /**

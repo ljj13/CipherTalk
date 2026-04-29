@@ -49,7 +49,8 @@ import type { SessionProfileMemoryState } from '../memory/memoryProfileService'
 import type { MemoryEvidenceRef, MemoryItem, MemoryItemInput, MemorySourceType } from '../memory/memorySchema'
 import type {
   SessionQAConversationDetail,
-  SessionQAConversationSummary
+  SessionQAConversationSummary,
+  SessionQATimelineItem
 } from '../../../src/types/ai'
 
 /**
@@ -859,6 +860,7 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
     evidenceRefs?: any[]
     toolCalls?: SessionQAToolCall[]
     progressEvents?: SessionQAProgressEvent[]
+    timelineEvents?: SessionQATimelineItem[]
     tokensUsed?: number
     cost?: number
     provider?: string

@@ -51,6 +51,18 @@ export class DeepSeekProvider extends BaseAIProvider {
     return this.getModelId(displayName)
   }
 
+  protected getToolRequestExtraParams(options: ChatWithToolsOptions): Record<string, unknown> {
+    const enableThinking = options.enableThinking !== false
+    return enableThinking
+      ? {
+          thinking: { type: 'enabled' },
+          reasoning_effort: 'high'
+        }
+      : {
+          thinking: { type: 'disabled' }
+        }
+  }
+
   private buildRequestParams(
     messages: OpenAI.Chat.ChatCompletionMessageParam[],
     options: ChatOptions | undefined,
@@ -94,7 +106,7 @@ export class DeepSeekProvider extends BaseAIProvider {
   ): Promise<NativeToolCallResult> {
     const client = await this.getClient()
     const requestParams: any = {
-      ...this.buildRequestParams(messages, { ...options, enableThinking: false }, false),
+      ...this.buildRequestParams(messages, options, false),
       tools: options.tools,
       tool_choice: options.toolChoice ?? 'auto'
     }

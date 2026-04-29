@@ -13,12 +13,25 @@ type SessionQAProgressEvent = {
   [key: string]: unknown
 }
 
+type SessionQATimelineItem = {
+  type: 'text' | 'progress'
+  id: string
+  order: number
+  createdAt: number
+  requestId?: string
+  channel?: 'answer' | 'think'
+  content?: string
+  event?: SessionQAProgressEvent
+  [key: string]: unknown
+}
+
 type SessionQAJobEvent = {
   requestId: string
   seq: number
   kind: 'progress' | 'chunk' | 'final' | 'error' | 'cancelled'
   createdAt: number
   progress?: SessionQAProgressEvent
+  timelineItems?: SessionQATimelineItem[]
   chunk?: string
   result?: unknown
   error?: string

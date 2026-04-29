@@ -6,7 +6,8 @@ import type {
   SessionQAJobEvent,
   SessionQAProgressEvent,
   SessionQACancelResult,
-  SessionQAStartResult
+  SessionQAStartResult,
+  SessionQATimelineItem
 } from '../../../src/types/ai'
 import type { SessionQAOptions } from './aiService'
 import { dataManagementService } from '../dataManagementService'
@@ -23,6 +24,8 @@ type SessionQAJob = {
   assistantThinkContent: string
   assistantIsThinking: boolean
   progressEvents: SessionQAProgressEvent[]
+  timelineEvents: SessionQATimelineItem[]
+  timelineItemSeq: number
   options: Omit<SessionQAStartOptions, 'requestId'>
 }
 
@@ -44,6 +47,14 @@ function upsertProgressEvent(
   return events.map((item, itemIndex) => itemIndex === index
     ? { ...event, createdAt: item.createdAt || event.createdAt }
     : item
+  )
+}
+
+function sortTimelineEvents(items: SessionQATimelineItem[]): SessionQATimelineItem[] {
+  return [...items].sort((a, b) =>
+    a.order - b.order
+    || a.createdAt - b.createdAt
+    || a.id.localeCompare(b.id)
   )
 }
 
@@ -96,6 +107,8 @@ class SessionQAJobService {
       assistantThinkContent: '',
       assistantIsThinking: false,
       progressEvents: [],
+      timelineEvents: [],
+      timelineItemSeq: 0,
       options: workerOptions
     }
     this.jobs.set(requestId, job)
@@ -128,6 +141,21 @@ class SessionQAJobService {
     })
 
     this.notifyConversationUpdated(job)
+    this.forwardEvent(requestId, {
+      kind: 'progress',
+      progress: {
+        id: 'job-start',
+        stage: 'intent',
+        status: 'completed',
+        title: '启动问答任务',
+        displayName: '启动问答任务',
+        nodeName: '启动问答任务',
+        detail: '任务已创建，正在进入问答流程',
+        source: 'model',
+        requestId,
+        createdAt: Date.now()
+      }
+    })
 
     return { success: true, requestId, conversationId: conversation.conversationId }
   }
@@ -138,6 +166,21 @@ class SessionQAJobService {
       return { success: false, requestId, error: '问答任务不存在或已结束' }
     }
 
+    const createdAt = Date.now()
+    const progress: SessionQAProgressEvent = {
+      id: 'job-cancelled',
+      stage: 'answer',
+      status: 'failed',
+      title: '已取消回答',
+      displayName: '已取消回答',
+      nodeName: '已取消回答',
+      detail: '用户已取消本次问答',
+      source: 'model',
+      requestId,
+      createdAt
+    }
+    job.progressEvents = upsertProgressEvent(job.progressEvents, progress)
+    const timelineItem = this.upsertTimelineProgress(job, progress, ++job.seq, createdAt)
     this.jobs.delete(requestId)
     await job.worker.terminate()
     this.persistAssistantMessage(job, {
@@ -148,7 +191,9 @@ class SessionQAJobService {
       requestId,
       seq: ++job.seq,
       kind: 'cancelled',
-      createdAt: Date.now()
+      createdAt,
+      progress,
+      timelineItems: [timelineItem]
     })
     this.notifyConversationUpdated(job)
     return { success: true, requestId }
@@ -158,20 +203,52 @@ class SessionQAJobService {
     const job = this.jobs.get(requestId)
     if (!job) return
 
+    const nextSeq = ++job.seq
+    const nextCreatedAt = typeof event.createdAt === 'number' ? event.createdAt : Date.now()
+    const kind = event.kind || 'error'
+    const timelineItems: SessionQATimelineItem[] = []
+    let nextProgress = event.progress
+
     if (event.kind === 'chunk' && event.chunk) {
-      this.appendAssistantChunk(job, event.chunk)
+      timelineItems.push(...this.appendAssistantChunk(job, event.chunk, nextSeq, nextCreatedAt))
     }
 
     if (event.kind === 'progress' && event.progress) {
-      job.progressEvents = upsertProgressEvent(job.progressEvents, event.progress)
+      const progress = {
+        ...event.progress,
+        requestId: event.progress.requestId || requestId,
+        createdAt: event.progress.createdAt || nextCreatedAt
+      }
+      nextProgress = progress
+      job.progressEvents = upsertProgressEvent(job.progressEvents, progress)
+      timelineItems.push(this.upsertTimelineProgress(job, progress, nextSeq, nextCreatedAt))
+    }
+
+    if (event.kind === 'error' && !event.progress) {
+      const progress: SessionQAProgressEvent = {
+        id: 'job-error',
+        stage: 'answer',
+        status: 'failed',
+        title: '问答失败',
+        displayName: '问答失败',
+        nodeName: '问答失败',
+        detail: event.error || '问答失败',
+        source: 'model',
+        requestId,
+        createdAt: nextCreatedAt
+      }
+      nextProgress = progress
+      job.progressEvents = upsertProgressEvent(job.progressEvents, progress)
+      timelineItems.push(this.upsertTimelineProgress(job, progress, nextSeq, nextCreatedAt))
     }
 
     const nextEvent: SessionQAJobEvent = {
       requestId,
-      seq: typeof event.seq === 'number' ? event.seq : ++job.seq,
-      kind: event.kind || 'error',
-      createdAt: typeof event.createdAt === 'number' ? event.createdAt : Date.now(),
-      progress: event.progress,
+      seq: nextSeq,
+      kind,
+      createdAt: nextCreatedAt,
+      progress: nextProgress,
+      timelineItems: timelineItems.length ? timelineItems : event.timelineItems,
       chunk: event.chunk,
       result: event.result,
       error: event.error
@@ -215,16 +292,52 @@ class SessionQAJobService {
     }
   }
 
-  private appendAssistantChunk(job: SessionQAJob, chunk: string) {
+  private appendAssistantChunk(
+    job: SessionQAJob,
+    chunk: string,
+    order: number,
+    createdAt: number
+  ): SessionQATimelineItem[] {
     let remaining = chunk
+    const changed = new Map<string, SessionQATimelineItem>()
+
+    const appendText = (channel: 'answer' | 'think', content: string) => {
+      if (!content) return
+
+      if (channel === 'think') {
+        job.assistantThinkContent += content
+      } else {
+        job.assistantContent += content
+      }
+
+      const lastItem = job.timelineEvents[job.timelineEvents.length - 1]
+      if (lastItem?.type === 'text' && lastItem.channel === channel) {
+        lastItem.content += content
+        changed.set(lastItem.id, lastItem)
+        return
+      }
+
+      const item: SessionQATimelineItem = {
+        type: 'text',
+        id: `text:${++job.timelineItemSeq}`,
+        order: order + (job.timelineItemSeq / 1_000_000),
+        createdAt,
+        requestId: job.requestId,
+        channel,
+        content
+      }
+      job.timelineEvents.push(item)
+      changed.set(item.id, item)
+    }
+
     while (remaining.length > 0) {
       if (job.assistantIsThinking) {
         const closeIndex = remaining.indexOf('</think>')
         if (closeIndex < 0) {
-          job.assistantThinkContent += remaining
+          appendText('think', remaining)
           break
         }
-        job.assistantThinkContent += remaining.slice(0, closeIndex)
+        appendText('think', remaining.slice(0, closeIndex))
         job.assistantIsThinking = false
         remaining = remaining.slice(closeIndex + '</think>'.length)
         continue
@@ -232,13 +345,59 @@ class SessionQAJobService {
 
       const openIndex = remaining.indexOf('<think>')
       if (openIndex < 0) {
-        job.assistantContent += remaining
+        appendText('answer', remaining)
         break
       }
-      job.assistantContent += remaining.slice(0, openIndex)
+      appendText('answer', remaining.slice(0, openIndex))
       job.assistantIsThinking = true
       remaining = remaining.slice(openIndex + '<think>'.length)
     }
+
+    return Array.from(changed.values())
+  }
+
+  private upsertTimelineProgress(
+    job: SessionQAJob,
+    progress: SessionQAProgressEvent,
+    order: number,
+    createdAt: number
+  ): SessionQATimelineItem {
+    const id = `progress:${progress.id}`
+    const index = job.timelineEvents.findIndex((item) => item.id === id)
+    if (index >= 0) {
+      const existing = job.timelineEvents[index] as SessionQATimelineItem
+      const item: SessionQATimelineItem = existing.type === 'progress'
+        ? {
+            ...existing,
+            event: {
+              ...progress,
+              createdAt: existing.event.createdAt || progress.createdAt || createdAt
+            }
+          }
+        : existing
+      job.timelineEvents[index] = item
+      return item
+    }
+
+    const lastTimelineItem = job.timelineEvents[job.timelineEvents.length - 1]
+    const shouldAttachToolToThink = progress.stage === 'tool'
+      && (
+        job.assistantIsThinking
+        || (lastTimelineItem?.type === 'text' && lastTimelineItem.channel === 'think')
+      )
+
+    const item: SessionQATimelineItem = {
+      type: 'progress',
+      id,
+      order,
+      createdAt,
+      requestId: job.requestId,
+      channel: shouldAttachToolToThink ? 'think' : 'answer',
+      event: progress
+    }
+    job.timelineEvents.push(item)
+    job.timelineEvents = sortTimelineEvents(job.timelineEvents)
+    return item
   }
 
   private persistAssistantMessage(job: SessionQAJob, event: Partial<SessionQAJobEvent>) {
@@ -260,6 +419,7 @@ class SessionQAJobService {
         evidenceRefs: result?.evidenceRefs,
         toolCalls: result?.toolCalls,
         progressEvents: job.progressEvents,
+        timelineEvents: job.timelineEvents,
         tokensUsed: result?.tokensUsed,
         cost: result?.cost,
         provider: result?.provider || job.options.provider,

@@ -69,7 +69,7 @@ export interface ChatWithToolsOptions extends ChatOptions {
 }
 
 export interface NativeToolCallResult {
-  message: OpenAI.Chat.ChatCompletionMessage
+  message: OpenAI.Chat.ChatCompletionMessage & { reasoning_content?: string | null }
   finishReason?: string | null
 }
 
@@ -166,6 +166,14 @@ export abstract class BaseAIProvider implements AIProvider {
     return displayName
   }
 
+  protected getChatRequestExtraParams(_options?: ChatOptions): Record<string, unknown> {
+    return {}
+  }
+
+  protected getToolRequestExtraParams(_options: ChatWithToolsOptions): Record<string, unknown> {
+    return {}
+  }
+
   async chat(messages: OpenAI.Chat.ChatCompletionMessageParam[], options?: ChatOptions): Promise<string> {
     const client = await this.getClient()
     const model = this.resolveModelId(options?.model || this.models[0])
@@ -175,7 +183,8 @@ export abstract class BaseAIProvider implements AIProvider {
       messages: messages,
       temperature: options?.temperature || 0.7,
       max_tokens: options?.maxTokens,
-      stream: false
+      stream: false,
+      ...this.getChatRequestExtraParams(options)
     })
 
     return response.choices[0]?.message?.content || ''
@@ -195,7 +204,8 @@ export abstract class BaseAIProvider implements AIProvider {
       max_tokens: options?.maxTokens,
       stream: false,
       tools: options.tools,
-      tool_choice: options.toolChoice ?? 'auto'
+      tool_choice: options.toolChoice ?? 'auto',
+      ...this.getToolRequestExtraParams(options)
     }
 
     if (typeof options.parallelToolCalls === 'boolean') {
@@ -228,7 +238,8 @@ export abstract class BaseAIProvider implements AIProvider {
       max_tokens: options?.maxTokens,
       stream: true,
       tools: options.tools,
-      tool_choice: options.toolChoice ?? 'auto'
+      tool_choice: options.toolChoice ?? 'auto',
+      ...this.getToolRequestExtraParams(options)
     }
 
     if (typeof options.parallelToolCalls === 'boolean') {
@@ -239,6 +250,8 @@ export abstract class BaseAIProvider implements AIProvider {
       const stream = await client.chat.completions.create(requestParams) as any
       let role: 'assistant' = 'assistant'
       let content = ''
+      let reasoningContent = ''
+      let isThinking = false
       let finishReason: string | null = null
       const toolCallByIndex = new Map<number, {
         id: string
@@ -254,7 +267,23 @@ export abstract class BaseAIProvider implements AIProvider {
         const delta = choice.delta || {}
         if (delta.role === 'assistant') role = 'assistant'
 
+        const reasoning = typeof delta.reasoning_content === 'string'
+          ? delta.reasoning_content
+          : ''
+        if (reasoning) {
+          if (!isThinking) {
+            onChunk('<think>')
+            isThinking = true
+          }
+          reasoningContent += reasoning
+          onChunk(reasoning)
+        }
+
         if (typeof delta.content === 'string' && delta.content) {
+          if (isThinking) {
+            onChunk('</think>')
+            isThinking = false
+          }
           content += delta.content
           onChunk(delta.content)
         }
@@ -296,8 +325,15 @@ export abstract class BaseAIProvider implements AIProvider {
         role,
         content: content || null
       }
+      if (reasoningContent) {
+        message.reasoning_content = reasoningContent
+      }
       if (toolCalls.length > 0) {
         message.tool_calls = toolCalls
+      }
+
+      if (isThinking) {
+        onChunk('</think>')
       }
 
       return { message, finishReason }
@@ -321,7 +357,8 @@ export abstract class BaseAIProvider implements AIProvider {
       messages: messages,
       temperature: options?.temperature || 0.7,
       max_tokens: options?.maxTokens,
-      stream: true
+      stream: true,
+      ...this.getChatRequestExtraParams(options)
     }
     
     // 自适应添加思考模式参数（尝试所有已知的参数格式）
