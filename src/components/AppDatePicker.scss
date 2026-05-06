@@ -4,6 +4,11 @@
   max-width: 100%;
   -webkit-app-region: no-drag;
 
+  &,
+  * {
+    box-sizing: border-box;
+  }
+
   .picker-trigger-shell {
     position: relative;
     display: inline-flex;
@@ -88,6 +93,7 @@
   .picker-dropdown {
     position: fixed;
     display: flex;
+    width: max-content;
     max-width: calc(100vw - 20px);
     overflow: hidden;
     border: 1px solid var(--border-color);
@@ -100,7 +106,8 @@
 
   .quick-options {
     display: flex;
-    min-width: 112px;
+    width: 112px;
+    flex: 0 0 112px;
     flex-direction: column;
     gap: 2px;
     padding: 12px;
@@ -127,7 +134,9 @@
   }
 
   .calendar-section {
-    width: 304px;
+    width: 320px;
+    max-width: calc(100vw - 20px);
+    flex: 0 0 auto;
     padding: 16px;
     background: var(--bg-primary, transparent);
   }

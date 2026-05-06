@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Calendar, ChevronLeft, ChevronRight, Loader2, X } from 'lucide-react'
 import './AppDatePicker.scss'
 
@@ -150,6 +151,7 @@ function AppDatePicker(props: AppDatePickerProps) {
   const [dropdownStyle, setDropdownStyle] = useState<CSSProperties>({})
   const containerRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
   function getInitialViewDate() {
     const selectedDate = parseDateValue(selectedEnd || selectedStart)
@@ -188,7 +190,8 @@ function AppDatePicker(props: AppDatePickerProps) {
     if (inline || !isOpen) return
 
     const handleClickOutside = (event: globalThis.MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node
+      if (!containerRef.current?.contains(target) && !dropdownRef.current?.contains(target)) {
         setIsOpen(false)
       }
     }
@@ -207,21 +210,46 @@ function AppDatePicker(props: AppDatePickerProps) {
     }
   }, [inline, isOpen])
 
+  useLayoutEffect(() => {
+    if (!inline && isOpen) {
+      positionDropdown()
+    }
+  }, [inline, isOpen, pickerView, yearPageStart, viewDate])
+
   function positionDropdown() {
     if (!triggerRef.current) return
 
     const rect = triggerRef.current.getBoundingClientRect()
-    const estimatedWidth = props.mode === 'range' && shouldShowQuickOptions ? 444 : 320
-    const dropdownWidth = Math.min(estimatedWidth, window.innerWidth - 20)
-    const dropdownHeight = props.mode === 'range' ? 408 : 376
+    const viewportPadding = 10
+    const estimatedWidth = props.mode === 'range' && shouldShowQuickOptions ? 432 : 320
+    const measuredWidth = dropdownRef.current?.offsetWidth || 0
+    const measuredHeight = dropdownRef.current?.offsetHeight || 0
+    const maxAvailableWidth = Math.max(260, window.innerWidth - viewportPadding * 2)
+    const dropdownWidth = Math.min(measuredWidth || estimatedWidth, maxAvailableWidth)
+    const dropdownHeight = measuredHeight || (props.mode === 'range' ? 408 : 376)
     const leftBase = dropdownAlign === 'right' ? rect.right - dropdownWidth : rect.left
-    const left = Math.min(Math.max(10, leftBase), Math.max(10, window.innerWidth - dropdownWidth - 10))
+    const left = Math.min(
+      Math.max(viewportPadding, leftBase),
+      Math.max(viewportPadding, window.innerWidth - dropdownWidth - viewportPadding)
+    )
     const spaceBelow = window.innerHeight - rect.bottom - 12
     const openUp = spaceBelow < dropdownHeight && rect.top > dropdownHeight
 
     setDropdownStyle(openUp
-      ? { position: 'fixed', left, bottom: window.innerHeight - rect.top + 8, zIndex: 99999 }
-      : { position: 'fixed', left, top: rect.bottom + 8, zIndex: 99999 }
+      ? {
+        position: 'fixed',
+        left,
+        bottom: window.innerHeight - rect.top + 8,
+        maxWidth: maxAvailableWidth,
+        zIndex: 99999,
+      }
+      : {
+        position: 'fixed',
+        left,
+        top: rect.bottom + 8,
+        maxWidth: maxAvailableWidth,
+        zIndex: 99999,
+      }
     )
   }
 
@@ -723,10 +751,13 @@ function AppDatePicker(props: AppDatePickerProps) {
         )}
       </div>
 
-      {isOpen && (
-        <div className={joinClassNames('picker-dropdown', dropdownClassName)} style={dropdownStyle}>
-          {renderPanel()}
-        </div>
+      {isOpen && createPortal(
+        <div className="app-date-picker app-date-picker-portal-host">
+          <div ref={dropdownRef} className={joinClassNames('picker-dropdown', dropdownClassName)} style={dropdownStyle}>
+            {renderPanel()}
+          </div>
+        </div>,
+        document.body,
       )}
     </div>
   )

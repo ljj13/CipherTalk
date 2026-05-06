@@ -30,13 +30,13 @@ function JumpToDateDialog({ isOpen, onClose, onSelect, currentDate }: JumpToDate
 
   return (
     <div className="jump-date-overlay" onClick={onClose}>
-      <div className="jump-date-modal custom-date-picker" onClick={event => event.stopPropagation()}>
-        <div className="modal-header">
-          <div className="title-row">
+      <div className="jump-date-modal" onClick={event => event.stopPropagation()}>
+        <div className="jump-date-header">
+          <div className="jump-date-title-row">
             <CalendarIcon size={18} />
             <h3>选择日期</h3>
           </div>
-          <button className="close-btn" onClick={onClose}>
+          <button className="jump-date-close-btn" onClick={onClose} aria-label="关闭日期选择">
             <X size={18} />
           </button>
         </div>
