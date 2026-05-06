@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { AlertCircle, Loader2, RefreshCw, Image as ImageIcon, Play, PlayCircle, Video, Link, FileText, FileArchive, Users, Phone, MapPin, UserRound, MessageSquare } from 'lucide-react'
 import { Qwen } from '@lobehub/icons'
 import { useChatStore } from '../../../../stores/chatStore'
@@ -10,7 +10,7 @@ import { ChannelVideoCard, LinkSource, LinkThumb, MiniProgramThumb } from './App
 import { emojiDataUrlCache, enqueueDecrypt, globalVoiceManager, imageDataUrlCache, lastIncrementalUpdateTime, videoInfoCache } from './mediaState'
 import type { CachedVideoInfo } from './mediaState'
 
-function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, hasImageKey, onContextMenu, isSelected, quoteStyle = 'default' }: {
+interface MessageBubbleProps {
   message: Message;
   session: ChatSession;
   showTime?: boolean;
@@ -20,7 +20,9 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   onContextMenu?: (e: React.MouseEvent, message: Message, handlers?: any) => void;
   isSelected?: boolean;
   quoteStyle?: 'default' | 'wechat';
-}) {
+}
+
+function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, hasImageKey, onContextMenu, isSelected, quoteStyle = 'default' }: MessageBubbleProps) {
   const syncVersion = useChatStore(state => state.syncVersion)
   const lastSyncVersionRef = useRef(syncVersion)
 
@@ -67,6 +69,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   const imageRecoveringRef = useRef(false)
   const lastRecoverTriedPathRef = useRef<string | null>(null)
   const [isVisible, setIsVisible] = useState(false)
+  const bubbleRef = useRef<HTMLDivElement>(null)
   const imageContainerRef = useRef<HTMLDivElement>(null)
 
   // 视频相关状态
@@ -232,7 +235,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
       },
       {
         root: scrollRoot,
-        rootMargin: '2800px 0px', // 提前约数屏预热，向上滚动时先解密上方图片
+        rootMargin: '1000px 0px',
         threshold: 0
       }
     )
@@ -246,6 +249,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   useEffect(() => {
     if (!isVideo || !videoContainerRef.current) return
 
+    const scrollRoot = videoContainerRef.current.closest('.message-list') as HTMLElement | null
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
@@ -256,6 +260,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
         })
       },
       {
+        root: scrollRoot,
         rootMargin: '200px 0px',
         threshold: 0
       }
@@ -265,6 +270,33 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
 
     return () => observer.disconnect()
   }, [isVideo])
+
+  // 引用图片/表情也按消息气泡可见性延后加载，避免一页消息挂载时同时发起大量 IPC。
+  useEffect(() => {
+    const hasQuotedMedia = Boolean(message.quotedImageMd5 || message.quotedEmojiMd5 || message.quotedEmojiCdnUrl)
+    if (!hasQuotedMedia || isVisible || !bubbleRef.current) return
+
+    const scrollRoot = bubbleRef.current.closest('.message-list') as HTMLElement | null
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setIsVisible(true)
+            observer.disconnect()
+          }
+        })
+      },
+      {
+        root: scrollRoot,
+        rootMargin: '1000px 0px',
+        threshold: 0
+      }
+    )
+
+    observer.observe(bubbleRef.current)
+
+    return () => observer.disconnect()
+  }, [message.quotedImageMd5, message.quotedEmojiMd5, message.quotedEmojiCdnUrl, isVisible])
 
   // 加载视频信息
   useEffect(() => {
@@ -658,12 +690,16 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
     let timeoutId: number | null = null
 
     const doDecrypt = async () => {
+      if (cancelled) return
+      setImageLoading(true)
+
       // 设置 5 秒超时
       const timeoutPromise = new Promise<{ timeout: true }>((resolve) => {
         timeoutId = window.setTimeout(() => resolve({ timeout: true }), 5000)
       })
 
       const decryptPromise = (async () => {
+        if (cancelled) return { cancelled: true }
         // 先尝试从缓存获取
         try {
           const result = await window.electronAPI.image.resolveCache({
@@ -699,7 +735,6 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
         return { failed: true }
       })()
 
-      setImageLoading(true)
       const result = await Promise.race([decryptPromise, timeoutPromise])
 
       if (timeoutId) {
@@ -894,15 +929,19 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
   // 引用图片自动解密
   useEffect(() => {
     if (!message.quotedImageMd5) return
+    if (!isVisible) return
     if (quotedImageLocalPath) return
 
+    let cancelled = false
     const doDecrypt = async () => {
+      if (cancelled) return
       try {
         // 先尝试从缓存获取
         const cached = await window.electronAPI.image.resolveCache({
           sessionId: session.username,
           imageMd5: message.quotedImageMd5
         })
+        if (cancelled) return
         if (cached.success && cached.localPath) {
           imageDataUrlCache.set(message.quotedImageMd5!, cached.localPath)
           setQuotedImageLocalPath(cached.localPath)
@@ -915,6 +954,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
           imageMd5: message.quotedImageMd5,
           force: false
         })
+        if (cancelled) return
         if (result.success && result.localPath) {
           imageDataUrlCache.set(message.quotedImageMd5!, result.localPath)
           setQuotedImageLocalPath(result.localPath)
@@ -923,11 +963,15 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
     }
 
     enqueueDecrypt(doDecrypt)
-  }, [message.quotedImageMd5, quotedImageLocalPath, session.username])
+    return () => {
+      cancelled = true
+    }
+  }, [message.quotedImageMd5, quotedImageLocalPath, session.username, isVisible])
 
   // 引用表情包自动下载
   useEffect(() => {
     if (!message.quotedEmojiMd5 && !message.quotedEmojiCdnUrl) return
+    if (!isVisible) return
     if (quotedEmojiLocalPath) return
 
     const cdnUrl = message.quotedEmojiCdnUrl || ''
@@ -939,13 +983,18 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
       return
     }
 
+    let cancelled = false
     window.electronAPI.chat.downloadEmoji(cdnUrl, md5).then((result: any) => {
+      if (cancelled) return
       if (result.success && result.localPath) {
         if (md5) emojiDataUrlCache.set(md5, result.localPath)
         setQuotedEmojiLocalPath(result.localPath)
       }
     }).catch(() => {})
-  }, [message.quotedEmojiMd5, message.quotedEmojiCdnUrl, quotedEmojiLocalPath])
+    return () => {
+      cancelled = true
+    }
+  }, [message.quotedEmojiMd5, message.quotedEmojiCdnUrl, quotedEmojiLocalPath, isVisible])
 
   if (isSystem) {
     // 系统类消息：包含“拍一拍”等 appmsg(type=62)
@@ -1896,6 +1945,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
         </div>
       )}
       <div
+        ref={bubbleRef}
         className={`message-bubble ${bubbleClass} ${isEmoji && message.emojiCdnUrl && !emojiError ? 'emoji' : ''} ${isImage ? 'image' : ''} ${isVideo ? 'video' : ''} ${isVoice ? 'voice' : ''} ${isSelected ? 'selected' : ''}`}
         onContextMenu={(e) => {
           if (onContextMenu) {
@@ -1964,4 +2014,15 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
 }
 
 
-export default MessageBubble
+function areMessageBubblePropsEqual(prev: MessageBubbleProps, next: MessageBubbleProps) {
+  return prev.message === next.message &&
+    prev.session === next.session &&
+    prev.showTime === next.showTime &&
+    prev.myAvatarUrl === next.myAvatarUrl &&
+    prev.isGroupChat === next.isGroupChat &&
+    prev.hasImageKey === next.hasImageKey &&
+    prev.isSelected === next.isSelected &&
+    prev.quoteStyle === next.quoteStyle
+}
+
+export default memo(MessageBubble, areMessageBubblePropsEqual)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react'
 import { MessageSquare } from 'lucide-react'
 import { useChatStore } from '../../stores/chatStore'
 import { useUpdateStatusStore } from '../../stores/updateStatusStore'
@@ -26,6 +26,7 @@ import { setLastIncrementalUpdateTime } from './components/messageBubble/mediaSt
 import { useContextMenuState } from './hooks/useContextMenuState'
 import { useSessionDetail } from './hooks/useSessionDetail'
 import { useSidebarResize } from './hooks/useSidebarResize'
+import { useThrottledScroll } from './hooks/useThrottledScroll'
 import { useTopToast } from './hooks/useTopToast'
 import type { BatchImageMessage } from './types'
 import { checkOnlineSttConfigReady } from './utils/sttConfig'
@@ -33,6 +34,11 @@ import { formatSessionTime } from './utils/time'
 
 interface ChatPageProps {
   // 保留接口以备将来扩展
+}
+
+type ScrollAnchor = {
+  scrollHeight: number
+  scrollTop: number
 }
 
 function ChatPage(_props: ChatPageProps) {
@@ -76,9 +82,8 @@ function ChatPage(_props: ChatPageProps) {
   const sidebarRef = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<Message[]>([])
   const isLoadingMoreRef = useRef(false)
-  const lastScrollTopRef = useRef(0)
   const scrollToBottomAfterRenderRef = useRef(false)
-  const scrollRestoreTimersRef = useRef<number[]>([])
+  const pendingPrependAnchorRef = useRef<ScrollAnchor | null>(null)
   const currentSessionIdRef = useRef<string | null>(null)
   const lastUpdateTimeRef = useRef<number>(0)
   const updateTimerRef = useRef<NodeJS.Timeout | null>(null)
@@ -101,7 +106,7 @@ function ChatPage(_props: ChatPageProps) {
   const setIsUpdating = useUpdateStatusStore(state => state.setIsUpdating)
   const isUpdating = useUpdateStatusStore(state => state.isUpdating)
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | undefined>(undefined)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  // showScrollToBottom 由 useThrottledScroll hook 管理
   const { sidebarWidth, isResizing, handleResizeStart } = useSidebarResize(260)
   const {
     showDetailPanel,
@@ -531,73 +536,28 @@ function ChatPage(_props: ChatPageProps) {
     isLoadingMoreRef.current = isLoadingMore
   }, [isLoadingMore])
 
-  const findMessageWrapperByKey = useCallback((listEl: HTMLElement, key: string): HTMLElement | null => {
-    const wrappers = Array.from(listEl.querySelectorAll<HTMLElement>('.message-wrapper[data-message-key]'))
-    return wrappers.find(el => el.dataset.messageKey === key) || null
-  }, [])
-
-  const captureScrollAnchor = useCallback((): { key: string; top: number } | null => {
+  const captureScrollAnchor = useCallback((): ScrollAnchor | null => {
     const listEl = messageListRef.current
     if (!listEl) return null
-
-    const listRect = listEl.getBoundingClientRect()
-    const wrappers = Array.from(listEl.querySelectorAll<HTMLElement>('.message-wrapper[data-message-key]'))
-    const anchorEl = wrappers.find((el) => {
-      const rect = el.getBoundingClientRect()
-      return rect.bottom >= listRect.top + 12
-    })
-
-    const key = anchorEl?.dataset.messageKey
-    if (!anchorEl || !key) return null
-
-    return {
-      key,
-      top: anchorEl.getBoundingClientRect().top - listRect.top
-    }
+    return { scrollHeight: listEl.scrollHeight, scrollTop: listEl.scrollTop }
   }, [])
 
-  const clearScrollRestoreTimers = useCallback(() => {
-    for (const timer of scrollRestoreTimersRef.current) {
-      window.clearTimeout(timer)
-    }
-    scrollRestoreTimersRef.current = []
-  }, [])
-
-  const restoreScrollAnchor = useCallback((anchor: { key: string; top: number } | null) => {
+  const restoreScrollAnchor = useCallback((anchor: ScrollAnchor | null) => {
     if (!anchor) return
-
-    clearScrollRestoreTimers()
-
-    const restore = () => {
-      const listEl = messageListRef.current
-      if (!listEl) return
-      const anchorEl = findMessageWrapperByKey(listEl, anchor.key)
-      if (!anchorEl) return
-
-      const listTop = listEl.getBoundingClientRect().top
-      const currentTop = anchorEl.getBoundingClientRect().top - listTop
-      const delta = currentTop - anchor.top
-      if (Math.abs(delta) > 1) {
-        listEl.scrollTop += delta
-      }
+    const listEl = messageListRef.current
+    if (!listEl) return
+    const delta = listEl.scrollHeight - anchor.scrollHeight
+    if (delta !== 0) {
+      listEl.scrollTop = anchor.scrollTop + delta
     }
+  }, [])
 
-    requestAnimationFrame(() => {
-      restore()
-      scrollRestoreTimersRef.current = [
-        window.setTimeout(() => {
-          restore()
-          isLoadingMoreRef.current = false
-        }, 150)
-      ]
-    })
-  }, [clearScrollRestoreTimers, findMessageWrapperByKey])
-
-  useEffect(() => {
-    return () => {
-      clearScrollRestoreTimers()
-    }
-  }, [clearScrollRestoreTimers])
+  useLayoutEffect(() => {
+    const anchor = pendingPrependAnchorRef.current
+    if (!anchor) return
+    pendingPrependAnchorRef.current = null
+    restoreScrollAnchor(anchor)
+  }, [messages.length, restoreScrollAnchor])
 
   const copyText = useCallback(async (text: string) => {
     try {
@@ -774,8 +734,7 @@ function ChatPage(_props: ChatPageProps) {
 
   // 加载消息
   const loadMessages = async (sessionId: string, offset = 0) => {
-    const listEl = messageListRef.current
-
+    const anchor = offset > 0 ? captureScrollAnchor() : null
     if (offset === 0) {
       setLoadingMessages(true)
       setMessages([])
@@ -795,8 +754,6 @@ function ChatPage(_props: ChatPageProps) {
       setLoadingMore(true)
     }
 
-    const anchor = offset > 0 ? captureScrollAnchor() : null
-
     try {
       // 确保连接已建立（如果未连接，先连接）
       if (!isConnected) {
@@ -809,17 +766,39 @@ function ChatPage(_props: ChatPageProps) {
         setConnected(true)
       }
 
-      const result = await window.electronAPI.chat.getMessages(sessionId, offset, 50)
+      const oldestLoadedMessage = messagesRef.current[0]
+      const useCursorPagination = offset > 0 && oldestLoadedMessage !== undefined && typeof oldestLoadedMessage.sortSeq === 'number'
+      const result = useCursorPagination
+        ? await window.electronAPI.chat.getMessagesBefore(
+          sessionId,
+          oldestLoadedMessage.sortSeq,
+          50,
+          typeof oldestLoadedMessage.createTime === 'number' ? oldestLoadedMessage.createTime : undefined,
+          typeof oldestLoadedMessage.localId === 'number' ? oldestLoadedMessage.localId : undefined
+        )
+        : await window.electronAPI.chat.getMessages(sessionId, offset, 50)
+
       if (result.success && result.messages) {
+        const msgs = result.messages
         if (offset === 0) {
-          setMessages(result.messages)
+          setMessages(msgs)
           scrollToBottomAfterRenderRef.current = true
         } else {
-          appendMessages(result.messages, true)
-          restoreScrollAnchor(anchor)
+          const hasMore = result.hasMore ?? false
+          const newOffset = offset + msgs.length
+          if (msgs.length === 0) {
+            setHasMoreMessages(false)
+          } else {
+            pendingPrependAnchorRef.current = anchor
+            appendMessages(msgs, true)
+            setHasMoreMessages(hasMore)
+            setCurrentOffset(newOffset)
+          }
         }
-        setHasMoreMessages(result.hasMore ?? false)
-        setCurrentOffset(offset + result.messages.length)
+        if (offset === 0) {
+          setHasMoreMessages(result.hasMore ?? false)
+          setCurrentOffset(offset + msgs.length)
+        }
       }
     } catch (e) {
       console.error('加载消息失败:', e)
@@ -960,11 +939,12 @@ function ChatPage(_props: ChatPageProps) {
           return
         }
 
-        appendMessages(uniqueOlderMessages, true)
-
         const oldestSortSeq = uniqueOlderMessages[0]?.sortSeq
         const oldestCreateTime = uniqueOlderMessages[0]?.createTime
         const oldestLocalId = uniqueOlderMessages[0]?.localId
+
+        pendingPrependAnchorRef.current = anchor
+        appendMessages(uniqueOlderMessages, true)
         if (typeof oldestSortSeq !== 'number' || oldestSortSeq >= dateJumpCursorSortSeq) {
           setHasMoreMessages(false)
         } else {
@@ -973,8 +953,6 @@ function ChatPage(_props: ChatPageProps) {
           setDateJumpCursorLocalId(typeof oldestLocalId === 'number' ? oldestLocalId : null)
           setHasMoreMessages(result.hasMore ?? false)
         }
-
-        restoreScrollAnchor(anchor)
       } else {
         setHasMoreMessages(false)
       }
@@ -1073,44 +1051,10 @@ function ChatPage(_props: ChatPageProps) {
     appendMessages
   ])
 
-  const handleScroll = useCallback(() => {
-    if (!messageListRef.current) return
-
-    const { scrollTop, clientHeight, scrollHeight } = messageListRef.current
-    const isScrollingUp = scrollTop < lastScrollTopRef.current - 4
-    lastScrollTopRef.current = scrollTop
-
-    // 显示回到底部按钮：距离底部超过 300px
-    const distanceFromBottom = scrollHeight - scrollTop - clientHeight
-    setShowScrollToBottom(distanceFromBottom > 300)
-
-    if (!isLoadingMoreRef.current && currentSessionId) {
-      const topThreshold = Math.max(clientHeight * 2, 1200)
-      const bottomThreshold = clientHeight * 0.3
-
-      // 向上滑动：提前加载更早的消息，不等用户真正顶到顶部
-      if (isScrollingUp && scrollTop < topThreshold && hasMoreMessages) {
-        if (isDateJumpMode) {
-          loadMoreMessagesInDateJumpMode()
-        } else {
-          loadMessages(currentSessionId, currentOffset)
-        }
-      }
-
-      // 向下滑动：加载更新的消息（仅在日期跳转模式下）
-      if (isDateJumpMode && distanceFromBottom < bottomThreshold && hasMoreMessagesAfter) {
-        loadMoreMessagesAfterInDateJumpMode()
-      }
-    }
-  }, [
-    hasMoreMessages,
-    hasMoreMessagesAfter,
-    currentSessionId,
-    currentOffset,
-    isDateJumpMode,
-    loadMoreMessagesInDateJumpMode,
-    loadMoreMessagesAfterInDateJumpMode
-  ])
+  const { handleScroll, showScrollToBottom } = useThrottledScroll(
+    { messageListRef, isLoadingMoreRef, currentSessionIdRef },
+    { hasMoreMessages, hasMoreMessagesAfter, currentOffset, isDateJumpMode, loadMessages, loadMoreMessagesInDateJumpMode, loadMoreMessagesAfterInDateJumpMode }
+  )
 
   // 滚动到底部
   const scrollToBottom = useCallback((smooth: boolean | React.MouseEvent = true) => {
