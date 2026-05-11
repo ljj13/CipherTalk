@@ -644,7 +644,8 @@ export async function queryMessages(input: QueryMessagesInput) {
         const resolved = await imageDecryptService.resolveCachedImage({
           sessionId,
           imageMd5: base.imageMd5,
-          imageDatName: base.imageDatName
+          imageDatName: base.imageDatName,
+          createTime: Number(base.createTime || 0)
         })
 
         if (resolved.success && resolved.localPath) {
@@ -654,6 +655,7 @@ export async function queryMessages(input: QueryMessagesInput) {
             sessionId,
             imageMd5: base.imageMd5,
             imageDatName: base.imageDatName,
+            createTime: Number(base.createTime || 0),
             force: false
           })
           if (decrypted.success && decrypted.localPath) {

@@ -108,7 +108,7 @@ export class ImageDecryptService {
 
     // 2. 快速查找缓存文件（优先查找当前 sessionId 的最新日期目录）
     for (const key of cacheKeys) {
-      const existing = this.findCachedOutputFast(key, payload.sessionId)
+      const existing = this.findCachedOutputFast(key, payload.sessionId, false, payload.createTime)
       if (existing) {
         this.cacheResolvedPaths(key, payload.imageMd5, payload.imageDatName, existing)
         const localPath = this.filePathToUrl(existing)
@@ -151,7 +151,7 @@ export class ImageDecryptService {
         return { success: false, error: '未找到高清图，请在微信中点开该图片查看后重试' }
       }
       // 快速查找高清图缓存
-      const hdCached = this.findCachedOutputFast(cacheKey, payload.sessionId, true) ||
+      const hdCached = this.findCachedOutputFast(cacheKey, payload.sessionId, true, payload.createTime) ||
         this.findCachedOutput(cacheKey, payload.sessionId, true)
       if (hdCached && this.validateCachedImageFile(hdCached)) {
         const localPath = this.filePathToUrl(hdCached)
@@ -260,6 +260,43 @@ export class ImageDecryptService {
         return { success: false, error: '未找到高清图，请在微信中点开该图片查看后重试' }
       }
       if (!datPath) {
+        const cacheLookupStartedAt = Date.now()
+        const existing = this.findCachedOutputFast(cacheKey, payload.sessionId, payload.force, payload.createTime) ||
+          this.findCachedOutput(cacheKey, payload.sessionId, payload.force)
+        cacheLookupMs = Date.now() - cacheLookupStartedAt
+        if (existing) {
+          usedCachedOutput = true
+          const isHd = this.isHdPath(existing)
+          if (!(payload.force && !isHd)) {
+            this.cacheResolvedPaths(cacheKey, payload.imageMd5, payload.imageDatName, existing)
+            const localPath = this.filePathToUrl(existing)
+            const isThumb = this.isThumbnailPath(existing)
+            this.emitCacheResolved(payload, cacheKey, localPath)
+            this.logDecryptTiming({
+              cacheKey,
+              payload,
+              datPath,
+              resolveSource: datDiagnostics.source,
+              resolveDatMs,
+              cacheLookupMs,
+              decryptMs,
+              wxgfMs,
+              writeMs,
+              motionVideoMs,
+              thumbnailCleanupMs,
+              decryptSource,
+              fallbackReason,
+              finalExt: extname(existing).toLowerCase(),
+              usedCachedOutput,
+              nativeFallbackUsed,
+              wxgfDetected,
+              status: 'cache_hit',
+              totalMs: Date.now() - totalStartedAt
+            })
+            return { success: true, localPath, isThumb, liveVideoPath: !isThumb ? this.checkLiveVideoCache(existing) : undefined }
+          }
+        }
+
         this.notFoundCache.add(lookupCacheKey)
         console.warn(`[ImageDecrypt] 未找到图片文件: ${payload.imageDatName || payload.imageMd5} sessionId=${payload.sessionId}`)
         this.logDecryptTiming({
@@ -318,8 +355,9 @@ export class ImageDecryptService {
 
       // 查找已缓存的解密文件
       const cacheLookupStartedAt = Date.now()
-      const existing = this.findCachedOutputFast(cacheKey, payload.sessionId, payload.force) ||
-        (!payload.sessionId ? this.findCachedOutput(cacheKey, payload.sessionId, payload.force) : null)
+      const existing = this.findCachedOutputFast(cacheKey, payload.sessionId, payload.force, payload.createTime) ||
+        this.findCachedOutputByDatPath(datPath, payload.sessionId, payload.force) ||
+        this.findCachedOutput(cacheKey, payload.sessionId, payload.force)
       cacheLookupMs = Date.now() - cacheLookupStartedAt
       if (existing) {
         usedCachedOutput = true
@@ -1528,24 +1566,17 @@ export class ImageDecryptService {
    * 快速查找缓存文件（直接构造路径，不遍历目录）
    * 用于 resolveCachedImage，避免全局扫描
    */
-  private findCachedOutputFast(cacheKey: string, sessionId?: string, preferHd: boolean = false): string | null {
+  private findCachedOutputFast(cacheKey: string, sessionId?: string, preferHd: boolean = false, createTime?: number): string | null {
     if (!sessionId) return null
 
     const normalizedKey = this.normalizeDatBase(cacheKey.toLowerCase())
     const extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
     const allRoots = this.getAllCacheRoots()
-
-    // 构造最近 3 个月的日期目录
-    const now = new Date()
-    const recentMonths: string[] = []
-    for (let i = 0; i < 3; i++) {
-      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-      recentMonths.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
-    }
+    const dateDirs = this.buildCacheMonthHints(createTime)
 
     // 直接构造路径并检查文件是否存在
     for (const root of allRoots) {
-      for (const dateDir of recentMonths) {
+      for (const dateDir of dateDirs) {
         const imageDir = join(root, sessionId, dateDir)
 
         // 批量构造所有可能的路径
@@ -1577,6 +1608,60 @@ export class ImageDecryptService {
     }
 
     return null
+  }
+
+  private findCachedOutputByDatPath(datPath: string, sessionId?: string, preferHd: boolean = false): string | null {
+    if (!datPath || !sessionId) return null
+
+    const name = basename(datPath)
+    const lower = name.toLowerCase()
+    const base = lower.endsWith('.dat') ? lower.slice(0, -4) : lower
+    const normalizedKey = this.normalizeDatBase(base)
+    const dateDir = this.extractDateFromPath(datPath)
+    const extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+    const suffixes = preferHd ? ['_hd', '_thumb'] : ['_thumb', '_hd']
+
+    for (const root of this.getAllCacheRoots()) {
+      const imageDir = join(root, sessionId, dateDir)
+      for (const suffix of suffixes) {
+        for (const ext of extensions) {
+          const candidate = join(imageDir, `${normalizedKey}${suffix}${ext}`)
+          if (this.validateCachedImageFile(candidate)) return candidate
+        }
+      }
+
+      const oldImageDir = join(root, normalizedKey)
+      for (const suffix of suffixes) {
+        for (const ext of extensions) {
+          const candidate = join(oldImageDir, `${normalizedKey}${suffix}${ext}`)
+          if (this.validateCachedImageFile(candidate)) return candidate
+        }
+      }
+
+      for (const ext of extensions) {
+        const candidate = join(root, `${normalizedKey}${ext}`)
+        if (this.validateCachedImageFile(candidate)) return candidate
+      }
+    }
+
+    return null
+  }
+
+  private buildCacheMonthHints(createTime?: number): string[] {
+    const months: string[] = []
+    const add = (month: string) => {
+      if (month && !months.includes(month)) months.push(month)
+    }
+
+    add(this.resolveYearMonthFromCreateTime(createTime))
+
+    const now = new Date()
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+      add(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+    }
+
+    return months
   }
 
   /**
@@ -1797,10 +1882,38 @@ export class ImageDecryptService {
     return null
   }
 
+  private resolveSessionStorageDirs(sessionId?: string): string[] {
+    const raw = String(sessionId || '').trim()
+    if (!raw) return []
+
+    const dirs: string[] = []
+    const add = (value: string) => {
+      const trimmed = value.trim()
+      if (!trimmed) return
+      const lower = trimmed.toLowerCase()
+      if (this.looksLikeMd5(trimmed) && !dirs.includes(lower)) {
+        dirs.push(lower)
+      }
+      const hashed = crypto.createHash('md5').update(trimmed).digest('hex').toLowerCase()
+      if (!dirs.includes(hashed)) dirs.push(hashed)
+      if (lower !== trimmed) {
+        const lowerHashed = crypto.createHash('md5').update(lower).digest('hex').toLowerCase()
+        if (!dirs.includes(lowerHashed)) dirs.push(lowerHashed)
+      }
+    }
+
+    add(raw)
+    const cleaned = this.cleanAccountDirName(raw)
+    if (cleaned !== raw) add(cleaned)
+    return dirs
+  }
+
   private resolveSessionHashDatRoot(accountDir: string, sessionId?: string): string | null {
-    if (!sessionId) return null
-    const root = join(accountDir, 'msg', 'attach', crypto.createHash('md5').update(sessionId).digest('hex'))
-    return existsSync(root) ? root : null
+    for (const sessionDir of this.resolveSessionStorageDirs(sessionId)) {
+      const root = join(accountDir, 'msg', 'attach', sessionDir)
+      if (existsSync(root)) return root
+    }
+    return null
   }
 
   private getLikelyDatFileNames(datName: string, allowThumbnail = true): string[] {
@@ -1875,13 +1988,10 @@ export class ImageDecryptService {
     const monthDir = this.resolveYearMonthFromCreateTime(createTime)
     if (!monthDir) return null
 
-    const sessionHash = crypto.createHash('md5').update(this.cleanAccountDirName(sessionId)).digest('hex')
-    const roots = [
-      join(accountDir, 'msg', 'attach', sessionHash, monthDir),
-      join(accountDir, 'msg', 'attach', crypto.createHash('md5').update(sessionId).digest('hex'), monthDir)
-    ]
+    const roots = this.resolveSessionStorageDirs(sessionId)
+      .map(sessionDir => join(accountDir, 'msg', 'attach', sessionDir, monthDir))
     const subDirs = ['Img', 'Image', 'mg', 'MsgImg']
-    for (const root of Array.from(new Set(roots))) {
+    for (const root of roots) {
       for (const subDir of subDirs) {
         const hit = this.searchDatInKnownDir(join(root, subDir), datName, allowThumbnail)
         if (hit) return hit

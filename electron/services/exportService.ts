@@ -2272,7 +2272,8 @@ class ExportService {
                   const cacheResult = await imageDecryptService.decryptImage({
                     sessionId,
                     imageMd5,
-                    imageDatName
+                    imageDatName,
+                    createTime
                   })
 
                   if (cacheResult.success && cacheResult.localPath) {

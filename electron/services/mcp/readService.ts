@@ -1143,7 +1143,8 @@ async function getImageLocalPath(sessionId: string, message: Message): Promise<s
     const resolved = await imageDecryptService.resolveCachedImage({
       sessionId,
       imageMd5: message.imageMd5,
-      imageDatName: message.imageDatName
+      imageDatName: message.imageDatName,
+      createTime: Number(message.createTime || 0)
     })
 
     if (resolved.success && resolved.localPath) {
@@ -1154,6 +1155,7 @@ async function getImageLocalPath(sessionId: string, message: Message): Promise<s
       sessionId,
       imageMd5: message.imageMd5,
       imageDatName: message.imageDatName,
+      createTime: Number(message.createTime || 0),
       force: false
     })
 
