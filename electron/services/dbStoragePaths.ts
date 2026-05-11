@@ -2,7 +2,12 @@ import { existsSync, readdirSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import { ConfigService } from './config'
 
-const configService = new ConfigService()
+let configService: ConfigService | null = null
+
+function getConfigService(): ConfigService {
+  if (!configService) configService = new ConfigService()
+  return configService
+}
 
 /**
  * 把 configService 里保存的 dbPath 解析为 WeChat 原始 db_storage 根目录。
@@ -40,8 +45,9 @@ export function resolveDbStoragePath(dbPath: string, wxid: string): string | nul
 
 /** 从配置直接取 db_storage；未配置或不存在返回 null */
 export function getDbStoragePath(): string | null {
-  const dbPath = configService.get('dbPath') as string | undefined
-  const wxid = configService.get('myWxid') as string | undefined
+  const config = getConfigService()
+  const dbPath = config.get('dbPath') as string | undefined
+  const wxid = config.get('myWxid') as string | undefined
   if (!dbPath) return null
   return resolveDbStoragePath(dbPath, wxid || '')
 }

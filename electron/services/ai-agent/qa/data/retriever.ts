@@ -269,7 +269,7 @@ export class AgentRetriever {
     const limit = Math.max(1, Math.min(Math.floor(input.limit || 20), 100))
     const query = String(input.query || '').trim()
     const keywordQueries = uniqueQueries([query, ...(input.keywordQueries || [])])
-    const displayNameMap = agentDataRepository.loadDisplayNameMap(input.sessionId)
+    const displayNameMap = await agentDataRepository.loadDisplayNameMap(input.sessionId)
     const session = agentDataRepository.getSessionRef(input.sessionId, displayNameMap)
     const diagnostics: string[] = []
     const hitBuckets: AgentSearchHit[] = []
@@ -308,7 +308,7 @@ export class AgentRetriever {
     const memoryDb = agentDataRepository.getMemoryDb()
     if (memoryDb) {
       for (const keywordQuery of keywordQueries) {
-        const memoryHits = this.searchMemory(memoryDb, input, keywordQuery, limit, displayNameMap)
+        const memoryHits = await this.searchMemory(memoryDb, input, keywordQuery, limit, displayNameMap)
         hitBuckets.push(...memoryHits.hits)
         diagnostics.push(...memoryHits.diagnostics)
       }
@@ -326,7 +326,7 @@ export class AgentRetriever {
 
     if (hitBuckets.length === 0) {
       for (const keywordQuery of keywordQueries) {
-        const raw = this.searchRawMessages(input, keywordQuery, limit, displayNameMap)
+        const raw = await this.searchRawMessages(input, keywordQuery, limit, displayNameMap)
         hitBuckets.push(...raw.hits)
         messagesScanned += raw.scanned
         diagnostics.push(...raw.diagnostics)
@@ -338,12 +338,12 @@ export class AgentRetriever {
     const resultSource = this.detectResultSource(hits, indexStatus)
     const contextWindows = input.expandEvidence === false
       ? []
-      : hits.slice(0, 4).map((hit) => ({
+      : (await Promise.all(hits.slice(0, 4).map(async (hit) => ({
         source: 'search' as const,
         query,
         anchor: hit.message,
-        messages: agentDataRepository.getContextAround(input.sessionId, hit.message.cursor, 4, 4)
-      })).filter((window) => window.messages.length > 0)
+        messages: await agentDataRepository.getContextAround(input.sessionId, hit.message.cursor, 4, 4)
+      })))).filter((window) => window.messages.length > 0)
 
     return {
       result: {
@@ -446,7 +446,7 @@ export class AgentRetriever {
     }
   }
 
-  private searchMemory(db: Database.Database, input: SearchInput, query: string, limit: number, displayNameMap: Map<string, string>): { hits: AgentSearchHit[]; diagnostics: string[] } {
+  private async searchMemory(db: Database.Database, input: SearchInput, query: string, limit: number, displayNameMap: Map<string, string>): Promise<{ hits: AgentSearchHit[]; diagnostics: string[] }> {
     const rows = parseMemorySearchRows(db, input, query, Math.max(limit * 4, 40))
     const hits: AgentSearchHit[] = []
     const session = agentDataRepository.getSessionRef(input.sessionId, displayNameMap)
@@ -454,7 +454,7 @@ export class AgentRetriever {
     for (const item of rows) {
       const ref = item.memory.sourceRefs.find((candidate) => candidate.sessionId === input.sessionId) || item.memory.sourceRefs[0]
       const message = ref
-        ? agentDataRepository.getMessageByCursor(ref.sessionId, ref) || agentDataRepository.evidenceRefToMessage(ref, displayNameMap)
+        ? (await agentDataRepository.getMessageByCursor(ref.sessionId, ref)) || agentDataRepository.evidenceRefToMessage(ref, displayNameMap)
         : agentDataRepository.evidenceRefToMessage({
           sessionId: input.sessionId,
           localId: item.memory.id,
@@ -607,8 +607,8 @@ export class AgentRetriever {
     }
   }
 
-  private searchRawMessages(input: SearchInput, query: string, limit: number, displayNameMap: Map<string, string>): { hits: AgentSearchHit[]; scanned: number; diagnostics: string[] } {
-    const result = agentDataRepository.getMessages(input.sessionId, {
+  private async searchRawMessages(input: SearchInput, query: string, limit: number, displayNameMap: Map<string, string>): Promise<{ hits: AgentSearchHit[]; scanned: number; diagnostics: string[] }> {
+    const result = await agentDataRepository.getMessages(input.sessionId, {
       startTime: input.startTime,
       endTime: input.endTime,
       keyword: query,

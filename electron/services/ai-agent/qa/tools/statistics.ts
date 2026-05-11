@@ -74,9 +74,9 @@ export async function loadSessionStatistics(sessionId: string, action: Extract<T
   const startTime = action.startTime || fallbackRange?.startTime
   const endTime = action.endTime || fallbackRange?.endTime
   const participantLimit = action.participantLimit || 20
-  const result = agentDataRepository.getMessages(sessionId, { startTime, endTime, order: 'asc', limit: 20000 })
+  const result = await agentDataRepository.getMessages(sessionId, { startTime, endTime, order: 'asc', limit: 20000 })
   const messages = result.items
-  const displayMap = agentDataRepository.loadDisplayNameMap(sessionId)
+  const displayMap = await agentDataRepository.loadDisplayNameMap(sessionId)
   const daySet = new Set<string>()
   const kindCounts: Record<string, number> = {}
   const hourlyDistribution: Record<string, number> = {}
@@ -121,8 +121,8 @@ export async function loadSessionStatistics(sessionId: string, action: Extract<T
 export async function loadKeywordStatistics(sessionId: string, action: Extract<ToolLoopAction, { action: 'get_keyword_statistics' }>, fallbackRange?: TimeRangeHint): Promise<{ payload?: AgentKeywordStats; toolCall?: SessionQAToolCall }> {
   const startTime = action.startTime || fallbackRange?.startTime
   const endTime = action.endTime || fallbackRange?.endTime
-  const displayMap = agentDataRepository.loadDisplayNameMap(sessionId)
-  const all = agentDataRepository.getMessages(sessionId, { startTime, endTime, order: 'asc', limit: 20000 })
+  const displayMap = await agentDataRepository.loadDisplayNameMap(sessionId)
+  const all = await agentDataRepository.getMessages(sessionId, { startTime, endTime, order: 'asc', limit: 20000 })
   const matchedMessageKeys = new Set<string>()
   const keywordItems = action.keywords.map((keyword) => {
     const normalized = keyword.toLowerCase()
@@ -175,7 +175,7 @@ export async function loadKeywordStatistics(sessionId: string, action: Extract<T
 }
 
 export async function loadMessagesByTimeRange(sessionId: string, input: { startTime?: number; endTime?: number; keyword?: string; senderUsername?: string; limit?: number; order?: 'asc' | 'desc' }): Promise<{ payload?: AgentMessagesPayload; toolCall?: SessionQAToolCall }> {
-  const result = agentDataRepository.getMessages(sessionId, {
+  const result = await agentDataRepository.getMessages(sessionId, {
     startTime: input.startTime,
     endTime: input.endTime,
     keyword: input.keyword,
@@ -205,12 +205,12 @@ export async function loadMessagesByTimeRange(sessionId: string, input: { startT
 }
 
 export async function loadMessagesByTimeRangeAll(sessionId: string, input: { startTime?: number; endTime?: number; senderUsername?: string; keyword?: string; maxMessages?: number }): Promise<AgentMessage[]> {
-  return agentDataRepository.getMessages(sessionId, {
+  return (await agentDataRepository.getMessages(sessionId, {
     startTime: input.startTime,
     endTime: input.endTime,
     senderUsername: input.senderUsername,
     keyword: input.keyword,
     order: 'asc',
     limit: input.maxMessages || 10000
-  }).items
+  })).items
 }

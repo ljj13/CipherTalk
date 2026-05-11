@@ -1,9 +1,10 @@
 import Database from 'better-sqlite3'
 import { createHash } from 'crypto'
-import { existsSync, readdirSync } from 'fs'
-import { join, dirname } from 'path'
+import { existsSync } from 'fs'
+import { join } from 'path'
 import { ConfigService } from '../../../config'
-import { getDocumentsPath, getExePath } from '../../../runtimePaths'
+import { dbAdapter } from '../../../dbAdapter'
+import { findMessageDbPaths } from '../../../dbStoragePaths'
 import type {
   AgentContact,
   AgentContactKind,
@@ -24,7 +25,6 @@ import {
 } from './textParser'
 
 type DbTablePair = {
-  db: Database.Database
   dbPath: string
   tableName: string
 }
@@ -60,6 +60,7 @@ type ContactRow = {
   alias?: string
   type?: number
   local_type?: number
+  flag?: number
   quan_pin?: string
 }
 
@@ -110,7 +111,7 @@ function detectContactKind(row: ContactRow): AgentContactKind {
   const username = String(row.username || '')
   if (username.includes('@chatroom')) return 'group'
   if (username.startsWith('gh_')) return 'official'
-  if (Number(row.local_type || row.type || 0) === 0) return 'former_friend'
+  if (Number(row.local_type ?? row.type ?? row.flag ?? 0) === 0) return 'former_friend'
   if (username) return 'friend'
   return 'other'
 }
@@ -193,11 +194,12 @@ export function buildAgentFtsQuery(query: string): string {
 }
 
 export class AgentDataRepository {
-  private dbDirCache: { value: string; wxid: string; expiresAt: number } | null = null
   private dbCache = new Map<string, Database.Database>()
   private tableCache = new Map<string, { dbPath: string; tableName: string }[]>()
   private tableCacheExpiresAt = 0
   private displayNameCache = new Map<string, { value: Map<string, string>; expiresAt: number }>()
+  private tableExistsCache = new Map<string, boolean>()
+  private myRowIdCache = new Map<string, number | null>()
 
   getCacheBasePath(): string {
     const config = new ConfigService()
@@ -215,67 +217,6 @@ export class AgentDataRepository {
     } finally {
       config.close()
     }
-  }
-
-  getDecryptedDbBaseDir(): string {
-    const config = new ConfigService()
-    try {
-      const configured = String(config.get('cachePath') || '').trim()
-      if (configured) return configured
-    } finally {
-      config.close()
-    }
-
-    if (process.env.VITE_DEV_SERVER_URL) {
-      return join(getDocumentsPath(), 'CipherTalkData')
-    }
-
-    const installDir = dirname(getExePath())
-    const isOnCDrive = /^[cC]:/i.test(installDir) || installDir.startsWith('\\')
-    return isOnCDrive ? join(getDocumentsPath(), 'CipherTalkData') : join(installDir, 'CipherTalkData')
-  }
-
-  getAccountDbDir(): string {
-    const wxid = this.getCurrentWxid()
-    if (!wxid) throw new Error('未配置微信ID')
-    const cached = this.dbDirCache
-    if (cached && cached.wxid === wxid && cached.expiresAt > Date.now() && existsSync(cached.value)) {
-      return cached.value
-    }
-
-    const baseDir = this.getDecryptedDbBaseDir()
-    const accountDir = this.findAccountDir(baseDir, wxid)
-    if (!accountDir) throw new Error(`未找到账号 ${wxid} 的数据库目录`)
-
-    const dbDir = join(baseDir, accountDir)
-    this.dbDirCache = { value: dbDir, wxid, expiresAt: Date.now() + MESSAGE_DB_CACHE_MS }
-    return dbDir
-  }
-
-  findAccountDir(baseDir: string, wxid: string): string | null {
-    if (!existsSync(baseDir)) return null
-    const cleaned = cleanAccountDirName(wxid)
-    for (const candidate of [wxid, cleaned]) {
-      if (candidate && existsSync(join(baseDir, candidate))) return candidate
-    }
-
-    try {
-      const wxidLower = wxid.toLowerCase()
-      const cleanedLower = cleaned.toLowerCase()
-      for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue
-        const dirName = entry.name
-        const lower = dirName.toLowerCase()
-        if (lower === wxidLower || lower === cleanedLower) return dirName
-        if (lower.startsWith(`${wxidLower}_`) || lower.startsWith(`${cleanedLower}_`)) return dirName
-        if (wxidLower.startsWith(`${lower}_`) || cleanedLower.startsWith(`${lower}_`)) return dirName
-        const cleanedDir = cleanAccountDirName(dirName).toLowerCase()
-        if (cleanedDir === wxidLower || cleanedDir === cleanedLower) return dirName
-      }
-    } catch {
-      return null
-    }
-    return null
   }
 
   openReadonly(dbPath: string): Database.Database | null {
@@ -299,11 +240,22 @@ export class AgentDataRepository {
     }
   }
 
-  listContacts(): AgentContact[] {
-    const db = this.openReadonly(join(this.getAccountDbDir(), 'contact.db'))
-    if (!db) return []
+  async listContacts(): Promise<AgentContact[]> {
     try {
-      const rows = db.prepare('SELECT username, remark, nick_name, alias, type, local_type, quan_pin FROM contact').all() as ContactRow[]
+      const columns = await dbAdapter.all<{ name: string }>('contact', '', 'PRAGMA table_info(contact)')
+      const columnNames = new Set(columns.map((column) => String(column.name || '')))
+      const selectCols = ['username', 'remark', 'nick_name', 'alias', 'quan_pin']
+        .filter((column) => columnNames.has(column))
+      for (const optional of ['type', 'local_type', 'flag']) {
+        if (columnNames.has(optional)) selectCols.push(optional)
+      }
+      if (!selectCols.includes('username')) return []
+
+      const rows = await dbAdapter.all<ContactRow>(
+        'contact',
+        '',
+        `SELECT ${selectCols.join(', ')} FROM contact`
+      )
       return rows.flatMap((row): AgentContact[] => {
         const contactId = String(row.username || '').trim()
         if (!contactId) return []
@@ -322,20 +274,18 @@ export class AgentDataRepository {
     }
   }
 
-  loadGroupMembers(chatroomId: string): AgentContact[] {
-    const db = this.openReadonly(join(this.getAccountDbDir(), 'contact.db'))
-    if (!db) return []
+  async loadGroupMembers(chatroomId: string): Promise<AgentContact[]> {
     try {
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+      const tables = await dbAdapter.all<{ name: string }>('contact', '', "SELECT name FROM sqlite_master WHERE type='table'")
       const tableNames = new Set(tables.map((item) => item.name.toLowerCase()))
       if (!tableNames.has('chatroom_member') || !tableNames.has('name2id')) return []
-      const rows = db.prepare(`
+      const rows = await dbAdapter.all<ContactRow>('contact', '', `
         SELECT n.username, c.nick_name, c.remark
         FROM chatroom_member m
         JOIN name2id n ON m.member_id = n.rowid
         LEFT JOIN contact c ON n.username = c.username
         WHERE m.room_id = (SELECT rowid FROM name2id WHERE username = ?)
-      `).all(chatroomId) as ContactRow[]
+      `, [chatroomId])
       return rows.flatMap((row): AgentContact[] => {
         const username = String(row.username || '').trim()
         if (!username) return []
@@ -353,16 +303,16 @@ export class AgentDataRepository {
     }
   }
 
-  loadDisplayNameMap(sessionId: string): Map<string, string> {
+  async loadDisplayNameMap(sessionId: string): Promise<Map<string, string>> {
     const cached = this.displayNameCache.get(sessionId)
     if (cached && cached.expiresAt > Date.now()) return new Map(cached.value)
 
     const map = new Map<string, string>()
-    for (const contact of this.listContacts()) {
+    for (const contact of await this.listContacts()) {
       if (contact.contactId && contact.displayName) map.set(contact.contactId, contact.displayName)
     }
     if (sessionId.includes('@chatroom')) {
-      for (const member of this.loadGroupMembers(sessionId)) {
+      for (const member of await this.loadGroupMembers(sessionId)) {
         if (member.contactId && member.displayName) map.set(member.contactId, member.displayName)
       }
     }
@@ -370,24 +320,14 @@ export class AgentDataRepository {
     return new Map(map)
   }
 
-  private listMessageDbPaths(): string[] {
-    const dbDir = this.getAccountDbDir()
-    try {
-      return readdirSync(dbDir)
-        .filter((file) => {
-          const lower = file.toLowerCase()
-          return (lower.startsWith('message') || lower.startsWith('msg')) && lower.endsWith('.db')
-        })
-        .map((file) => join(dbDir, file))
-    } catch {
-      return []
-    }
-  }
-
-  private findMessageTable(db: Database.Database, sessionId: string): string | null {
+  private async findMessageTable(dbPath: string, sessionId: string): Promise<string | null> {
     const hash = getTableNameHash(sessionId)
     try {
-      const rows = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE 'msg_%'").all() as Array<{ name: string }>
+      const rows = await dbAdapter.all<{ name: string }>(
+        'message',
+        dbPath,
+        "SELECT name FROM sqlite_master WHERE type='table' AND lower(name) LIKE 'msg_%'"
+      )
       for (const row of rows) {
         const tableName = String(row.name || '')
         const match = tableName.match(/msg_([0-9a-f]{32})/i)
@@ -399,22 +339,51 @@ export class AgentDataRepository {
     return null
   }
 
-  private tableExists(db: Database.Database, tableName: string): boolean {
+  private async tableExists(dbPath: string, tableName: string): Promise<boolean> {
+    const cacheKey = `${dbPath}:${tableName}`
+    const cached = this.tableExistsCache.get(cacheKey)
+    if (cached !== undefined) return cached
     try {
-      return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(tableName))
+      const row = await dbAdapter.get<{ name: string }>(
+        'message',
+        dbPath,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+        [tableName]
+      )
+      const exists = Boolean(row)
+      this.tableExistsCache.set(cacheKey, exists)
+      return exists
     } catch {
+      this.tableExistsCache.set(cacheKey, false)
       return false
     }
   }
 
-  private getMyRowId(db: Database.Database): number | null {
+  private async getMyRowId(dbPath: string): Promise<number | null> {
     const wxid = this.getCurrentWxid()
     const cleaned = cleanAccountDirName(wxid)
     if (!wxid) return null
-    for (const candidate of [wxid, cleaned]) {
+    for (const candidate of Array.from(new Set([wxid, cleaned]))) {
+      if (!candidate) continue
+      const cacheKey = `${dbPath}:${candidate}`
+      const cached = this.myRowIdCache.get(cacheKey)
+      if (cached !== undefined) {
+        if (cached !== null) return cached
+        continue
+      }
       try {
-        const row = db.prepare('SELECT rowid FROM Name2Id WHERE user_name = ?').get(candidate) as { rowid?: number } | undefined
-        if (row?.rowid) return Number(row.rowid)
+        const row = await dbAdapter.get<{ rowid?: number }>(
+          'message',
+          dbPath,
+          'SELECT rowid FROM Name2Id WHERE user_name = ?',
+          [candidate]
+        )
+        if (row?.rowid) {
+          const rowId = Number(row.rowid)
+          this.myRowIdCache.set(cacheKey, rowId)
+          return rowId
+        }
+        this.myRowIdCache.set(cacheKey, null)
       } catch {
         return null
       }
@@ -422,7 +391,7 @@ export class AgentDataRepository {
     return null
   }
 
-  findSessionTables(sessionId: string): DbTablePair[] {
+  async findSessionTables(sessionId: string): Promise<DbTablePair[]> {
     const now = Date.now()
     if (this.tableCacheExpiresAt < now) {
       this.tableCache.clear()
@@ -431,20 +400,13 @@ export class AgentDataRepository {
 
     const cached = this.tableCache.get(sessionId)
     if (cached?.length) {
-      return cached
-        .map((item) => {
-          const db = this.openReadonly(item.dbPath)
-          return db ? { db, dbPath: item.dbPath, tableName: item.tableName } : null
-        })
-        .filter((item): item is DbTablePair => Boolean(item))
+      return cached.map((item) => ({ dbPath: item.dbPath, tableName: item.tableName }))
     }
 
     const pairs: DbTablePair[] = []
-    for (const dbPath of this.listMessageDbPaths()) {
-      const db = this.openReadonly(dbPath)
-      if (!db) continue
-      const tableName = this.findMessageTable(db, sessionId)
-      if (tableName) pairs.push({ db, dbPath, tableName })
+    for (const dbPath of findMessageDbPaths()) {
+      const tableName = await this.findMessageTable(dbPath, sessionId)
+      if (tableName) pairs.push({ dbPath, tableName })
     }
     this.tableCache.set(sessionId, pairs.map((item) => ({ dbPath: item.dbPath, tableName: item.tableName })))
     return pairs
@@ -546,21 +508,21 @@ export class AgentDataRepository {
     }
   }
 
-  getMessages(sessionId: string, options: MessageQueryOptions = {}): { items: AgentMessage[]; hasMore: boolean; scanned: number } {
+  async getMessages(sessionId: string, options: MessageQueryOptions = {}): Promise<{ items: AgentMessage[]; hasMore: boolean; scanned: number }> {
     const limit = normalizeLimit(options.limit, DEFAULT_QUERY_LIMIT)
     const offset = Math.max(0, Math.floor(Number(options.offset || 0)))
     const perDbLimit = Math.min(MAX_QUERY_LIMIT, Math.max(offset + limit + 1, limit + 1, 100))
-    const displayMap = this.loadDisplayNameMap(sessionId)
-    const pairs = this.findSessionTables(sessionId)
+    const displayMap = await this.loadDisplayNameMap(sessionId)
+    const pairs = await this.findSessionTables(sessionId)
     const messages: AgentMessage[] = []
     let scanned = 0
 
     for (const pair of pairs) {
-      const hasName2Id = this.tableExists(pair.db, 'Name2Id')
-      const myRowId = hasName2Id ? this.getMyRowId(pair.db) : null
+      const hasName2Id = await this.tableExists(pair.dbPath, 'Name2Id')
+      const myRowId = hasName2Id ? await this.getMyRowId(pair.dbPath) : null
       const query = this.buildMessageSql(pair.tableName, hasName2Id, myRowId, options, perDbLimit)
       try {
-        const rows = pair.db.prepare(query.sql).all(...query.params) as MessageRow[]
+        const rows = await dbAdapter.all<MessageRow>('message', pair.dbPath, query.sql, query.params)
         scanned += rows.length
         for (const row of rows) {
           const source = this.rowToSourceMessage(row)
@@ -590,41 +552,41 @@ export class AgentDataRepository {
     return { items: sliced, hasMore: unique.length > offset + limit, scanned }
   }
 
-  getContextAround(sessionId: string, cursor: AgentCursor, beforeLimit: number, afterLimit: number): AgentMessage[] {
-    const before = this.getMessagesBefore(sessionId, cursor, beforeLimit)
-    const anchor = this.getMessageByCursor(sessionId, cursor)
-    const after = this.getMessagesAfter(sessionId, cursor, afterLimit)
+  async getContextAround(sessionId: string, cursor: AgentCursor, beforeLimit: number, afterLimit: number): Promise<AgentMessage[]> {
+    const before = await this.getMessagesBefore(sessionId, cursor, beforeLimit)
+    const anchor = await this.getMessageByCursor(sessionId, cursor)
+    const after = await this.getMessagesAfter(sessionId, cursor, afterLimit)
     return this.dedupeMessagesByCursor([...before, ...(anchor ? [anchor] : []), ...after])
   }
 
-  getMessagesBefore(sessionId: string, cursor: AgentCursor, limit: number): AgentMessage[] {
-    return this.getMessages(sessionId, { order: 'desc', endTime: cursor.createTime, limit: Math.max(limit * 4, limit + 20) })
-      .items
+  async getMessagesBefore(sessionId: string, cursor: AgentCursor, limit: number): Promise<AgentMessage[]> {
+    const result = await this.getMessages(sessionId, { order: 'desc', endTime: cursor.createTime, limit: Math.max(limit * 4, limit + 20) })
+    return result.items
       .filter((message) => compareCursorAsc(message.cursor, cursor) < 0)
       .sort((a, b) => compareCursorDesc(a.cursor, b.cursor))
       .slice(0, limit)
       .sort((a, b) => compareCursorAsc(a.cursor, b.cursor))
   }
 
-  getMessagesAfter(sessionId: string, cursor: AgentCursor, limit: number): AgentMessage[] {
-    return this.getMessages(sessionId, { order: 'asc', startTime: cursor.createTime, limit: Math.max(limit * 4, limit + 20) })
-      .items
+  async getMessagesAfter(sessionId: string, cursor: AgentCursor, limit: number): Promise<AgentMessage[]> {
+    const result = await this.getMessages(sessionId, { order: 'asc', startTime: cursor.createTime, limit: Math.max(limit * 4, limit + 20) })
+    return result.items
       .filter((message) => compareCursorAsc(message.cursor, cursor) > 0)
       .sort((a, b) => compareCursorAsc(a.cursor, b.cursor))
       .slice(0, limit)
   }
 
-  getMessageByCursor(sessionId: string, cursor: AgentCursor): AgentMessage | null {
-    const displayMap = this.loadDisplayNameMap(sessionId)
-    for (const pair of this.findSessionTables(sessionId)) {
+  async getMessageByCursor(sessionId: string, cursor: AgentCursor): Promise<AgentMessage | null> {
+    const displayMap = await this.loadDisplayNameMap(sessionId)
+    for (const pair of await this.findSessionTables(sessionId)) {
       try {
-        const hasName2Id = this.tableExists(pair.db, 'Name2Id')
-        const myRowId = hasName2Id ? this.getMyRowId(pair.db) : null
+        const hasName2Id = await this.tableExists(pair.dbPath, 'Name2Id')
+        const myRowId = hasName2Id ? await this.getMyRowId(pair.dbPath) : null
         const row = hasName2Id && myRowId !== null
-          ? pair.db.prepare(`SELECT m.*, CASE WHEN m.real_sender_id = ? THEN 1 ELSE 0 END AS computed_is_send, n.user_name AS sender_username FROM ${pair.tableName} m LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid WHERE m.local_id = ? AND m.create_time = ? AND m.sort_seq = ?`).get(myRowId, cursor.localId, cursor.createTime, cursor.sortSeq)
+          ? await dbAdapter.get<MessageRow>('message', pair.dbPath, `SELECT m.*, CASE WHEN m.real_sender_id = ? THEN 1 ELSE 0 END AS computed_is_send, n.user_name AS sender_username FROM ${pair.tableName} m LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid WHERE m.local_id = ? AND m.create_time = ? AND m.sort_seq = ?`, [myRowId, cursor.localId, cursor.createTime, cursor.sortSeq])
           : hasName2Id
-            ? pair.db.prepare(`SELECT m.*, n.user_name AS sender_username FROM ${pair.tableName} m LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid WHERE m.local_id = ? AND m.create_time = ? AND m.sort_seq = ?`).get(cursor.localId, cursor.createTime, cursor.sortSeq)
-            : pair.db.prepare(`SELECT * FROM ${pair.tableName} WHERE local_id = ? AND create_time = ? AND sort_seq = ?`).get(cursor.localId, cursor.createTime, cursor.sortSeq)
+            ? await dbAdapter.get<MessageRow>('message', pair.dbPath, `SELECT m.*, n.user_name AS sender_username FROM ${pair.tableName} m LEFT JOIN Name2Id n ON m.real_sender_id = n.rowid WHERE m.local_id = ? AND m.create_time = ? AND m.sort_seq = ?`, [cursor.localId, cursor.createTime, cursor.sortSeq])
+            : await dbAdapter.get<MessageRow>('message', pair.dbPath, `SELECT * FROM ${pair.tableName} WHERE local_id = ? AND create_time = ? AND sort_seq = ?`, [cursor.localId, cursor.createTime, cursor.sortSeq])
         if (row) return this.sourceToAgentMessage(sessionId, this.rowToSourceMessage(row as MessageRow), displayMap)
       } catch {
         continue
@@ -699,7 +661,8 @@ export class AgentDataRepository {
     this.dbCache.clear()
     this.tableCache.clear()
     this.displayNameCache.clear()
-    this.dbDirCache = null
+    this.tableExistsCache.clear()
+    this.myRowIdCache.clear()
   }
 }
 

@@ -116,7 +116,8 @@ export async function searchSessionMessages(sessionId: string, query: string, fi
 }
 
 export async function loadLatestContext(sessionId: string, limit = MAX_CONTEXT_MESSAGES): Promise<{ payload?: { items: AgentMessage[] }; toolCall?: SessionQAToolCall }> {
-  const items = agentDataRepository.getMessages(sessionId, { order: 'desc', limit }).items.sort((a, b) =>
+  const result = await agentDataRepository.getMessages(sessionId, { order: 'desc', limit })
+  const items = result.items.sort((a, b) =>
     a.cursor.sortSeq - b.cursor.sortSeq
     || a.cursor.createTime - b.cursor.createTime
     || a.cursor.localId - b.cursor.localId
@@ -137,7 +138,7 @@ export async function loadLatestContext(sessionId: string, limit = MAX_CONTEXT_M
 }
 
 export async function loadContextAroundMessage(sessionId: string, message: AgentMessage, beforeLimit: number, afterLimit: number): Promise<{ payload?: { items: AgentMessage[] }; toolCall?: SessionQAToolCall }> {
-  const items = agentDataRepository.getContextAround(sessionId, message.cursor, beforeLimit, afterLimit)
+  const items = await agentDataRepository.getContextAround(sessionId, message.cursor, beforeLimit, afterLimit)
   const args = { sessionId, mode: 'around', anchorCursor: message.cursor, beforeLimit, afterLimit }
   return {
     payload: { items },

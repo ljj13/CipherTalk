@@ -34,8 +34,8 @@ export async function resolveParticipantName(input: {
   if (query) {
     const normalized = query.toLowerCase()
     const candidates = [
-      ...agentDataRepository.listContacts(),
-      ...agentDataRepository.loadGroupMembers(input.sessionId)
+      ...(await agentDataRepository.listContacts()),
+      ...(await agentDataRepository.loadGroupMembers(input.sessionId))
     ]
     const exact = candidates.find((contact) => {
       const names = [contact.displayName, contact.remark || '', contact.nickname || '', contact.contactId]

@@ -761,6 +761,7 @@ function AISummaryWindow() {
   const [activeQARequestId, setActiveQARequestId] = useState<string | null>(null)
   const [expandedQAProgressIds, setExpandedQAProgressIds] = useState<Set<string>>(() => new Set())
   const [collapsedQAThinkIds, setCollapsedQAThinkIds] = useState<Set<string>>(() => new Set())
+  const [expandedQAThinkIds, setExpandedQAThinkIds] = useState<Set<string>>(() => new Set())
   const [expandedQAEvidenceIds, setExpandedQAEvidenceIds] = useState<Set<string>>(() => new Set())
   const [qaError, setQaError] = useState('')
   const [profileMemoryState, setProfileMemoryState] = useState<SessionProfileMemoryState | null>(null)
@@ -1134,8 +1135,21 @@ function AISummaryWindow() {
     )
   }
 
-  const toggleQAThinkPanel = (panelId: string) => {
-    setCollapsedQAThinkIds(prev => {
+  const toggleQAThinkPanel = (panelId: string, defaultExpanded = true) => {
+    if (defaultExpanded) {
+      setCollapsedQAThinkIds(prev => {
+        const next = new Set(prev)
+        if (next.has(panelId)) {
+          next.delete(panelId)
+        } else {
+          next.add(panelId)
+        }
+        return next
+      })
+      return
+    }
+
+    setExpandedQAThinkIds(prev => {
       const next = new Set(prev)
       if (next.has(panelId)) {
         next.delete(panelId)
@@ -1146,8 +1160,8 @@ function AISummaryWindow() {
     })
   }
 
-  const isQAThinkPanelExpanded = (panelId: string) => {
-    return !collapsedQAThinkIds.has(panelId)
+  const isQAThinkPanelExpanded = (panelId: string, defaultExpanded = true) => {
+    return defaultExpanded ? !collapsedQAThinkIds.has(panelId) : expandedQAThinkIds.has(panelId)
   }
 
   const toggleQAProgressEvent = (eventId: string) => {
@@ -1260,11 +1274,12 @@ function AISummaryWindow() {
     }
 
     const panelId = `${message.id}:legacy-think`
-    const expanded = isQAThinkPanelExpanded(panelId)
+    const defaultExpanded = Boolean(message.isThinking || message.showThink !== false)
+    const expanded = isQAThinkPanelExpanded(panelId, defaultExpanded)
 
     return (
       <div className={`think-panel qa-think-panel ${!expanded ? 'collapsed' : ''} ${message.isThinking ? 'thinking' : ''}`}>
-        <div className="think-header" onClick={() => toggleQAThinkPanel(panelId)}>
+        <div className="think-header" onClick={() => toggleQAThinkPanel(panelId, defaultExpanded)}>
           <div className="think-title">
             {message.isThinking ? (
               <Loader2 size={14} className="think-icon animate-spin" />
@@ -1310,16 +1325,17 @@ function AISummaryWindow() {
     }
 
     const renderTimelineThinkGroup = (group: Extract<TimelineRenderItem, { type: 'think' }>) => {
-      const expanded = isQAThinkPanelExpanded(group.id)
       const lastTimelineItem = message.timelineEvents?.[message.timelineEvents.length - 1]
       const isThinkingGroup = message.isThinking && group.items.some((item) => item.id === lastTimelineItem?.id)
+      const defaultExpanded = Boolean(isThinkingGroup || message.showThink !== false)
+      const expanded = isQAThinkPanelExpanded(group.id, defaultExpanded)
 
       return (
         <div
           key={group.id}
           className={`think-panel qa-think-panel qa-timeline-think-panel ${!expanded ? 'collapsed' : ''} ${isThinkingGroup ? 'thinking' : ''}`}
         >
-          <div className="think-header" onClick={() => toggleQAThinkPanel(group.id)}>
+          <div className="think-header" onClick={() => toggleQAThinkPanel(group.id, defaultExpanded)}>
             <div className="think-title">
               {isThinkingGroup ? (
                 <Loader2 size={14} className="think-icon animate-spin" />
