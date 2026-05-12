@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { homedir } from 'os'
 import { join } from 'path'
 import { ChildProcess } from 'child_process'
 
@@ -181,8 +182,8 @@ export class McpClientService {
         transport = new StdioClientTransport({
           command: config.command || '',
           args: config.args,
-          env: config.env as Record<string, string> | undefined,
-          cwd: config.cwd,
+          env: { ...process.env, ...(config.env ?? {}) } as Record<string, string>,
+          cwd: config.cwd || homedir(),
         })
       } else if (config.type === 'sse') {
         const { SSEClientTransport } = await import('@modelcontextprotocol/sdk/client/sse.js')

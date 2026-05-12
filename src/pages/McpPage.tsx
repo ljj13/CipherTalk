@@ -111,6 +111,75 @@ function createEmptyServerForm(): ServerFormState {
   }
 }
 
+type ParsedServerResult = { name?: string; form: Partial<ServerFormState>; error?: string }
+
+function configObjectToForm(cfg: Record<string, unknown>): Partial<ServerFormState> {
+  const form: Partial<ServerFormState> = {}
+  if (typeof cfg.url === 'string' && cfg.url) {
+    form.type = cfg.url.endsWith('/sse') ? 'sse' : 'http'
+    form.url = cfg.url
+    if (cfg.headers && typeof cfg.headers === 'object' && !Array.isArray(cfg.headers)) {
+      form.headers = Object.entries(cfg.headers as Record<string, string>).map(([k, v]) => `${k}=${v}`).join('\n')
+    }
+  } else if (typeof cfg.command === 'string' && cfg.command) {
+    form.type = 'stdio'
+    form.command = cfg.command
+    if (Array.isArray(cfg.args)) {
+      form.args = (cfg.args as unknown[]).map(a => {
+        const s = String(a)
+        return /[\s"]/.test(s) ? `"${s.replace(/"/g, '\\"')}"` : s
+      }).join(' ')
+    }
+    if (typeof cfg.cwd === 'string') form.cwd = cfg.cwd
+    if (cfg.env && typeof cfg.env === 'object' && !Array.isArray(cfg.env)) {
+      form.env = Object.entries(cfg.env as Record<string, string>).map(([k, v]) => `${k}=${v}`).join('\n')
+    }
+  }
+  if (typeof cfg.timeout === 'number') form.timeoutMs = String(cfg.timeout)
+  return form
+}
+
+function parseServerJson(text: string): ParsedServerResult {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text.trim())
+  } catch {
+    return { form: {}, error: 'JSON 格式错误，请检查括号和引号是否匹配' }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { form: {}, error: '请粘贴对象格式的 JSON' }
+  }
+  const obj = parsed as Record<string, unknown>
+
+  // Format 1: { "mcpServers": { "name": { ... } } }
+  if (obj.mcpServers && typeof obj.mcpServers === 'object' && !Array.isArray(obj.mcpServers)) {
+    const entries = Object.entries(obj.mcpServers as Record<string, unknown>)
+    if (entries.length === 0) return { form: {}, error: 'mcpServers 中没有服务器' }
+    const [name, cfg] = entries[0]
+    if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) return { form: {}, error: '服务器配置格式不正确' }
+    return { name, form: configObjectToForm(cfg as Record<string, unknown>) }
+  }
+
+  // Format 2: direct { "command": ..., "args": ... } or { "url": ... }
+  if (obj.command || obj.url) {
+    return { form: configObjectToForm(obj) }
+  }
+
+  // Format 3: { "name": { "command": ..., "args": ... } }
+  const entries = Object.entries(obj)
+  if (entries.length > 0) {
+    const [name, cfg] = entries[0]
+    if (cfg && typeof cfg === 'object' && !Array.isArray(cfg)) {
+      const cfgObj = cfg as Record<string, unknown>
+      if (cfgObj.command || cfgObj.url) {
+        return { name, form: configObjectToForm(cfgObj) }
+      }
+    }
+  }
+
+  return { form: {}, error: '无法识别格式，支持：完整 mcpServers 包裹 / 单条服务器对象 / 直接 command/url 配置' }
+}
+
 function stringifyKeyValueLines(value?: Record<string, string>) {
   if (!value) return ''
   return Object.entries(value).map(([key, val]) => `${key}=${val}`).join('\n')
@@ -217,6 +286,53 @@ const itemRowSx = {
   '&:hover': { borderColor: 'var(--primary)' },
 }
 
+const iconBtnSx = {
+  color: 'var(--text-secondary)',
+  '&:hover': { color: 'var(--text-primary)', bgcolor: 'var(--bg-primary)' },
+  '&.Mui-disabled': { color: 'var(--text-tertiary)' },
+}
+
+const chipOutlinedSx = {
+  color: 'var(--text-secondary)',
+  borderColor: 'var(--border-color)',
+}
+
+const chipPrimarySx = {
+  bgcolor: 'var(--primary)',
+  color: '#fff',
+  border: 'none',
+  '& .MuiChip-label': { color: '#fff' },
+}
+
+const dialogPaperSx = {
+  borderRadius: '20px',
+  border: '1px solid var(--border-color)',
+  bgcolor: 'var(--bg-secondary)',
+  backgroundImage: 'none',
+}
+
+const selectMenuProps = {
+  PaperProps: {
+    sx: {
+      borderRadius: '14px',
+      border: '1px solid var(--border-color)',
+      bgcolor: 'var(--bg-secondary)',
+      backgroundImage: 'none',
+      boxShadow: '0 4px 20px rgba(0,0,0,0.15)',
+      '& .MuiMenuItem-root': {
+        color: 'var(--text-primary)',
+        fontSize: 14,
+        '&:hover': { bgcolor: 'var(--bg-primary)' },
+        '&.Mui-selected': {
+          bgcolor: 'var(--primary-light)',
+          color: 'var(--primary)',
+          '&:hover': { bgcolor: 'var(--primary-light)' },
+        },
+      },
+    },
+  },
+}
+
 function McpPage() {
   const [topTab, setTopTab] = useState<TopTab>('server')
   const [toast, setToast] = useState<ToastState | null>(null)
@@ -246,6 +362,9 @@ function McpPage() {
   const [serverBusy, setServerBusy] = useState<Record<string, 'connect' | 'disconnect' | 'tools'>>({})
   const [toolDialogServer, setToolDialogServer] = useState<string | null>(null)
   const [serverTools, setServerTools] = useState<Record<string, McpToolInfo[]>>({})
+  const [serverFormMode, setServerFormMode] = useState<'fields' | 'json'>('fields')
+  const [jsonPasteText, setJsonPasteText] = useState('')
+  const [jsonPasteError, setJsonPasteError] = useState<string | null>(null)
 
   const showToast = useCallback((text: string, success: boolean) => setToast({ text, success }), [])
 
@@ -445,13 +564,37 @@ function McpPage() {
     }
   }
 
+  const resetJsonPasteState = () => {
+    setServerFormMode('fields')
+    setJsonPasteText('')
+    setJsonPasteError(null)
+  }
+
+  const applyJsonPaste = () => {
+    const result = parseServerJson(jsonPasteText)
+    if (result.error) {
+      setJsonPasteError(result.error)
+      return
+    }
+    setJsonPasteError(null)
+    setServerForm(prev => ({
+      ...createEmptyServerForm(),
+      ...prev,
+      ...(result.name && !editingServer ? { name: result.name } : {}),
+      ...result.form,
+    }))
+    setServerFormMode('fields')
+  }
+
   const openAddServer = () => {
     if (serverPanelOpen && !editingServer) {
       setServerPanelOpen(false)
+      resetJsonPasteState()
       return
     }
     setEditingServer(null)
     setServerForm(createEmptyServerForm())
+    resetJsonPasteState()
     setServerPanelOpen(true)
   }
 
@@ -460,6 +603,7 @@ function McpPage() {
       setServerPanelOpen(false)
       setEditingServer(null)
       setServerForm(createEmptyServerForm())
+      resetJsonPasteState()
       return
     }
     setServerPanelOpen(true)
@@ -521,19 +665,28 @@ function McpPage() {
 
   // ── Render helpers ──
   const renderStatusChip = (status: string) => {
-    const map: Record<string, { label: string; color: 'success' | 'default' | 'error' }> = {
-      connected: { label: '已连接', color: 'success' },
-      disconnected: { label: '未连接', color: 'default' },
-      error: { label: '错误', color: 'error' },
-      connecting: { label: '连接中', color: 'default' },
+    const map: Record<string, { label: string; color: string; borderColor: string }> = {
+      connected:    { label: '已连接', color: 'var(--success, #4caf50)',  borderColor: 'var(--success, #4caf50)' },
+      disconnected: { label: '未连接', color: 'var(--text-tertiary)',      borderColor: 'var(--border-color)' },
+      error:        { label: '错误',   color: 'var(--danger)',             borderColor: 'var(--danger)' },
+      connecting:   { label: '连接中', color: 'var(--text-secondary)',     borderColor: 'var(--border-color)' },
     }
     const info = map[status] || map.disconnected
-    return <Chip label={info.label} color={info.color} size="small" variant="outlined" />
+    return <Chip label={info.label} size="small" variant="outlined"
+      sx={{ height: 22, fontSize: 12, color: info.color, borderColor: info.borderColor }} />
+  }
+
+  const closeServerPanel = () => {
+    setServerPanelOpen(false)
+    setEditingServer(null)
+    setServerForm(createEmptyServerForm())
+    resetJsonPasteState()
   }
 
   const renderServerForm = () => (
     <Box sx={{ ...sectionCardSx, borderColor: 'var(--primary)', bgcolor: 'var(--bg-secondary)' }}>
       <Stack spacing={2}>
+        {/* ── 标题行 ── */}
         <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
           <Box>
             <Typography sx={{ fontWeight: 700, color: 'var(--text-primary)' }}>
@@ -543,56 +696,111 @@ function McpPage() {
               参数会保存到本机 MCP 客户端配置中。
             </Typography>
           </Box>
-          <IconButton size="small" onClick={() => { setServerPanelOpen(false); setEditingServer(null); setServerForm(createEmptyServerForm()) }} title="收起">
+          <IconButton size="small" onClick={closeServerPanel} title="收起">
             <X size={16} />
           </IconButton>
         </Stack>
 
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
-          <TextField label="服务器名称" fullWidth value={serverForm.name} onChange={e => setServerForm(f => ({ ...f, name: e.target.value }))}
-            disabled={!!editingServer} sx={textFieldSx} />
-          <FormControl fullWidth sx={{ '& .MuiInputLabel-root': { color: 'var(--text-secondary)' } }}>
-            <InputLabel>传输类型</InputLabel>
-            <Select label="传输类型" value={serverForm.type} onChange={e => setServerForm(f => ({ ...f, type: e.target.value }))}
-              sx={{ borderRadius: '14px', bgcolor: 'var(--bg-secondary)', color: 'var(--text-primary)', '& fieldset': { borderColor: 'var(--border-color)' } }}>
-              <MenuItem value="stdio">Stdio</MenuItem>
-              <MenuItem value="sse">SSE</MenuItem>
-              <MenuItem value="http">Streamable HTTP</MenuItem>
-            </Select>
-          </FormControl>
-          <TextField label="超时时间 (ms)" fullWidth value={serverForm.timeoutMs} onChange={e => setServerForm(f => ({ ...f, timeoutMs: e.target.value }))}
-            placeholder="30000" sx={textFieldSx} />
-        </Stack>
-
-        {serverForm.type === 'stdio' ? (
-          <Stack spacing={1.5}>
-            <TextField label="命令" fullWidth value={serverForm.command} onChange={e => setServerForm(f => ({ ...f, command: e.target.value }))}
-              placeholder="npx、node、python、uvx ..." sx={textFieldSx} />
-            <TextField label="参数" fullWidth value={serverForm.args} onChange={e => setServerForm(f => ({ ...f, args: e.target.value }))}
-              placeholder="-y @modelcontextprotocol/server-filesystem D:/Workspace" sx={textFieldSx} />
-            <TextField label="工作目录 (可选)" fullWidth value={serverForm.cwd} onChange={e => setServerForm(f => ({ ...f, cwd: e.target.value }))}
-              placeholder="D:/Workspace/project" sx={textFieldSx} />
-            <TextField label="环境变量 (每行 KEY=VALUE)" fullWidth multiline minRows={3} value={serverForm.env} onChange={e => setServerForm(f => ({ ...f, env: e.target.value }))}
-              placeholder={'API_KEY=...\nNODE_ENV=production'}
-              sx={{ ...textFieldSx, '& .MuiOutlinedInput-root': { ...textFieldSx['& .MuiOutlinedInput-root'], fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)', fontSize: 13 } }} />
-          </Stack>
-        ) : (
-          <Stack spacing={1.5}>
-            <TextField label="URL" fullWidth value={serverForm.url} onChange={e => setServerForm(f => ({ ...f, url: e.target.value }))}
-              placeholder={serverForm.type === 'sse' ? 'http://localhost:3000/sse' : 'http://localhost:3000/mcp'} sx={textFieldSx} />
-            <TextField label="请求头 (每行 KEY=VALUE)" fullWidth multiline minRows={3} value={serverForm.headers} onChange={e => setServerForm(f => ({ ...f, headers: e.target.value }))}
-              placeholder={'Authorization=Bearer ...\nX-Api-Key=...'}
-              sx={{ ...textFieldSx, '& .MuiOutlinedInput-root': { ...textFieldSx['& .MuiOutlinedInput-root'], fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)', fontSize: 13 } }} />
+        {/* ── 模式切换（仅添加时显示） ── */}
+        {!editingServer && (
+          <Stack direction="row" spacing={1}>
+            <Button size="small" variant={serverFormMode === 'fields' ? 'contained' : 'outlined'}
+              onClick={() => setServerFormMode('fields')}
+              sx={serverFormMode === 'fields' ? { ...activeTabSx, minWidth: 80, fontSize: 13 } : { ...secondaryBtnSx, minWidth: 80, fontSize: 13 }}>
+              表单填写
+            </Button>
+            <Button size="small" variant={serverFormMode === 'json' ? 'contained' : 'outlined'}
+              onClick={() => setServerFormMode('json')}
+              sx={serverFormMode === 'json' ? { ...activeTabSx, minWidth: 80, fontSize: 13 } : { ...secondaryBtnSx, minWidth: 80, fontSize: 13 }}>
+              粘贴 JSON
+            </Button>
           </Stack>
         )}
 
-        <Stack direction="row" spacing={1} justifyContent="flex-end">
-          <Button onClick={() => { setServerPanelOpen(false); setEditingServer(null); setServerForm(createEmptyServerForm()) }} sx={secondaryBtnSx}>取消</Button>
-          <Button variant="contained" onClick={saveServer}
-            sx={{ borderRadius: '999px', textTransform: 'none', fontWeight: 600, background: 'var(--primary-gradient)', '&:hover': { background: 'var(--primary-gradient)', filter: 'brightness(0.98)' } }}>
-            保存
-          </Button>
-        </Stack>
+        {/* ── JSON 粘贴模式 ── */}
+        {serverFormMode === 'json' ? (
+          <Stack spacing={1.5}>
+            <Typography sx={{ fontSize: 13, color: 'var(--text-secondary)' }}>
+              粘贴来自 Claude Desktop、Cursor 等工具的{' '}
+              <Box component="code" sx={{ px: 0.6, py: 0.2, borderRadius: '6px', bgcolor: 'var(--bg-tertiary)', color: 'var(--text-primary)', fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)', fontSize: 12 }}>mcpServers</Box>
+              {' '}配置，系统会自动识别并填入表单。
+            </Typography>
+            <TextField
+              fullWidth multiline minRows={8}
+              value={jsonPasteText}
+              onChange={e => { setJsonPasteText(e.target.value); setJsonPasteError(null) }}
+              placeholder={'{\n  "mcpServers": {\n    "my-server": {\n      "command": "npx",\n      "args": ["-y", "some-mcp-server"]\n    }\n  }\n}'}
+              error={!!jsonPasteError}
+              helperText={jsonPasteError ?? '支持：完整 mcpServers 对象 / 单条服务器对象 / 直接 command 或 url 配置'}
+              sx={{
+                ...textFieldSx,
+                '& .MuiOutlinedInput-root': {
+                  ...textFieldSx['& .MuiOutlinedInput-root'],
+                  fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)',
+                  fontSize: 13,
+                },
+                '& .MuiFormHelperText-root': { color: jsonPasteError ? 'var(--danger)' : 'var(--text-tertiary)', ml: 0 },
+              }}
+            />
+            <Stack direction="row" spacing={1} justifyContent="flex-end">
+              <Button onClick={closeServerPanel} sx={secondaryBtnSx}>取消</Button>
+              <Button variant="contained" onClick={applyJsonPaste} disabled={!jsonPasteText.trim()}
+                sx={{ borderRadius: '999px', textTransform: 'none', fontWeight: 600, background: 'var(--primary-gradient)', '&:hover': { background: 'var(--primary-gradient)', filter: 'brightness(0.98)' } }}>
+                解析并填入
+              </Button>
+            </Stack>
+          </Stack>
+        ) : (
+          <>
+            {/* ── 表单填写模式 ── */}
+            <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.5}>
+              <TextField label="服务器名称" fullWidth value={serverForm.name} onChange={e => setServerForm(f => ({ ...f, name: e.target.value }))}
+                disabled={!!editingServer} sx={textFieldSx} />
+              <FormControl fullWidth sx={{ '& .MuiInputLabel-root': { color: 'var(--text-secondary)' }, '& .MuiInputLabel-root.Mui-focused': { color: 'var(--primary)' } }}>
+                <InputLabel>传输类型</InputLabel>
+                <Select label="传输类型" value={serverForm.type} onChange={e => setServerForm(f => ({ ...f, type: e.target.value }))}
+                  MenuProps={selectMenuProps}
+                  sx={{ borderRadius: '14px', bgcolor: 'var(--bg-secondary)', color: 'var(--text-primary)', '& fieldset': { borderColor: 'var(--border-color)' }, '&:hover fieldset': { borderColor: 'var(--primary)' }, '&.Mui-focused fieldset': { borderColor: 'var(--primary)' }, '& .MuiSvgIcon-root': { color: 'var(--text-secondary)' } }}>
+                  <MenuItem value="stdio">Stdio</MenuItem>
+                  <MenuItem value="sse">SSE</MenuItem>
+                  <MenuItem value="http">Streamable HTTP</MenuItem>
+                </Select>
+              </FormControl>
+              <TextField label="超时时间 (ms)" fullWidth value={serverForm.timeoutMs} onChange={e => setServerForm(f => ({ ...f, timeoutMs: e.target.value }))}
+                placeholder="30000" sx={textFieldSx} />
+            </Stack>
+
+            {serverForm.type === 'stdio' ? (
+              <Stack spacing={1.5}>
+                <TextField label="命令" fullWidth value={serverForm.command} onChange={e => setServerForm(f => ({ ...f, command: e.target.value }))}
+                  placeholder="npx、node、python、uvx ..." sx={textFieldSx} />
+                <TextField label="参数" fullWidth value={serverForm.args} onChange={e => setServerForm(f => ({ ...f, args: e.target.value }))}
+                  placeholder="-y @modelcontextprotocol/server-filesystem D:/Workspace" sx={textFieldSx} />
+                <TextField label="工作目录 (可选)" fullWidth value={serverForm.cwd} onChange={e => setServerForm(f => ({ ...f, cwd: e.target.value }))}
+                  placeholder="D:/Workspace/project" sx={textFieldSx} />
+                <TextField label="环境变量 (每行 KEY=VALUE)" fullWidth multiline minRows={3} value={serverForm.env} onChange={e => setServerForm(f => ({ ...f, env: e.target.value }))}
+                  placeholder={'API_KEY=...\nNODE_ENV=production'}
+                  sx={{ ...textFieldSx, '& .MuiOutlinedInput-root': { ...textFieldSx['& .MuiOutlinedInput-root'], fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)', fontSize: 13 } }} />
+              </Stack>
+            ) : (
+              <Stack spacing={1.5}>
+                <TextField label="URL" fullWidth value={serverForm.url} onChange={e => setServerForm(f => ({ ...f, url: e.target.value }))}
+                  placeholder={serverForm.type === 'sse' ? 'http://localhost:3000/sse' : 'http://localhost:3000/mcp'} sx={textFieldSx} />
+                <TextField label="请求头 (每行 KEY=VALUE)" fullWidth multiline minRows={3} value={serverForm.headers} onChange={e => setServerForm(f => ({ ...f, headers: e.target.value }))}
+                  placeholder={'Authorization=Bearer ...\nX-Api-Key=...'}
+                  sx={{ ...textFieldSx, '& .MuiOutlinedInput-root': { ...textFieldSx['& .MuiOutlinedInput-root'], fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)', fontSize: 13 } }} />
+              </Stack>
+            )}
+
+            <Stack direction="row" spacing={1} justifyContent="flex-end">
+              <Button onClick={closeServerPanel} sx={secondaryBtnSx}>取消</Button>
+              <Button variant="contained" onClick={saveServer}
+                sx={{ borderRadius: '999px', textTransform: 'none', fontWeight: 600, background: 'var(--primary-gradient)', '&:hover': { background: 'var(--primary-gradient)', filter: 'brightness(0.98)' } }}>
+                保存
+              </Button>
+            </Stack>
+          </>
+        )}
       </Stack>
     </Box>
   )
@@ -604,7 +812,7 @@ function McpPage() {
       <Stack spacing={1.2} sx={{ mt: 1, maxHeight: '68vh', overflow: 'auto' }}>
         {loadingTools ? (
           <Stack direction="row" spacing={1} alignItems="center" sx={{ py: 1 }}>
-            <CircularProgress size={16} />
+            <CircularProgress size={16} sx={{ color: 'var(--primary)' }} />
             <Typography sx={{ fontSize: 13, color: 'var(--text-secondary)' }}>正在读取工具列表...</Typography>
           </Stack>
         ) : tools.length === 0 ? (
@@ -691,7 +899,7 @@ function McpPage() {
                       <Button variant="outlined" startIcon={<Copy size={16} />} onClick={() => copyText(mcpServerJsonTemplate, 'mcpServers 配置')} sx={secondaryBtnSx}>复制配置</Button>
                       <Typography sx={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                         {launchConfig.mode === 'packaged'
-                          ? '打包态请直接把 command 指向启动器本身。'
+                          ? 'Windows 下已自动通过 cmd /c 调用启动器，Claude Desktop、Cursor 等工具可直接使用。'
                           : 'cwd 已自动使用当前仓库目录。'}
                       </Typography>
                     </Stack>
@@ -700,7 +908,7 @@ function McpPage() {
                   <Stack direction="row" spacing={1.2} justifyContent="space-between" alignItems="center">
                     <Typography sx={{ fontSize: 13, color: 'var(--text-secondary)' }}>
                       {launchConfig.mode === 'packaged'
-                        ? `当前为打包版启动器 ${getPackagedLauncherLabel(launchConfig.command)}`
+                        ? `当前为打包版启动器 ${getPackagedLauncherLabel(launchConfig.args.find(a => a.includes('ciphertalk-mcp')) ?? launchConfig.command)}`
                         : '当前为开发态入口 npm run mcp'}
                     </Typography>
                     <Button variant="contained" onClick={handleSave} disabled={loading || saving}
@@ -729,8 +937,8 @@ function McpPage() {
                           <Stack direction="row" spacing={1} alignItems="center">
                             <FileCode size={18} style={{ color: 'var(--primary)', flexShrink: 0 }} />
                             <Typography sx={{ fontWeight: 600, color: 'var(--text-primary)' }} noWrap>{skill.name}</Typography>
-                            <Chip label={`v${skill.version}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 12 }} />
-                            <Chip label="内置" size="small" color="primary" variant="filled" sx={{ height: 22, fontSize: 12 }} />
+                            <Chip label={`v${skill.version}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 12, ...chipOutlinedSx }} />
+                            <Chip label="内置" size="small" variant="filled" sx={{ height: 22, fontSize: 12, ...chipPrimarySx }} />
                           </Stack>
                           <Typography sx={{ mt: 0.5, fontSize: 13, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                             {skill.description}
@@ -781,7 +989,7 @@ function McpPage() {
                             <Stack direction="row" spacing={1} alignItems="center">
                               <Plug size={18} style={{ color: srv.status === 'connected' ? 'var(--primary)' : 'var(--text-tertiary)', flexShrink: 0 }} />
                               <Typography sx={{ fontWeight: 600, color: 'var(--text-primary)' }} noWrap>{srv.name}</Typography>
-                              <Chip label={srv.config.type.toUpperCase()} size="small" variant="outlined" sx={{ height: 22, fontSize: 11 }} />
+                              <Chip label={srv.config.type.toUpperCase()} size="small" variant="outlined" sx={{ height: 22, fontSize: 11, ...chipOutlinedSx }} />
                               {renderStatusChip(srv.status)}
                               {srv.config.timeoutMs && (
                                 <Typography sx={{ fontSize: 12, color: 'var(--text-secondary)' }}>{srv.config.timeoutMs}ms</Typography>
@@ -797,22 +1005,22 @@ function McpPage() {
                               <Button size="small" variant="outlined" onClick={() => openToolsDialog(srv.name)}
                                 disabled={Boolean(serverBusy[srv.name] && serverBusy[srv.name] !== 'tools')}
                                 sx={{ ...secondaryBtnSx, minWidth: 86, height: 32, fontSize: 12 }}>
-                                {serverBusy[srv.name] === 'tools' ? <CircularProgress size={14} /> : `${srv.toolCount} 工具`}
+                                {serverBusy[srv.name] === 'tools' ? <CircularProgress size={14} sx={{ color: 'var(--primary)' }} /> : `${srv.toolCount} 工具`}
                               </Button>
                             )}
                             {srv.status === 'connected' ? (
-                              <IconButton size="small" onClick={() => disconnectServer(srv.name)} title="断开" disabled={Boolean(serverBusy[srv.name])}>
-                                {serverBusy[srv.name] === 'disconnect' ? <CircularProgress size={16} /> : <Unplug size={16} />}
+                              <IconButton size="small" onClick={() => disconnectServer(srv.name)} title="断开" disabled={Boolean(serverBusy[srv.name])} sx={iconBtnSx}>
+                                {serverBusy[srv.name] === 'disconnect' ? <CircularProgress size={16} sx={{ color: 'var(--primary)' }} /> : <Unplug size={16} />}
                               </IconButton>
                             ) : (
-                              <IconButton size="small" onClick={() => connectServer(srv.name)} title="连接" disabled={Boolean(serverBusy[srv.name] || srv.status === 'connecting')}>
-                                {serverBusy[srv.name] === 'connect' || srv.status === 'connecting' ? <CircularProgress size={16} /> : <Plug size={16} />}
+                              <IconButton size="small" onClick={() => connectServer(srv.name)} title="连接" disabled={Boolean(serverBusy[srv.name] || srv.status === 'connecting')} sx={iconBtnSx}>
+                                {serverBusy[srv.name] === 'connect' || srv.status === 'connecting' ? <CircularProgress size={16} sx={{ color: 'var(--primary)' }} /> : <Plug size={16} />}
                               </IconButton>
                             )}
-                            <IconButton size="small" onClick={() => openEditServer(srv)} title="编辑" disabled={Boolean(serverBusy[srv.name] || srv.status === 'connecting')}>
+                            <IconButton size="small" onClick={() => openEditServer(srv)} title="编辑" disabled={Boolean(serverBusy[srv.name] || srv.status === 'connecting')} sx={iconBtnSx}>
                               <Pencil size={16} />
                             </IconButton>
-                            <IconButton size="small" onClick={() => setDeleteTarget({ type: 'server', name: srv.name })} title="删除" disabled={Boolean(serverBusy[srv.name] || srv.status === 'connecting')}>
+                            <IconButton size="small" onClick={() => setDeleteTarget({ type: 'server', name: srv.name })} title="删除" disabled={Boolean(serverBusy[srv.name] || srv.status === 'connecting')} sx={iconBtnSx}>
                               <Trash2 size={16} />
                             </IconButton>
                           </Stack>
@@ -853,19 +1061,19 @@ function McpPage() {
                             <Stack direction="row" spacing={1} alignItems="center">
                               <FileCode size={18} style={{ color: 'var(--primary)', flexShrink: 0 }} />
                               <Typography sx={{ fontWeight: 600, color: 'var(--text-primary)' }} noWrap>{skill.name}</Typography>
-                              <Chip label={`v${skill.version}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 12 }} />
-                              {skill.builtin && <Chip label="内置" size="small" color="primary" variant="filled" sx={{ height: 22, fontSize: 12 }} />}
+                              <Chip label={`v${skill.version}`} size="small" variant="outlined" sx={{ height: 22, fontSize: 12, ...chipOutlinedSx }} />
+                              {skill.builtin && <Chip label="内置" size="small" variant="filled" sx={{ height: 22, fontSize: 12, ...chipPrimarySx }} />}
                             </Stack>
                             <Typography sx={{ mt: 0.3, fontSize: 12, color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {skill.description}
                             </Typography>
                           </Box>
                           <Stack direction="row" spacing={0.5}>
-                            <IconButton size="small" onClick={() => openSkillPanel(skill.name, 'preview')} title="预览"><Eye size={16} /></IconButton>
+                            <IconButton size="small" onClick={() => openSkillPanel(skill.name, 'preview')} title="预览" sx={iconBtnSx}><Eye size={16} /></IconButton>
                             {!skill.builtin && (
                               <>
-                                <IconButton size="small" onClick={() => openSkillPanel(skill.name, 'edit')} title="编辑"><Pencil size={16} /></IconButton>
-                                <IconButton size="small" onClick={() => setDeleteTarget({ type: 'skill', name: skill.name })} title="删除"><Trash2 size={16} /></IconButton>
+                                <IconButton size="small" onClick={() => openSkillPanel(skill.name, 'edit')} title="编辑" sx={iconBtnSx}><Pencil size={16} /></IconButton>
+                                <IconButton size="small" onClick={() => setDeleteTarget({ type: 'skill', name: skill.name })} title="删除" sx={iconBtnSx}><Trash2 size={16} /></IconButton>
                               </>
                             )}
                             <Button variant="outlined" size="small" startIcon={<Download size={14} />} onClick={() => exportSkillZip(skill.name)}
@@ -893,22 +1101,24 @@ function McpPage() {
       </Snackbar>
 
       {/* ── MCP Tools Dialog ── */}
-      <Dialog open={toolDialogServer !== null} onClose={() => setToolDialogServer(null)} maxWidth="md" fullWidth>
-        <DialogTitle sx={{ fontWeight: 700, color: 'var(--text-primary)' }}>工具预览: {toolDialogServer}</DialogTitle>
-        <DialogContent>
+      <Dialog open={toolDialogServer !== null} onClose={() => setToolDialogServer(null)} maxWidth="md" fullWidth
+        PaperProps={{ sx: dialogPaperSx }}>
+        <DialogTitle sx={{ fontWeight: 700, color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>工具预览: {toolDialogServer}</DialogTitle>
+        <DialogContent sx={{ bgcolor: 'var(--bg-secondary)' }}>
           {toolDialogServer && renderToolsContent(toolDialogServer)}
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ borderTop: '1px solid var(--border-color)', bgcolor: 'var(--bg-secondary)' }}>
           <Button onClick={() => setToolDialogServer(null)} sx={secondaryBtnSx}>关闭</Button>
         </DialogActions>
       </Dialog>
 
       {/* ── Skill Preview/Edit Dialog ── */}
-      <Dialog open={skillDialog !== null} onClose={() => setSkillDialog(null)} maxWidth="lg" fullWidth>
-        <DialogTitle sx={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+      <Dialog open={skillDialog !== null} onClose={() => setSkillDialog(null)} maxWidth="lg" fullWidth
+        PaperProps={{ sx: dialogPaperSx }}>
+        <DialogTitle sx={{ fontWeight: 700, color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>
           {skillDialog?.mode === 'edit' ? '编辑 Skill' : '预览 Skill'}: {skillDialog?.name}
         </DialogTitle>
-        <DialogContent>
+        <DialogContent sx={{ bgcolor: 'var(--bg-secondary)' }}>
           {skillDialog?.mode === 'edit' ? (
             <TextField fullWidth multiline minRows={22} value={editingSkillContent} onChange={e => setEditingSkillContent(e.target.value)}
               sx={{ ...textFieldSx, mt: 1, '& .MuiOutlinedInput-root': { ...textFieldSx['& .MuiOutlinedInput-root'], fontFamily: 'var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace)', fontSize: 13, alignItems: 'flex-start' }, '& textarea': { maxHeight: '68vh', overflow: 'auto !important' } }} />
@@ -933,7 +1143,7 @@ function McpPage() {
             />
           )}
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ borderTop: '1px solid var(--border-color)', bgcolor: 'var(--bg-secondary)' }}>
           {skillDialog?.mode === 'preview' && skills.find(s => s.name === skillDialog.name && !s.builtin) && (
             <Button onClick={() => setSkillDialog({ name: skillDialog.name, mode: 'edit' })} startIcon={<Pencil size={14} />} sx={secondaryBtnSx}>编辑</Button>
           )}
@@ -951,14 +1161,15 @@ function McpPage() {
       </Dialog>
 
       {/* ── Delete Confirm Dialog ── */}
-      <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} maxWidth="xs">
-        <DialogTitle sx={{ fontWeight: 700, color: 'var(--text-primary)' }}>确认删除</DialogTitle>
-        <DialogContent>
-          <DialogContentText sx={{ color: 'var(--text-secondary)' }}>
+      <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} maxWidth="xs"
+        PaperProps={{ sx: dialogPaperSx }}>
+        <DialogTitle sx={{ fontWeight: 700, color: 'var(--text-primary)', borderBottom: '1px solid var(--border-color)' }}>确认删除</DialogTitle>
+        <DialogContent sx={{ bgcolor: 'var(--bg-secondary)' }}>
+          <DialogContentText sx={{ color: 'var(--text-secondary)', mt: 1 }}>
             确定要删除{deleteTarget?.type === 'skill' ? ' Skill' : ' MCP 服务器'} "{deleteTarget?.name}" 吗？此操作不可撤销。
           </DialogContentText>
         </DialogContent>
-        <DialogActions>
+        <DialogActions sx={{ borderTop: '1px solid var(--border-color)', bgcolor: 'var(--bg-secondary)' }}>
           <Button onClick={() => setDeleteTarget(null)} sx={secondaryBtnSx}>取消</Button>
           <Button variant="contained" color="error" onClick={() => {
             if (deleteTarget?.type === 'skill') void deleteSkill(deleteTarget.name)

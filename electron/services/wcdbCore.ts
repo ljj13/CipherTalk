@@ -665,7 +665,9 @@ export class WcdbCore {
         return false
       }
 
-      let pipePath = '\\\\.\\pipe\\ciphertalk_monitor'
+      let pipePath = process.platform === 'win32'
+        ? '\\\\.\\pipe\\ciphertalk_monitor'
+        : '/tmp/weflow_monitor_pipe'
       if (this.wcdbGetMonitorPipeName) {
         try {
           const namePtr = [null as any]
