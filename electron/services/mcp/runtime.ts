@@ -127,11 +127,29 @@ export function getPackagedLauncherPath(): string {
 
 export function getMcpLaunchConfig(): McpLaunchConfig {
   if (isElectronPackaged()) {
+    const launcherPath = getPackagedLauncherPath()
+    if (process.platform === 'win32') {
+      return {
+        command: 'cmd',
+        args: ['/c', launcherPath],
+        cwd: dirname(getExePath()),
+        mode: 'packaged'
+      }
+    }
     return {
-      command: getPackagedLauncherPath(),
+      command: launcherPath,
       args: [],
       cwd: dirname(getExePath()),
       mode: 'packaged'
+    }
+  }
+
+  if (process.platform === 'win32') {
+    return {
+      command: 'cmd',
+      args: ['/c', 'npm', 'run', 'mcp'],
+      cwd: getAppPath(),
+      mode: 'dev'
     }
   }
 
