@@ -1,14 +1,8 @@
 import { useState } from 'react'
 import type { Message } from '../types'
 
-const WELCOME: Message = {
-  id: 'welcome',
-  role: 'assistant',
-  content: '你好！我是你的 AI 助手，可以帮你分析聊天记录、回答问题或提供建议。请告诉我你想了解什么？',
-}
-
 export function useAgentChat() {
-  const [messages, setMessages] = useState<Message[]>([WELCOME])
+  const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
 
   const send = (text: string) => {
@@ -23,12 +17,22 @@ export function useAgentChat() {
       const reply: Message = {
         id: `a-${Date.now()}`,
         role: 'assistant',
-        content: 'Agent 功能正在开发中，敬请期待。',
+        blocks: [
+          {
+            type: 'text',
+            text: `收到：${text}\n\nAgent 功能尚未接入真实运行时。`,
+          },
+        ],
       }
       setMessages(prev => [...prev, reply])
       setLoading(false)
     }, 800)
   }
 
-  return { messages, loading, send }
+  const reset = () => {
+    setMessages([])
+    setLoading(false)
+  }
+
+  return { messages, loading, send, reset }
 }

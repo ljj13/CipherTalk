@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react'
-import Paper from '@mui/material/Paper'
 import { MessageBubble } from './MessageBubble'
 import { TypingIndicator } from './TypingIndicator'
 import type { Message } from '../types'
@@ -11,31 +10,26 @@ interface Props {
 
 export function MessageList({ messages, loading }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [messages, loading])
 
   return (
-    <Paper
-      variant="outlined"
-      sx={{
-        flex: 1,
-        overflowY: 'auto',
-        p: 2,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 2,
-        borderRadius: 2,
-        borderColor: 'var(--border-color)',
-        backgroundColor: 'var(--bg-primary)',
-      }}
-    >
-      {messages.map(msg => (
-        <MessageBubble key={msg.id} message={msg} />
-      ))}
-      {loading && <TypingIndicator />}
-      <div ref={bottomRef} />
-    </Paper>
+    <div className="agent-message-list" ref={scrollRef}>
+      <div className="agent-message-list__inner">
+        <div className="agent-message-list__items">
+          {messages.length === 0 && !loading ? (
+            <div className="agent-empty-state">暂无对话内容</div>
+          ) : null}
+          {messages.map(msg => (
+            <MessageBubble key={msg.id} message={msg} />
+          ))}
+          {loading && <TypingIndicator />}
+        </div>
+        <div className="agent-message-list__end" ref={bottomRef} />
+      </div>
+    </div>
   )
 }

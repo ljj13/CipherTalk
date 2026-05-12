@@ -1,8 +1,6 @@
-import Avatar from '@mui/material/Avatar'
-import Box from '@mui/material/Box'
-import Typography from '@mui/material/Typography'
 import { Bot, User } from 'lucide-react'
 import type { Message } from '../types'
+import { AssistantBlocks } from './AssistantBlocks'
 
 interface Props {
   message: Message
@@ -10,42 +8,26 @@ interface Props {
 
 export function MessageBubble({ message }: Props) {
   const isUser = message.role === 'user'
+  const blocks = message.blocks || (message.content ? [{ type: 'text' as const, text: message.content }] : [])
 
   return (
-    <Box
-      sx={{
-        display: 'flex',
-        gap: 1.5,
-        flexDirection: isUser ? 'row-reverse' : 'row',
-        alignItems: 'flex-start',
-      }}
-    >
-      <Avatar
-        sx={{
-          width: 32,
-          height: 32,
-          bgcolor: isUser ? 'var(--bg-tertiary)' : 'var(--primary)',
-          color: isUser ? 'var(--text-secondary)' : '#fff',
-          flexShrink: 0,
-        }}
-      >
-        {isUser ? <User size={16} /> : <Bot size={16} />}
-      </Avatar>
+    <article className={`agent-message agent-message--${isUser ? 'user' : 'assistant'}`}>
+      {!isUser ? (
+        <div className="agent-message__avatar" aria-hidden="true">
+          <Bot size={16} />
+        </div>
+      ) : null}
 
-      <Box
-        sx={{
-          maxWidth: '75%',
-          px: 2,
-          py: 1.25,
-          borderRadius: isUser ? '16px 4px 16px 16px' : '4px 16px 16px 16px',
-          backgroundColor: isUser ? 'var(--primary)' : 'var(--bg-secondary)',
-          color: isUser ? '#fff' : 'var(--text-primary)',
-        }}
-      >
-        <Typography variant="body2" sx={{ lineHeight: 1.6, whiteSpace: 'pre-wrap' }}>
-          {message.content}
-        </Typography>
-      </Box>
-    </Box>
+      {isUser ? (
+        <div className="agent-message__user-bubble">
+          <User size={14} />
+          <span>{message.content}</span>
+        </div>
+      ) : (
+        <div className="agent-message__assistant-body">
+          <AssistantBlocks blocks={blocks} streaming={message.streaming} />
+        </div>
+      )}
+    </article>
   )
 }
