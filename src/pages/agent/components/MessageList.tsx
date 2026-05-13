@@ -7,9 +7,10 @@ interface Props {
   messages: Message[]
   loading: boolean
   onCancel?: () => void
+  aiProvider?: string
 }
 
-export function MessageList({ messages, loading, onCancel }: Props) {
+export function MessageList({ messages, loading, onCancel, aiProvider }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -27,7 +28,7 @@ export function MessageList({ messages, loading, onCancel }: Props) {
             <div className="agent-empty-state">暂无对话内容</div>
           ) : null}
           {messages.map(msg => (
-            <MessageBubble key={msg.id} message={msg} onCancel={onCancel} />
+            <MessageBubble key={msg.id} message={msg} onCancel={onCancel} aiProvider={aiProvider} />
           ))}
           {loading && !hasStreamingMessage && <TypingIndicator onCancel={onCancel} />}
         </div>

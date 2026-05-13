@@ -927,6 +927,40 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
   }
 
   /**
+   * 为 Agent 对话生成 AI 标题（非流式）
+   */
+  async generateAgentTitle(options: {
+    provider: string
+    apiKey: string
+    model: string
+    userMessage: string
+    assistantResponse: string
+  }): Promise<string> {
+    try {
+      const provider = this.getProvider(options.provider, options.apiKey)
+      const model = options.model || provider.models[0]
+      const rawTitle = await provider.chat([
+        {
+          role: 'system',
+          content: '你是聊天标题生成器。只输出一个中文短标题，8到16个汉字，不要引号，不要换行，不要解释，不要标点包装。'
+        },
+        {
+          role: 'user',
+          content: [
+            '请根据下面这轮问答生成标题。',
+            `用户问题：${options.userMessage.slice(0, 600)}`,
+            `AI回答：${options.assistantResponse.slice(0, 900)}`
+          ].join('\n')
+        }
+      ], { model, temperature: 0.2, maxTokens: 32, enableThinking: false })
+      const title = rawTitle.trim().replace(/^["'「『【]|["'」』】]$/g, '').trim()
+      return title || options.userMessage.slice(0, 20) || '新对话'
+    } catch {
+      return options.userMessage.slice(0, 20) || '新对话'
+    }
+  }
+
+  /**
    * 单会话 AI 问答（流式）
    */
   async answerSessionQuestion(

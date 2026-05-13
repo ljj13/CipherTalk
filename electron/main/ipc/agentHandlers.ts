@@ -2,9 +2,30 @@ import { ipcMain } from 'electron'
 import type { MainProcessContext } from '../context'
 
 const requestMap = new Map<string, AbortController>()
+const THINK_OPEN_TAG = '<think>'
+const THINK_BLOCK_RE = /<think>([\s\S]*?)<\/think>\s*/gi
 
 function genRequestId(): string {
   return `agent-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+}
+
+function extractThinkTaggedContent(content: string): { thinkingText: string; text: string } {
+  let thinkingText = ''
+  let found = false
+  let text = content.replace(THINK_BLOCK_RE, (_, thinkContent: string) => {
+    found = true
+    thinkingText += `${thinkingText ? '\n\n' : ''}${thinkContent}`
+    return ''
+  })
+
+  const openIndex = text.toLowerCase().indexOf(THINK_OPEN_TAG)
+  if (openIndex >= 0) {
+    found = true
+    thinkingText += `${thinkingText ? '\n\n' : ''}${text.slice(openIndex + THINK_OPEN_TAG.length)}`
+    text = text.slice(0, openIndex)
+  }
+
+  return found ? { thinkingText, text } : { thinkingText: '', text: content }
 }
 
 export function registerAgentHandlers(ctx: MainProcessContext): void {
@@ -36,14 +57,14 @@ export function registerAgentHandlers(ctx: MainProcessContext): void {
 
       if (agentConversationDb.isInitialized()) {
         if (!convId) {
-          const firstLine = options.message.slice(0, 20) || '新对话'
-          convId = agentConversationDb.createConversation(firstLine)
+          convId = agentConversationDb.createConversation('新对话')
         }
         agentConversationDb.appendMessage(convId, 'user', options.message)
       }
 
       void (async () => {
         let assistantText = ''
+        let reasoningText = ''
         try {
           assistantText = await agentChatService.sendMessage({
             history: options.history as any,
@@ -56,6 +77,17 @@ export function registerAgentHandlers(ctx: MainProcessContext): void {
             signal: controller.signal,
             enabledTools: options.enabledTools as any,
             onStreamEvent: (streamEvent) => {
+              if (streamEvent.type === 'reasoning_delta') {
+                reasoningText += streamEvent.text
+                if (reasoningText.length === streamEvent.text.length) {
+                  console.log('[Agent] 收到首个 reasoning_delta，长度:', streamEvent.text.length)
+                }
+              }
+              if (streamEvent.type === 'message_done' && streamEvent.reasoningContent) {
+                reasoningText = streamEvent.reasoningContent.length > reasoningText.length
+                  ? streamEvent.reasoningContent
+                  : reasoningText
+              }
               event.sender.send('agent:streamEvent', { requestId, event: streamEvent })
             },
             mcpCallTool: async (serverName, toolName, args) => {
@@ -69,7 +101,21 @@ export function registerAgentHandlers(ctx: MainProcessContext): void {
           })
 
           if (convId && agentConversationDb.isInitialized()) {
-            agentConversationDb.appendMessage(convId, 'assistant', assistantText)
+            let blocksJson: string | undefined
+            const extracted = extractThinkTaggedContent(assistantText)
+            let savedText = extracted.text
+
+            if (!reasoningText && extracted.thinkingText) {
+              reasoningText = extracted.thinkingText
+            }
+
+            if (reasoningText) {
+              blocksJson = JSON.stringify([
+                { type: 'thinking', text: reasoningText },
+                { type: 'text', text: savedText },
+              ])
+            }
+            agentConversationDb.appendMessage(convId, 'assistant', savedText, blocksJson)
           }
 
           event.sender.send('agent:done', { requestId, conversationId: convId })
@@ -151,6 +197,33 @@ export function registerAgentHandlers(ctx: MainProcessContext): void {
       if (!agentConversationDb.isInitialized()) return { success: false, error: '数据库未初始化' }
       agentConversationDb.updateTitle(id, title)
       return { success: true }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:generateTitle', async (_, options: {
+    conversationId: number
+    userMessage: string
+    assistantResponse: string
+    provider: string
+    apiKey: string
+    model: string
+  }) => {
+    try {
+      const { agentConversationDb } = await import('../../services/agentConversationDb')
+      const { aiService } = await import('../../services/ai/aiService')
+      const title = await aiService.generateAgentTitle({
+        provider: options.provider,
+        apiKey: options.apiKey,
+        model: options.model,
+        userMessage: options.userMessage,
+        assistantResponse: options.assistantResponse,
+      })
+      if (agentConversationDb.isInitialized()) {
+        agentConversationDb.updateTitle(options.conversationId, title)
+      }
+      return { success: true, title }
     } catch (e) {
       return { success: false, error: String(e) }
     }

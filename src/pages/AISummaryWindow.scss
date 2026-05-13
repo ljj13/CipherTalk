@@ -2572,13 +2572,12 @@
     overflow-x: hidden;
 
     // 左侧线条
-    border-left: 3px solid var(--border-color);
+    border-left: 1px solid var(--border-color);
     padding-left: 14px;
 
     // 默认展开状态
     max-height: 400px;
     padding-top: 8px;
-    padding-bottom: 8px;
     opacity: 1;
 
     // 过渡动画
@@ -2815,7 +2814,7 @@
   }
 
   hr {
-    height: 0.25em;
+    height: 0.1em;
     padding: 0;
     margin: 24px 0;
     background-color: var(--border-color);

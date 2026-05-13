@@ -1,27 +1,40 @@
 import { Bot, User } from 'lucide-react'
+import { useAppStore } from '../../../stores/appStore'
+import AIProviderLogo from '../../../components/ai/AIProviderLogo'
 import type { Message } from '../types'
 import { AssistantBlocks } from './AssistantBlocks'
 
 interface Props {
   message: Message
   onCancel?: () => void
+  aiProvider?: string
 }
 
-export function MessageBubble({ message, onCancel }: Props) {
+export function MessageBubble({ message, onCancel, aiProvider }: Props) {
   const isUser = message.role === 'user'
   const blocks = message.blocks || (message.content ? [{ type: 'text' as const, text: message.content }] : [])
+  const userInfo = useAppStore(s => s.userInfo)
 
   return (
     <article className={`agent-message agent-message--${isUser ? 'user' : 'assistant'} qa-message ${isUser ? 'user' : 'assistant'}`}>
       {!isUser ? (
         <div className="agent-message__avatar" aria-hidden="true">
-          <Bot size={16} />
+          {aiProvider
+            ? <AIProviderLogo providerId={aiProvider} alt={aiProvider} size={22} />
+            : <Bot size={18} />
+          }
         </div>
-      ) : null}
+      ) : (
+        <div className="agent-message__user-avatar" aria-hidden="true">
+          {userInfo?.avatarUrl
+            ? <img src={userInfo.avatarUrl} alt="" />
+            : <User size={15} />
+          }
+        </div>
+      )}
 
       {isUser ? (
         <div className="agent-message__user-bubble qa-bubble">
-          <User size={14} />
           <span>{message.content}</span>
         </div>
       ) : (

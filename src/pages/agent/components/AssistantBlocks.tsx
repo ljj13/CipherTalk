@@ -5,7 +5,6 @@ import {
   Atom,
   Check,
   ChevronDown,
-  CircleStop,
   Database,
   FileText,
   Globe2,
@@ -42,15 +41,14 @@ function renderMarkdown(text: string) {
   return { __html: DOMPurify.sanitize(html) }
 }
 
-export function AssistantBlocks({ blocks, streaming, onStop }: Props) {
+export function AssistantBlocks({ blocks }: Props) {
   return (
     <>
       {blocks.map((block, index) => {
         if (block.type === 'thinking') return <ThinkingBlock block={block} key={`${block.type}-${index}`} />
         if (block.type === 'tool') return <ToolBlock block={block} key={`${block.type}-${index}`} />
-        return <TextBlock block={block} key={`${block.type}-${index}`} streaming={streaming && index === blocks.length - 1} />
+        return <TextBlock block={block} key={`${block.type}-${index}`} />
       })}
-      {streaming ? <StreamingIndicator onStop={onStop} /> : null}
     </>
   )
 }
@@ -134,14 +132,13 @@ function ToolBlock({ block }: { block: AgentToolBlock }) {
   )
 }
 
-function TextBlock({ block, streaming }: { block: AgentTextBlock; streaming?: boolean }) {
+function TextBlock({ block }: { block: AgentTextBlock }) {
   return (
     <div className="qa-bubble agent-answer-bubble">
       <div
         className="qa-answer markdown-body agent-text-block"
         dangerouslySetInnerHTML={renderMarkdown(block.text)}
       />
-      {streaming ? <span className="agent-cursor" /> : null}
     </div>
   )
 }
@@ -174,19 +171,6 @@ function ToolResultView({ result }: { result: ToolResult }) {
     <pre className={`agent-code${result.kind === 'terminal' ? ' agent-code--terminal' : ''}`}>
       <code>{result.text}</code>
     </pre>
-  )
-}
-
-function StreamingIndicator({ onStop }: { onStop?: () => void }) {
-  return (
-    <div className="agent-streaming">
-      <span className="agent-spinner" />
-      <span>正在生成回复</span>
-      <button type="button" onClick={onStop}>
-        <CircleStop size={12} />
-        停止
-      </button>
-    </div>
   )
 }
 
