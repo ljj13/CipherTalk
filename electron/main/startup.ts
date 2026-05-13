@@ -238,7 +238,8 @@ export async function startLocalIntegrationServices(ctx: MainProcessContext): Pr
   })
 
   try {
-    agentConversationDb.init()
+    const cachePath = configService?.get('cachePath') as string | undefined
+    agentConversationDb.init(cachePath || undefined)
   } catch (e) {
     console.error('[AgentConversationDb] 初始化失败:', e)
   }

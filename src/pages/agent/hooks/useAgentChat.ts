@@ -1,5 +1,19 @@
 import { useState, useRef, useEffect } from 'react'
+import type { AgentConversationSummary, AgentMessageRecord } from '../../../types/electron'
 import type { Message, AssistantBlock, ToolBlock, TextBlock, ThinkingBlock } from '../types'
+
+function recordToMessage(r: AgentMessageRecord): Message {
+  let blocks: AssistantBlock[] | undefined
+  if (r.blocksJson) {
+    try { blocks = JSON.parse(r.blocksJson) } catch {}
+  }
+  return {
+    id: String(r.id),
+    role: r.role as Message['role'],
+    content: r.content || undefined,
+    blocks,
+  }
+}
 
 async function getProviderSettings(): Promise<{ provider: string; apiKey: string; model: string; enableThinking: boolean }> {
   const defaults = { provider: 'zhipu', apiKey: '', model: '', enableThinking: true }
@@ -62,13 +76,17 @@ function appendThinkBlock(blocks: AssistantBlock[], text: string, streaming = tr
   return [{ type: 'thinking' as const, text, streaming }, ...blocks]
 }
 
-function appendAssistantChunk(blocks: AssistantBlock[], chunk: string): AssistantBlock[] {
+function appendAssistantChunk(
+  blocks: AssistantBlock[],
+  chunk: string,
+  parsingThink: boolean
+): { blocks: AssistantBlock[]; parsingThink: boolean } {
   let remaining = chunk
   let next = [...blocks]
-  let parsingThink = next.some(b => b.type === 'thinking' && (b as ThinkingBlock).streaming)
+  let nextParsingThink = parsingThink
 
   while (remaining.length > 0) {
-    if (parsingThink) {
+    if (nextParsingThink) {
       const closeIndex = remaining.indexOf(THINK_CLOSE_TAG)
       if (closeIndex < 0) {
         next = appendThinkBlock(next, remaining, true)
@@ -77,7 +95,7 @@ function appendAssistantChunk(blocks: AssistantBlock[], chunk: string): Assistan
 
       next = appendThinkBlock(next, remaining.slice(0, closeIndex), false)
       next = setThinkingStreaming(next, false)
-      parsingThink = false
+      nextParsingThink = false
       remaining = remaining.slice(closeIndex + THINK_CLOSE_TAG.length)
       continue
     }
@@ -92,18 +110,27 @@ function appendAssistantChunk(blocks: AssistantBlock[], chunk: string): Assistan
     next = setThinkingStreaming(next, false)
     next = appendTextBlock(next, remaining.slice(0, openIndex))
     next = ensureThinkingBlock(next, true)
-    parsingThink = true
+    nextParsingThink = true
     remaining = remaining.slice(openIndex + THINK_OPEN_TAG.length)
   }
 
-  return next
+  return { blocks: next, parsingThink: nextParsingThink }
 }
 
-function updateStreamingMessage(msgs: Message[], msgId: string | null, newText: string): Message[] {
+function updateStreamingMessage(
+  msgs: Message[],
+  msgId: string | null,
+  newText: string,
+  parsingThinkRef: { current: boolean }
+): Message[] {
   if (!msgId) return msgs
+  let nextParsingThink = parsingThinkRef.current
   return msgs.map(m => {
     if (m.id !== msgId) return m
-    return { ...m, blocks: appendAssistantChunk(m.blocks ? [...m.blocks] : [], newText) }
+    const result = appendAssistantChunk(m.blocks ? [...m.blocks] : [], newText, nextParsingThink)
+    nextParsingThink = result.parsingThink
+    parsingThinkRef.current = nextParsingThink
+    return { ...m, blocks: result.blocks }
   })
 }
 
@@ -191,13 +218,64 @@ function buildHistory(msgs: Message[]): Array<{ role: string; content: string }>
     })
 }
 
+function createAgentRequestId(): string {
+  return `agent-ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+
 export function useAgentChat() {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [conversationId, setConversationId] = useState<number | null>(null)
+  const [conversations, setConversations] = useState<AgentConversationSummary[]>([])
 
   const currentRequestIdRef = useRef<string | null>(null)
   const streamingMsgIdRef = useRef<string | null>(null)
+  const contentThinkModeRef = useRef(false)
+  const isNewConversationRef = useRef(false)
+  const firstUserMessageRef = useRef('')
+  const firstAssistantResponseRef = useRef('')
+
+  const loadConversations = async () => {
+    const agentApi = window.electronAPI?.agent
+    if (!agentApi) return
+    const result = await agentApi.listConversations()
+    if (result.success && result.conversations) {
+      setConversations(result.conversations)
+    }
+  }
+
+  const selectConversation = async (id: number) => {
+    const agentApi = window.electronAPI?.agent
+    if (!agentApi) return
+    const result = await agentApi.loadConversation(id)
+    if (result.success && result.messages) {
+      setMessages(result.messages.map(recordToMessage))
+      setConversationId(id)
+    }
+  }
+
+  const deleteConversation = async (id: number) => {
+    const agentApi = window.electronAPI?.agent
+    if (!agentApi) return
+    await agentApi.deleteConversation(id)
+    if (conversationId === id) {
+      setMessages([])
+      setConversationId(null)
+    }
+    await loadConversations()
+  }
+
+  const renameConversation = async (id: number, title: string) => {
+    const agentApi = window.electronAPI?.agent
+    if (!agentApi) return
+    await agentApi.updateTitle(id, title)
+    await loadConversations()
+  }
+
+  useEffect(() => {
+    loadConversations()
+  }, [])
 
   useEffect(() => {
     const agentApi = window.electronAPI?.agent
@@ -206,10 +284,11 @@ export function useAgentChat() {
     const removeStreamEvent = agentApi.onStreamEvent(({ requestId, event }) => {
       if (requestId !== currentRequestIdRef.current) return
       if (event.type === 'content_delta') {
-        setMessages(prev => updateStreamingMessage(prev, streamingMsgIdRef.current, event.text))
+        setMessages(prev => updateStreamingMessage(prev, streamingMsgIdRef.current, event.text, contentThinkModeRef))
         return
       }
       if (event.type === 'reasoning_delta') {
+        contentThinkModeRef.current = false
         setMessages(prev => appendThinkText(prev, streamingMsgIdRef.current, event.text))
         return
       }
@@ -225,16 +304,51 @@ export function useAgentChat() {
       }
       if (event.type === 'tool_result') {
         setMessages(prev => finalizeToolBlock(prev, streamingMsgIdRef.current, event.toolName, event.result, event.error))
+        return
+      }
+      if (event.type === 'message_done') {
+        if (event.toolCalls?.length) return
+        setMessages(prev => markStreamingDone(prev, streamingMsgIdRef.current))
+        setLoading(false)
+        contentThinkModeRef.current = false
       }
     })
 
     const removeDone = agentApi.onDone(({ requestId, conversationId: convId }) => {
       if (requestId !== currentRequestIdRef.current) return
       if (convId) setConversationId(convId)
-      setMessages(prev => markStreamingDone(prev, streamingMsgIdRef.current))
+      setMessages(prev => {
+        const done = markStreamingDone(prev, streamingMsgIdRef.current)
+        if (isNewConversationRef.current && streamingMsgIdRef.current) {
+          const assistantMsg = done.find(m => m.id === streamingMsgIdRef.current)
+          if (assistantMsg) {
+            firstAssistantResponseRef.current = (assistantMsg.blocks || [])
+              .filter((b): b is TextBlock => b.type === 'text')
+              .map(b => b.text).join('')
+          }
+        }
+        return done
+      })
       setLoading(false)
+      const msgId = streamingMsgIdRef.current
       currentRequestIdRef.current = null
       streamingMsgIdRef.current = null
+      contentThinkModeRef.current = false
+      if (isNewConversationRef.current && convId) {
+        isNewConversationRef.current = false
+        getProviderSettings().then(cfg => {
+          agentApi.generateTitle({
+            conversationId: convId,
+            userMessage: firstUserMessageRef.current,
+            assistantResponse: firstAssistantResponseRef.current,
+            provider: cfg.provider,
+            apiKey: cfg.apiKey,
+            model: cfg.model,
+          }).catch(() => {}).finally(() => loadConversations())
+        })
+      } else {
+        loadConversations()
+      }
     })
 
     const removeError = agentApi.onError(({ requestId, message }) => {
@@ -243,6 +357,7 @@ export function useAgentChat() {
       setLoading(false)
       currentRequestIdRef.current = null
       streamingMsgIdRef.current = null
+      contentThinkModeRef.current = false
     })
 
     return () => {
@@ -273,7 +388,14 @@ export function useAgentChat() {
 
     const userMsg: Message = { id: `u-${Date.now()}`, role: 'user', content: text }
     const assistantMsgId = `a-${Date.now()}`
+    const requestId = createAgentRequestId()
+    currentRequestIdRef.current = requestId
     streamingMsgIdRef.current = assistantMsgId
+    contentThinkModeRef.current = false
+    if (conversationId === null) {
+      isNewConversationRef.current = true
+      firstUserMessageRef.current = text
+    }
 
     setMessages(prev => [
       ...prev,
@@ -286,6 +408,7 @@ export function useAgentChat() {
     const providerSettings = await getProviderSettings()
 
     const result = await agentApi.sendMessage({
+      requestId,
       conversationId: conversationId ?? undefined,
       history,
       message: text,
@@ -298,7 +421,9 @@ export function useAgentChat() {
     if (!result.success) {
       setMessages(prev => markStreamingError(prev, assistantMsgId, result.error || '发送失败'))
       setLoading(false)
+      currentRequestIdRef.current = null
       streamingMsgIdRef.current = null
+      contentThinkModeRef.current = false
       return
     }
 
@@ -314,6 +439,7 @@ export function useAgentChat() {
       setLoading(false)
       currentRequestIdRef.current = null
       streamingMsgIdRef.current = null
+      contentThinkModeRef.current = false
     }
   }
 
@@ -321,7 +447,15 @@ export function useAgentChat() {
     cancel()
     setMessages([])
     setConversationId(null)
+    contentThinkModeRef.current = false
+    isNewConversationRef.current = false
+    firstUserMessageRef.current = ''
+    firstAssistantResponseRef.current = ''
   }
 
-  return { messages, loading, conversationId, send, cancel, reset }
+  return {
+    messages, loading, conversationId, conversations,
+    send, cancel, reset,
+    loadConversations, selectConversation, deleteConversation, renameConversation,
+  }
 }

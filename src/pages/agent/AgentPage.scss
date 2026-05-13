@@ -97,7 +97,7 @@
 }
 
 .agent-sidebar__toolbar {
-  justify-content: flex-end;
+  justify-content: space-between;
   padding: 12px 12px 0;
 }
 
@@ -217,6 +217,97 @@
   white-space: nowrap;
 }
 
+.agent-sidebar__row-actions {
+  display: none;
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  gap: 3px;
+}
+
+.agent-sidebar__row:hover .agent-sidebar__row-actions {
+  display: flex;
+}
+
+.agent-sidebar__row:not(.is-pending-delete):hover {
+  padding-right: 64px;
+}
+
+.agent-sidebar__row-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  color: var(--agent-muted);
+  transition: color 0.15s, background 0.15s;
+
+  &:hover {
+    color: var(--agent-fg);
+    background: var(--agent-elev);
+  }
+
+  &--danger:hover {
+    color: var(--agent-red);
+    background: color-mix(in srgb, var(--agent-red) 12%, transparent);
+  }
+}
+
+.agent-sidebar__row-confirm {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--agent-red) 8%, var(--agent-elev));
+  border: 1px solid color-mix(in srgb, var(--agent-red) 24%, transparent);
+  color: var(--agent-red);
+  font-size: 12px;
+  font-weight: 600;
+
+  span { flex: 1; min-width: 0; }
+}
+
+.agent-sidebar__confirm-btn {
+  flex: 0 0 auto;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--agent-muted);
+  border: 1px solid var(--agent-border-soft);
+  background: var(--agent-panel);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+
+  &:hover { background: var(--agent-elev); color: var(--agent-fg); }
+
+  &--danger {
+    color: #fff;
+    background: var(--agent-red);
+    border-color: var(--agent-red);
+    &:hover { background: color-mix(in srgb, var(--agent-red) 80%, #000); }
+  }
+}
+
+.agent-sidebar__title-input {
+  width: 100%;
+  padding: 2px 4px;
+  margin: -2px -4px;
+  border: 1px solid var(--agent-accent);
+  border-radius: 5px;
+  outline: none;
+  background: color-mix(in srgb, var(--agent-accent) 6%, var(--bg-primary));
+  color: var(--agent-fg);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .agent-sidebar__row-title {
   color: var(--agent-fg);
   font-size: 13px;
@@ -307,13 +398,13 @@
 
 .agent-message--user {
   flex-direction: row-reverse;
-  justify-content: flex-end;
+  justify-content: flex-start;
 }
 
 .agent-message__avatar {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 30px;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
   display: grid;
   place-items: center;
   margin-top: 3px;
@@ -329,35 +420,45 @@
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 12px;
   padding-top: 2px;
 }
 
+.agent-message__user-avatar {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+  display: grid;
+  place-items: center;
+  margin-top: 3px;
+  border-radius: 50%;
+  overflow: hidden;
+  color: var(--agent-accent);
+  background: var(--agent-elev);
+  border: 1px solid var(--agent-border-soft);
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+  }
+}
+
 .agent-message__user-bubble {
-  gap: 8px;
   width: auto;
   max-width: min(72%, 680px);
-  padding: 9px 12px;
-  border-radius: 12px;
+  padding: 9px 14px;
+  border-radius: 25px;
   color: var(--agent-fg);
   background: color-mix(in srgb, var(--agent-accent) 10%, var(--bg-secondary));
-  border: 1px solid color-mix(in srgb, var(--agent-accent) 16%, var(--border-color));
   box-shadow: none;
   font-size: 15.5px;
   font-weight: 500;
   line-height: 1.6;
-  white-space: pre-wrap;
-}
-
-.agent-message__user-bubble svg {
-  flex: 0 0 auto;
-  color: var(--agent-accent);
 }
 
 .agent-thinking {
   margin: 0 0 12px;
-  padding-left: 12px;
-  border-left: 2px solid var(--border-color);
   border-radius: 0;
   background: transparent;
   box-shadow: none;
@@ -774,7 +875,7 @@
 
 .agent-composer-wrap {
   flex: 0 0 auto;
-  padding: 8px 0 8px;
+  padding: 0 0 8px;
   background: linear-gradient(to top, var(--agent-bg) 72%, transparent);
 }
 

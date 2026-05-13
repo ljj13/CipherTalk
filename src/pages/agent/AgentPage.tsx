@@ -1,35 +1,97 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { MessageList } from './components/MessageList'
 import { ChatInput } from './components/ChatInput'
 import { AgentSidebar } from './components/AgentSidebar'
 import { useAgentChat } from './hooks/useAgentChat'
 import { useMcpSkillsData } from '../../hooks/useMcpSkillsData'
-import { AGENT_ATTACH_MENU, AGENT_HISTORY, AGENT_SLASH_COMMANDS, AGENT_SUGGESTIONS } from './data'
+import { AGENT_ATTACH_MENU, AGENT_SLASH_COMMANDS, AGENT_SUGGESTIONS } from './data'
+import type { AgentConversationSummary } from '../../types/electron'
+import type { ConversationGroup, ConversationItem } from './types'
 import './AgentPage.scss'
 
+function formatRelativeTime(ts: number): string {
+  const ms = ts > 1e10 ? ts : ts * 1000
+  const diff = Date.now() - ms
+  if (diff < 60_000) return '刚刚'
+  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}分钟前`
+  const d = new Date(ms)
+  if (diff < 86_400_000) {
+    return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`
+  }
+  return `${d.getMonth() + 1}/${d.getDate()}`
+}
+
+function groupConversations(convs: AgentConversationSummary[]): ConversationGroup[] {
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
+  const yesterdayStart = new Date(todayStart); yesterdayStart.setDate(todayStart.getDate() - 1)
+  const weekStart = new Date(todayStart); weekStart.setDate(todayStart.getDate() - 7)
+
+  const buckets: { label: string; items: ConversationItem[] }[] = [
+    { label: '今天', items: [] },
+    { label: '昨天', items: [] },
+    { label: '最近7天', items: [] },
+    { label: '更早', items: [] },
+  ]
+
+  for (const conv of convs) {
+    const ms = conv.updatedAt > 1e10 ? conv.updatedAt : conv.updatedAt * 1000
+    const item: ConversationItem = {
+      id: String(conv.id),
+      title: conv.title || '新对话',
+      preview: conv.preview || '',
+      time: formatRelativeTime(conv.updatedAt),
+    }
+    if (ms >= todayStart.getTime()) buckets[0].items.push(item)
+    else if (ms >= yesterdayStart.getTime()) buckets[1].items.push(item)
+    else if (ms >= weekStart.getTime()) buckets[2].items.push(item)
+    else buckets[3].items.push(item)
+  }
+
+  return buckets
+    .filter(b => b.items.length > 0)
+    .map(b => ({ group: b.label, items: b.items }))
+}
+
 function AgentPage() {
-  const { messages, loading, send, cancel } = useAgentChat()
+  const {
+    messages, loading, conversationId, conversations,
+    send, cancel, reset,
+    selectConversation, deleteConversation, renameConversation,
+  } = useAgentChat()
   const { mcpServers, skills, busyServers, toggleServer } = useMcpSkillsData()
   const [collapsed, setCollapsed] = useState(false)
-  const [activeConversationId, setActiveConversationId] = useState('new')
   const [query, setQuery] = useState('')
+  const [aiProvider, setAiProvider] = useState('')
+
+  useEffect(() => {
+    window.electronAPI?.config?.get('aiCurrentProvider').then(p => {
+      setAiProvider((p as string) || '')
+    }).catch(() => {})
+  }, [])
+
+  const grouped = groupConversations(conversations)
+  const activeId = conversationId != null ? String(conversationId) : 'new'
 
   return (
     <div className="agent-page">
       <AgentSidebar
         collapsed={collapsed}
-        conversations={AGENT_HISTORY}
-        activeId={activeConversationId}
+        conversations={grouped}
+        activeId={activeId}
         query={query}
         onQueryChange={setQuery}
-        onToggle={() => setCollapsed(value => !value)}
-        onSelect={setActiveConversationId}
+        onToggle={() => setCollapsed(v => !v)}
+        onNew={reset}
+        onSelect={id => selectConversation(Number(id))}
+        onDelete={id => deleteConversation(Number(id))}
+        onRename={(id, title) => renameConversation(Number(id), title)}
       />
       <main className="agent-main" aria-label="Agent 对话">
         <MessageList
           messages={messages}
           loading={loading}
           onCancel={cancel}
+          aiProvider={aiProvider}
         />
         <ChatInput
           onSend={send}

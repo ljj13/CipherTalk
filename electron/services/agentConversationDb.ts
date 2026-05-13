@@ -22,8 +22,9 @@ export interface MessageRecord {
 class AgentConversationDb {
   private db: Database.Database | null = null
 
-  init(): void {
-    const dbPath = join(getUserDataPath(), 'agent_conversations.db')
+  init(cachePath?: string): void {
+    const basePath = cachePath || getUserDataPath()
+    const dbPath = join(basePath, 'agent_conversations.db')
     const dir = dirname(dbPath)
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true })

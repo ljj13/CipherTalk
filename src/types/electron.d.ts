@@ -1395,6 +1395,14 @@ export interface ElectronAPI {
     deleteConversation(id: number): Promise<{ success: boolean; error?: string }>
     newConversation(): Promise<{ success: boolean; id?: number; error?: string }>
     updateTitle(id: number, title: string): Promise<{ success: boolean; error?: string }>
+    generateTitle(opts: {
+      conversationId: number
+      userMessage: string
+      assistantResponse: string
+      provider: string
+      apiKey: string
+      model: string
+    }): Promise<{ success: boolean; title?: string; error?: string }>
     onStreamEvent(cb: (data: { requestId: string; event: AIStreamEvent }) => void): () => void
     onDone(cb: (data: { requestId: string; conversationId?: number }) => void): () => void
     onError(cb: (data: { requestId: string; message: string }) => void): () => void

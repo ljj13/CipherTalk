@@ -753,6 +753,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     updateTitle: (id: number, title: string) => ipcRenderer.invoke('agent:updateTitle', id, title),
 
+    generateTitle: (opts: {
+      conversationId: number
+      userMessage: string
+      assistantResponse: string
+      provider: string
+      apiKey: string
+      model: string
+    }) => ipcRenderer.invoke('agent:generateTitle', opts),
+
     onStreamEvent: (cb: (data: { requestId: string; event: AIStreamEvent }) => void) => {
       const handler = (_: unknown, data: any) => cb(data)
       ipcRenderer.on('agent:streamEvent', handler)
