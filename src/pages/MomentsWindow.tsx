@@ -165,9 +165,10 @@ const formatXml = (xml: string) => {
 const mediaPathCache = new Map<string, { imagePath: string; liveVideoPath?: string }>()
 
 // 媒体项组件
-const MediaItem = ({ media, isSingle, allMedia, onPreview, onMediaDeleted }: { media: any; isSingle?: boolean; allMedia?: any[]; onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void; onMediaDeleted?: () => void }) => {
+const MediaItem = ({ media, isSingle, allMedia, onPreview }: { media: any; isSingle?: boolean; allMedia?: any[]; onPreview: (src: string, isVideo?: boolean, liveVideoPath?: string) => void }) => {
   const [error, setError] = useState(false)
-  const [deleted, setDeleted] = useState(false)
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [retryCount, setRetryCount] = useState(0)
   const [thumbSrc, setThumbSrc] = useState<string>('')
   const [videoPath, setVideoPath] = useState<string>('')
   const [liveVideoPath, setLiveVideoPath] = useState<string>('')
@@ -242,6 +243,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview, onMediaDeleted }: { m
 
     let cancelled = false
     setError(false)
+    setLoadFailed(false)
     setThumbSrc('')
     setVideoPath('')
     setLiveVideoPath('')
@@ -319,41 +321,50 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview, onMediaDeleted }: { m
             extractFirstFrame(localUrl)
           } else {
             setIsDecrypting(false)
-            setDeleted(true)
-            onMediaDeleted?.()
+            setLoadFailed(true)
           }
         } else {
-          // 图片：加载缩略图（使用 thumbKey）
+          // 把 proxyImage 结果解析成可用的本地路径 / dataUrl
+          const resolveProxyPath = (r: any): string => {
+            if (!r || !r.success) return ''
+            if (r.localPath) {
+              return r.localPath.startsWith('file:')
+                ? r.localPath
+                : `file://${r.localPath.replace(/\\/g, '/')}`
+            }
+            if (r.dataUrl) return r.dataUrl
+            if (r.videoPath) {
+              return r.videoPath.startsWith('file:')
+                ? r.videoPath
+                : `file://${r.videoPath.replace(/\\/g, '/')}`
+            }
+            return ''
+          }
+
+          // 图片：先加载缩略图（thumbKey），失败再回退原图 url（token 不同，可能仍可用）
           const result = await window.electronAPI.sns.proxyImage({
             url: targetUrl,
-            key: media.thumbKey || media.key  // 优先使用 thumbKey，回退到 key
+            key: media.thumbKey || media.key
           })
-
           if (cancelled) return
 
-          if (result.success) {
-            let resolvedPath = ''
-            if (result.localPath) {
-              // 使用本地文件路径（file:// 协议）
-              resolvedPath = result.localPath.startsWith('file:')
-                ? result.localPath
-                : `file://${result.localPath.replace(/\\/g, '/')}`
-            } else if (result.dataUrl) {
-              // 回退：使用 base64 dataUrl
-              resolvedPath = result.dataUrl
-            } else if (result.videoPath) {
-              // 兼容：某些情况下可能返回 videoPath
-              resolvedPath = result.videoPath.startsWith('file:')
-                ? result.videoPath
-                : `file://${result.videoPath.replace(/\\/g, '/')}`
-            }
-            if (resolvedPath) {
-              setThumbSrc(resolvedPath)
-              mediaPathCache.set(targetUrl, { imagePath: resolvedPath })
-            }
+          let resolvedPath = resolveProxyPath(result)
+
+          if (!resolvedPath && url && url !== targetUrl) {
+            const fullResult = await window.electronAPI.sns.proxyImage({
+              url,
+              key: media.key
+            })
+            if (cancelled) return
+            resolvedPath = resolveProxyPath(fullResult)
+          }
+
+          if (resolvedPath) {
+            setThumbSrc(resolvedPath)
+            mediaPathCache.set(targetUrl, { imagePath: resolvedPath })
           } else {
-            setDeleted(true)
-            onMediaDeleted?.()
+            // 缩略图与原图都拉取失败：标记加载失败（不等于动态被删除）
+            setLoadFailed(true)
           }
 
           if (isLive && livePhoto && livePhoto.url) {
@@ -387,8 +398,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview, onMediaDeleted }: { m
         }
       } catch (err) {
         if (!cancelled) {
-          setDeleted(true)
-          onMediaDeleted?.()
+          setLoadFailed(true)
           setIsDecrypting(false)
         }
       }
@@ -396,7 +406,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview, onMediaDeleted }: { m
 
     run()
     return () => { cancelled = true }
-  }, [isVisible, targetUrl, url, media.key, isVideo, isLive, livePhoto])
+  }, [isVisible, targetUrl, url, media.key, isVideo, isLive, livePhoto, retryCount])
 
   const handleDownload = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -461,16 +471,22 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview, onMediaDeleted }: { m
     }
   }
 
-  if (deleted) {
+  if (loadFailed) {
+    const handleRetry = (e: React.MouseEvent) => {
+      e.stopPropagation()
+      setLoadFailed(false)
+      setRetryCount((c) => c + 1)
+    }
     return (
       <div
         ref={imgRef}
-        className="media-item deleted-media"
+        className="media-item"
         style={skeletonStyle}
       >
-        <div className="deleted-placeholder">
-          <AlertTriangle size={24} />
-          <span>已删除</span>
+        <div className="media-placeholder error-state">
+          <AlertTriangle size={24} className="error-icon" />
+          <span>加载失败</span>
+          <button className="media-retry-btn" onClick={handleRetry}>重试</button>
         </div>
       </div>
     )
@@ -799,7 +815,6 @@ function MomentsWindow() {
   useEffect(() => {
     postsRef.current = posts
   }, [posts])
-  const [deletedPostIds, setDeletedPostIds] = useState<Set<string>>(new Set())
   const [error, setError] = useState<string | null>(null)
 
   // 筛选状态
@@ -1757,7 +1772,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                   )}
 
                   {posts.map((post) => (
-                    <div key={post.id} className={`post-item ${deletedPostIds.has(post.id) ? 'post-deleted' : ''}`}>
+                    <div key={post.id} className="post-item">
                       <div className="post-header">
                         <div className="post-avatar">
                           {post.avatarUrl ? (
@@ -1771,12 +1786,6 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                           <div className="post-time">{formatTime(post.createTime)}</div>
                         </div>
                         <div className="post-header-actions">
-                          {deletedPostIds.has(post.id) && (
-                            <span className="post-deleted-badge">
-                              <AlertTriangle size={12} />
-                              <span>已删除</span>
-                            </span>
-                          )}
                           <button
                             className="debug-btn"
                             onClick={() => setDebugPost(post)}
@@ -1801,7 +1810,6 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                               isSingle={post.media.length === 1}
                               allMedia={post.media}
                               onPreview={(src, isVideo, liveVideoPath) => setPreviewImage({ src, isVideo, liveVideoPath })}
-                              onMediaDeleted={[1, 54].includes(post.type ?? 0) ? () => setDeletedPostIds(prev => new Set(prev).add(post.id)) : undefined}
                             />
                           ))}
                         </div>

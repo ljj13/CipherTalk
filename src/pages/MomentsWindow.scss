@@ -627,10 +627,6 @@
   &:hover {
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
   }
-
-  &.post-deleted {
-    opacity: 0.7;
-  }
 }
 
 .post-header {
@@ -690,18 +686,6 @@
     align-items: center;
     gap: 6px;
     margin-left: auto;
-  }
-
-  .post-deleted-badge {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: rgba(255, 77, 79, 0.1);
-    color: #ff4d4f;
-    font-size: 12px;
-    font-weight: 500;
-    padding: 3px 8px;
-    border-radius: 6px;
   }
 
   .debug-btn {
@@ -905,6 +889,22 @@
         span {
           font-size: 13px;
         }
+
+        .media-retry-btn {
+          margin-top: 6px;
+          padding: 3px 12px;
+          font-size: 12px;
+          color: var(--text-secondary);
+          background: var(--bg-secondary, rgba(128, 128, 128, 0.12));
+          border: 1px solid var(--border-color, rgba(128, 128, 128, 0.2));
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 0.15s;
+
+          &:hover {
+            background: var(--bg-tertiary);
+          }
+        }
       }
     }
 
@@ -948,24 +948,6 @@
       }
     }
 
-    &.deleted-media {
-      cursor: default;
-      opacity: 0.6;
-
-      .deleted-placeholder {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
-        height: 100%;
-        gap: 6px;
-        color: var(--text-tertiary);
-        font-size: 12px;
-        background: var(--bg-tertiary);
-        border-radius: 8px;
-        min-height: 100px;
-      }
-    }
 
     .download-btn-overlay {
       position: absolute;
