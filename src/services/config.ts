@@ -48,7 +48,8 @@ export const CONFIG_KEYS = {
   AI_EMBEDDING_MODEL_PROFILE: 'aiEmbeddingModelProfile',
   AI_EMBEDDING_DEVICE: 'aiEmbeddingDevice',
   AI_ONLINE_EMBEDDING_CONFIGS: 'aiOnlineEmbeddingConfigs',
-  AI_CURRENT_ONLINE_EMBEDDING_CONFIG_ID: 'aiCurrentOnlineEmbeddingConfigId'
+  AI_CURRENT_ONLINE_EMBEDDING_CONFIG_ID: 'aiCurrentOnlineEmbeddingConfigId',
+  AI_PROVIDER_MODEL_CACHE: 'aiProviderModelCache'
 } as const
 
 export type { AccountProfile, AccountProfileInput, AccountProfilePatch }
@@ -687,6 +688,47 @@ export async function getMcpExposeMediaPaths(): Promise<boolean> {
 
 export async function setMcpExposeMediaPaths(enabled: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.MCP_EXPOSE_MEDIA_PATHS, enabled)
+}
+
+// --- AI 模型列表缓存 ---
+
+export interface AiProviderModelCacheEntry {
+  models: string[]
+  updatedAt: number
+}
+
+export type AiProviderModelCache = Record<string, AiProviderModelCacheEntry>
+
+export async function getAiProviderModelCache(): Promise<AiProviderModelCache> {
+  const value = await config.get(CONFIG_KEYS.AI_PROVIDER_MODEL_CACHE)
+  if (!value || typeof value !== 'object') return {}
+
+  const result: AiProviderModelCache = {}
+  for (const [key, entry] of Object.entries(value as Record<string, any>)) {
+    const models: string[] = Array.isArray(entry?.models)
+      ? Array.from(new Set<string>(entry.models.map((item: unknown) => String(item || '').trim()).filter(Boolean)))
+      : []
+    const updatedAt = Number(entry?.updatedAt) || 0
+    if (key && models.length > 0 && updatedAt > 0) {
+      result[key] = { models, updatedAt }
+    }
+  }
+  return result
+}
+
+export async function setAiProviderModelCache(cacheValue: AiProviderModelCache): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_PROVIDER_MODEL_CACHE, cacheValue)
+}
+
+export async function setAiProviderModelCacheEntry(cacheKey: string, models: string[]): Promise<AiProviderModelCacheEntry> {
+  const cacheValue = await getAiProviderModelCache()
+  const entry = {
+    models: Array.from(new Set<string>(models.map((item) => String(item || '').trim()).filter(Boolean))),
+    updatedAt: Date.now()
+  }
+  cacheValue[cacheKey] = entry
+  await setAiProviderModelCache(cacheValue)
+  return entry
 }
 
 // --- AI 配置预设 ---

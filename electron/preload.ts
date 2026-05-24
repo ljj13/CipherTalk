@@ -614,7 +614,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     getProxyStatus: () => ipcRenderer.invoke('ai:getProxyStatus'),
     refreshProxy: () => ipcRenderer.invoke('ai:refreshProxy'),
     testProxy: (proxyUrl: string, testUrl?: string) => ipcRenderer.invoke('ai:testProxy', proxyUrl, testUrl),
-    testConnection: (provider: string, apiKey: string) => ipcRenderer.invoke('ai:testConnection', provider, apiKey),
+    testConnection: (provider: string, apiKey: string, baseURL?: string) => ipcRenderer.invoke('ai:testConnection', provider, apiKey, baseURL),
+    listModels: (options: { provider: string; apiKey?: string; baseURL?: string }) => ipcRenderer.invoke('ai:listModels', options),
     generatePosterTheme: (options: { description: string; provider?: string; apiKey?: string; model?: string }) =>
       ipcRenderer.invoke('ai:generatePosterTheme', options),
     estimateCost: (messageCount: number, provider: string) => ipcRenderer.invoke('ai:estimateCost', messageCount, provider),

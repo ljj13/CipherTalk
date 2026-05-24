@@ -81,10 +81,19 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     }
   })
 
-  ipcMain.handle('ai:testConnection', async (_, provider: string, apiKey: string) => {
+  ipcMain.handle('ai:testConnection', async (_, provider: string, apiKey: string, baseURL?: string) => {
     try {
       const { aiService } = await import('../../services/ai/aiService')
-      return await aiService.testConnection(provider, apiKey)
+      return await aiService.testConnection(provider, apiKey, baseURL)
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  })
+
+  ipcMain.handle('ai:listModels', async (_, options: { provider: string; apiKey?: string; baseURL?: string }) => {
+    try {
+      const { aiService } = await import('../../services/ai/aiService')
+      return await aiService.listProviderModels(options)
     } catch (e) {
       return { success: false, error: String(e) }
     }

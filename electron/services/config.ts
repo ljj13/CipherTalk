@@ -103,6 +103,12 @@ interface ConfigSchema {
       model: string
     }
   }
+  aiProviderModelCache: {
+    [cacheKey: string]: {
+      models: string[]
+      updatedAt: number
+    }
+  }
   aiDefaultTimeRange: number
   aiSummaryDetail: 'simple' | 'normal' | 'detailed'
   aiSystemPromptPreset: 'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'
@@ -186,6 +192,7 @@ const defaults: ConfigSchema = {
   // AI 默认配置
   aiCurrentProvider: 'deepseek',
   aiProviderConfigs: {},  // 空对象，用户配置后填充
+  aiProviderModelCache: {},
   aiDefaultTimeRange: 7, // 默认7天
   aiSummaryDetail: 'normal',
   aiSystemPromptPreset: 'default',

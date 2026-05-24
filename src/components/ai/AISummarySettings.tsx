@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Eye, EyeOff, Sparkles, Zap, Star, FileText, HelpCircle, X, Plus, Settings2, Download, Trash2, Database, CheckCircle, AlertCircle, RefreshCw, Cpu, Cloud, Save, Pause } from 'lucide-react'
 import { getAIProviders, type AIProviderInfo, type EmbeddingDevice, type EmbeddingDeviceStatus, type EmbeddingMode, type EmbeddingModelDownloadProgress, type EmbeddingModelProfile, type EmbeddingModelStatus, type OnlineEmbeddingConfig, type OnlineEmbeddingProviderInfo } from '../../types/ai'
 import { marked } from 'marked'
@@ -23,6 +23,16 @@ const DEEPSEEK_LEGACY_MODEL_MAP: Record<string, string> = {
 }
 
 const ONLINE_EMBEDDING_FALLBACK_DIMS = [4096, 2560, 2048, 1536, 1024, 768, 512, 256, 128, 64]
+const MODEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000
+
+type ProviderModelListSource = 'remote' | 'cache'
+
+interface ProviderModelListEntry {
+  models: string[]
+  source: ProviderModelListSource
+  updatedAt: number
+  error?: string
+}
 
 function normalizeProviderModel(providerId: string, modelName: string) {
   if (providerId !== 'deepseek') {
@@ -30,6 +40,50 @@ function normalizeProviderModel(providerId: string, modelName: string) {
   }
 
   return DEEPSEEK_LEGACY_MODEL_MAP[modelName] || modelName
+}
+
+function normalizeProviderBaseURL(providerId: string, baseURL: string) {
+  if (providerId === 'ollama') {
+    return (baseURL || 'http://localhost:11434/v1').trim().replace(/\/+$/, '')
+  }
+  return baseURL.trim().replace(/\/+$/, '')
+}
+
+function getProviderModelCacheKey(providerId: string, baseURL: string) {
+  if (providerId === 'custom' || providerId === 'ollama') {
+    return `model-list-v2:${providerId}:${normalizeProviderBaseURL(providerId, baseURL) || 'default'}`
+  }
+  return `model-list-v2:${providerId}`
+}
+
+function normalizeModelList(models: string[]) {
+  return Array.from(new Set(
+    models
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  ))
+}
+
+function canFetchProviderModelList(providerId: string, apiKey: string, baseURL: string) {
+  if (!providerId) return false
+  if (providerId === 'ollama') return true
+  if (providerId === 'custom') return Boolean(apiKey.trim() && baseURL.trim())
+  return Boolean(apiKey.trim())
+}
+
+function formatModelListTime(updatedAt?: number) {
+  if (!updatedAt) return ''
+  return new Date(updatedAt).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+}
+
+function isMissingIpcHandlerError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || '')
+  return message.includes('No handler registered') && message.includes('ai:listModels')
 }
 
 function formatBytes(bytes?: number): string {
@@ -74,6 +128,9 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
   const [usageStats, setUsageStats] = useState<any>(null)
   const [providers, setProviders] = useState<AIProviderInfo[]>([])
   const [providerConfigs, setProviderConfigs] = useState<{ [key: string]: { apiKey: string; model: string; baseURL?: string } }>({})
+  const [providerModelLists, setProviderModelLists] = useState<Record<string, ProviderModelListEntry>>({})
+  const [loadingModelCacheKeys, setLoadingModelCacheKeys] = useState<Record<string, boolean>>({})
+  const [modelListErrors, setModelListErrors] = useState<Record<string, string>>({})
   const [baseURL, setBaseURL] = useState('')
   const [showOllamaHelp, setShowOllamaHelp] = useState(false)
   const [showCustomHelp, setShowCustomHelp] = useState(false)
@@ -113,6 +170,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
   const [isTestingOnlineEmbedding, setIsTestingOnlineEmbedding] = useState(false)
   const [isSavingOnlineEmbedding, setIsSavingOnlineEmbedding] = useState(false)
   const [isDeletingOnlineEmbedding, setIsDeletingOnlineEmbedding] = useState(false)
+  const modelListRequestIdRef = useRef<Record<string, number>>({})
 
   useEffect(() => {
     // 加载提供商列表和统计数据
@@ -188,6 +246,28 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
     return () => clearTimeout(timer)
   }, [baseURL, provider, apiKey, model])
 
+  useEffect(() => {
+    if (!provider || providers.length === 0) return
+    const timer = window.setTimeout(() => {
+      loadProviderModels(provider, {
+        targetApiKey: apiKey,
+        targetBaseURL: baseURL
+      })
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [provider, apiKey, baseURL, providers.length])
+
+  useEffect(() => {
+    if (newPresetStep !== 'config' || !newPresetProvider || providers.length === 0) return
+    const timer = window.setTimeout(() => {
+      loadProviderModels(newPresetProvider, {
+        targetApiKey: newPresetApiKey,
+        targetBaseURL: newPresetBaseURL
+      })
+    }, 600)
+    return () => window.clearTimeout(timer)
+  }, [newPresetStep, newPresetProvider, newPresetApiKey, newPresetBaseURL, providers.length])
+
   const loadProviders = async () => {
     try {
       const providerList = await getAIProviders()
@@ -213,6 +293,105 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
       setProviderConfigs(normalizedConfigs)
     } catch (e) {
       console.error('加载提供商配置失败:', e)
+    }
+  }
+
+  const loadProviderModels = async (
+    targetProvider = provider,
+    options: { force?: boolean; notify?: boolean; targetApiKey?: string; targetBaseURL?: string } = {}
+  ) => {
+    if (!targetProvider || providers.length === 0) return
+
+    const targetApiKey = options.targetApiKey ?? apiKey
+    const targetBaseURL = options.targetBaseURL ?? baseURL
+    const normalizedBaseURL = normalizeProviderBaseURL(targetProvider, targetBaseURL)
+    const cacheKey = getProviderModelCacheKey(targetProvider, normalizedBaseURL)
+    const canFetch = canFetchProviderModelList(targetProvider, targetApiKey, normalizedBaseURL)
+    const requestId = (modelListRequestIdRef.current[cacheKey] || 0) + 1
+    modelListRequestIdRef.current[cacheKey] = requestId
+    setModelListErrors(prev => ({ ...prev, [cacheKey]: '' }))
+
+    try {
+      const {
+        getAiProviderModelCache,
+        setAiProviderModelCacheEntry
+      } = await import('../../services/config')
+      const cache = await getAiProviderModelCache()
+      const cached = cache[cacheKey]
+      const now = Date.now()
+      const hasUsableCache = cached?.models?.length > 0
+      const hasFreshCache = hasUsableCache && now - cached.updatedAt < MODEL_CACHE_TTL_MS
+
+      if (hasUsableCache && (!options.force || !canFetch)) {
+        setProviderModelLists(prev => ({
+          ...prev,
+          [cacheKey]: {
+            models: normalizeModelList(cached.models),
+            source: 'cache',
+            updatedAt: cached.updatedAt
+          }
+        }))
+      }
+
+      if (!options.force && hasFreshCache) {
+        setLoadingModelCacheKeys(prev => ({ ...prev, [cacheKey]: false }))
+        return
+      }
+
+      if (!canFetch) {
+        const message = targetProvider === 'custom'
+          ? '请先填写 API 密钥和服务地址'
+          : '请先填写 API 密钥'
+        if (options.notify) showMessage(message, false)
+        if (!hasUsableCache) {
+          setModelListErrors(prev => ({ ...prev, [cacheKey]: message }))
+        }
+        setLoadingModelCacheKeys(prev => ({ ...prev, [cacheKey]: false }))
+        return
+      }
+
+      setLoadingModelCacheKeys(prev => ({ ...prev, [cacheKey]: true }))
+      const result = await window.electronAPI.ai.listModels({
+        provider: targetProvider,
+        apiKey: targetApiKey.trim(),
+        baseURL: targetProvider === 'custom' || targetProvider === 'ollama' ? normalizedBaseURL : undefined
+      })
+
+      if (requestId !== modelListRequestIdRef.current[cacheKey]) return
+
+      if (!result.success || !result.models?.length) {
+        throw new Error(result.error || '服务商未返回模型列表')
+      }
+
+      const models = normalizeModelList(result.models)
+      const saved = await setAiProviderModelCacheEntry(cacheKey, models)
+      if (requestId !== modelListRequestIdRef.current[cacheKey]) return
+      setProviderModelLists(prev => ({
+        ...prev,
+        [cacheKey]: {
+          models: saved.models,
+          source: 'remote',
+          updatedAt: saved.updatedAt
+        }
+      }))
+      if (options.notify) showMessage(`已刷新模型列表，共 ${saved.models.length} 个`, true)
+    } catch (e) {
+      if (requestId !== modelListRequestIdRef.current[cacheKey]) return
+      if (isMissingIpcHandlerError(e)) {
+        const message = '模型列表接口尚未注册，请重启应用后再刷新'
+        if (options.notify) {
+          showMessage(message, false)
+          setModelListErrors(prev => ({ ...prev, [cacheKey]: message }))
+        }
+        return
+      }
+      const message = e instanceof Error ? e.message : String(e)
+      setModelListErrors(prev => ({ ...prev, [cacheKey]: message }))
+      if (options.notify) showMessage(`模型列表获取失败：${message}`, false)
+    } finally {
+      if (requestId === modelListRequestIdRef.current[cacheKey]) {
+        setLoadingModelCacheKeys(prev => ({ ...prev, [cacheKey]: false }))
+      }
     }
   }
 
@@ -718,9 +897,14 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
     setIsTesting(true)
 
     try {
-      const result = await window.electronAPI.ai.testConnection(provider, apiKey)
+      const result = await window.electronAPI.ai.testConnection(
+        provider,
+        apiKey,
+        provider === 'custom' || provider === 'ollama' ? normalizeProviderBaseURL(provider, baseURL) : undefined
+      )
       if (result.success) {
         showMessage('连接成功！', true)
+        await loadProviderModels(provider, { force: true, targetApiKey: apiKey, targetBaseURL: baseURL })
       } else {
         // 使用后端返回的详细错误信息
         showMessage(result.error || '连接失败，请开启代理或检查网络', false)
@@ -781,7 +965,51 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
   }
 
   const currentProvider = providers.find(p => p.id === provider) || providers[0]
-  const modelOptions = currentProvider?.models.map(m => ({ value: m, label: m })) || []
+  const currentModelCacheKey = provider ? getProviderModelCacheKey(provider, baseURL) : ''
+  const currentModelList = currentModelCacheKey ? providerModelLists[currentModelCacheKey] : undefined
+  const currentModelListError = currentModelCacheKey ? modelListErrors[currentModelCacheKey] : ''
+  const currentModelListModels = currentModelList?.models?.length
+    ? currentModelList.models
+    : (currentProvider?.models || [])
+  const modelOptions = currentModelListModels.map(m => ({ value: m, label: m }))
+  const isLoadingModelList = Boolean(currentModelCacheKey && loadingModelCacheKeys[currentModelCacheKey])
+  const canFetchCurrentProviderModels = canFetchProviderModelList(provider, apiKey, baseURL)
+  const modelListSourceLabel = currentModelList?.source === 'remote'
+    ? '线上模型列表'
+    : currentModelList?.source === 'cache'
+      ? '本地缓存模型列表'
+      : '内置模型列表'
+  const hasModelListError = Boolean(currentModelListError && canFetchCurrentProviderModels)
+  const modelListHint = isLoadingModelList
+    ? '正在同步服务商模型列表...'
+    : !canFetchCurrentProviderModels && !currentModelList
+      ? `${modelListSourceLabel} · 填写 API 配置后可同步`
+      : hasModelListError
+        ? `${modelListSourceLabel} · 刷新失败：${currentModelListError}`
+        : `${modelListSourceLabel}${currentModelList?.updatedAt ? ` · ${formatModelListTime(currentModelList.updatedAt)}` : ''}`
+  const newPresetProviderInfo = providers.find(p => p.id === newPresetProvider)
+  const newPresetModelCacheKey = newPresetProvider ? getProviderModelCacheKey(newPresetProvider, newPresetBaseURL) : ''
+  const newPresetModelList = newPresetModelCacheKey ? providerModelLists[newPresetModelCacheKey] : undefined
+  const newPresetModelListError = newPresetModelCacheKey ? modelListErrors[newPresetModelCacheKey] : ''
+  const newPresetModelOptions = (newPresetModelList?.models?.length
+    ? newPresetModelList.models
+    : (newPresetProviderInfo?.models || [])
+  ).map(m => ({ value: m, label: m }))
+  const isLoadingNewPresetModelList = Boolean(newPresetModelCacheKey && loadingModelCacheKeys[newPresetModelCacheKey])
+  const canFetchNewPresetModels = canFetchProviderModelList(newPresetProvider, newPresetApiKey, newPresetBaseURL)
+  const newPresetModelSourceLabel = newPresetModelList?.source === 'remote'
+    ? '线上模型列表'
+    : newPresetModelList?.source === 'cache'
+      ? '本地缓存模型列表'
+      : '内置模型列表'
+  const hasNewPresetModelListError = Boolean(newPresetModelListError && canFetchNewPresetModels)
+  const newPresetModelListHint = isLoadingNewPresetModelList
+    ? '正在同步服务商模型列表...'
+    : !canFetchNewPresetModels && !newPresetModelList
+      ? `${newPresetModelSourceLabel} · 填写 API 配置后可同步`
+      : hasNewPresetModelListError
+        ? `${newPresetModelSourceLabel} · 刷新失败：${newPresetModelListError}`
+        : `${newPresetModelSourceLabel}${newPresetModelList?.updatedAt ? ` · ${formatModelListTime(newPresetModelList.updatedAt)}` : ''}`
   const embeddingProgressPercent = embeddingProgress?.percent
     ?? (embeddingProgress?.total ? Math.round(((embeddingProgress.loaded || 0) / embeddingProgress.total) * 100) : 0)
   const embeddingProfile = embeddingProfiles.find(item => item.id === embeddingProfileId)
@@ -969,13 +1197,27 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
         <div className="form-row">
           <div className="form-group">
             <label>选择模型 (支持手动输入)</label>
-            <Select
-              value={model}
-              onChange={setModel}
-              options={modelOptions}
-              placeholder="请选择或输入模型名称"
-              editable={true}
-            />
+            <div className="select-with-actions">
+              <Select
+                value={model}
+                onChange={setModel}
+                options={modelOptions}
+                placeholder="请选择或输入模型名称"
+                editable={true}
+              />
+              <button
+                type="button"
+                className="select-refresh-btn"
+                onClick={() => loadProviderModels(provider, { force: true, notify: true })}
+                disabled={isLoadingModelList || !canFetchCurrentProviderModels}
+                title={canFetchCurrentProviderModels ? '刷新模型列表' : '填写 API 配置后刷新模型列表'}
+              >
+                <RefreshCw size={16} className={isLoadingModelList ? 'spin' : ''} />
+              </button>
+            </div>
+            <div className={`form-hint model-list-hint ${hasModelListError ? 'error' : ''}`}>
+              {modelListHint}
+            </div>
           </div>
 
           <div className="form-group">
@@ -1560,12 +1802,32 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
                   )}
                   <div className="form-group">
                     <label>模型</label>
-                    <Select
-                      value={newPresetModel}
-                      onChange={setNewPresetModel}
-                      options={providers.find(p => p.id === newPresetProvider)?.models.map(m => ({ value: m, label: m })) || []}
-                      editable={true}
-                    />
+                    <div className="select-with-actions">
+                      <Select
+                        value={newPresetModel}
+                        onChange={setNewPresetModel}
+                        options={newPresetModelOptions}
+                        placeholder="请选择或输入模型名称"
+                        editable={true}
+                      />
+                      <button
+                        type="button"
+                        className="select-refresh-btn"
+                        onClick={() => loadProviderModels(newPresetProvider, {
+                          force: true,
+                          notify: true,
+                          targetApiKey: newPresetApiKey,
+                          targetBaseURL: newPresetBaseURL
+                        })}
+                        disabled={isLoadingNewPresetModelList || !canFetchNewPresetModels}
+                        title={canFetchNewPresetModels ? '刷新模型列表' : '填写 API 配置后刷新模型列表'}
+                      >
+                        <RefreshCw size={16} className={isLoadingNewPresetModelList ? 'spin' : ''} />
+                      </button>
+                    </div>
+                    <div className={`form-hint model-list-hint ${hasNewPresetModelListError ? 'error' : ''}`}>
+                      {newPresetModelListHint}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
                     <button className="preset-btn" onClick={() => setNewPresetStep('provider')}>上一步</button>

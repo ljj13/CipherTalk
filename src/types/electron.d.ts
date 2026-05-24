@@ -1171,10 +1171,15 @@ export interface ElectronAPI {
       message?: string
       error?: string
     }>
-    testConnection: (provider: string, apiKey: string) => Promise<{
+    testConnection: (provider: string, apiKey: string, baseURL?: string) => Promise<{
       success: boolean
       error?: string
       needsProxy?: boolean
+    }>
+    listModels: (options: { provider: string; apiKey?: string; baseURL?: string }) => Promise<{
+      success: boolean
+      models?: string[]
+      error?: string
     }>
     generatePosterTheme: (options: { description: string; provider?: string; apiKey?: string; model?: string }) => Promise<{
       success: boolean

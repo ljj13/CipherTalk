@@ -232,6 +232,7 @@
         align-items: center;
         gap: 6px;
       }
+
     }
 
     // 独立的小弹窗提示
@@ -439,6 +440,53 @@
       color: var(--text-tertiary);
       font-size: 12px;
       line-height: 1.5;
+    }
+  }
+
+  .select-with-actions {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+
+    .glass-select {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .select-refresh-btn {
+      width: var(--settings-control-height, 44px);
+      height: var(--settings-control-height, 44px);
+      flex: 0 0 var(--settings-control-height, 44px);
+      border: none;
+      border-radius: var(--settings-control-radius, 9999px);
+      display: grid;
+      place-items: center;
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+      cursor: pointer;
+      transition: all 0.2s;
+
+      &:hover:not(:disabled) {
+        background: var(--border-color);
+        color: var(--primary);
+      }
+
+      &:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .spin {
+        animation: spin 1s linear infinite;
+      }
+    }
+  }
+
+  .model-list-hint {
+    margin-top: 8px;
+
+    &.error {
+      color: var(--text-tertiary);
     }
   }
 

@@ -49,6 +49,16 @@ export interface AIProvider {
    * 测试连接
    */
   testConnection(): Promise<{ success: boolean; error?: string; needsProxy?: boolean }>
+
+  /**
+   * 拉取服务商当前可用模型列表
+   */
+  listModels(): Promise<string[]>
+
+  /**
+   * 获取模型去重用的真实 ID
+   */
+  getModelIdentity(model: string): string
 }
 
 /**
@@ -204,12 +214,36 @@ export abstract class BaseAIProvider implements AIProvider {
     return displayName
   }
 
+  getModelIdentity(model: string): string {
+    return String(this.resolveModelId(model) || model || '').trim().toLowerCase()
+  }
+
   protected getChatRequestExtraParams(_options?: ChatOptions): Record<string, unknown> {
     return {}
   }
 
   protected getToolRequestExtraParams(_options: ChatWithToolsOptions): Record<string, unknown> {
     return {}
+  }
+
+  async listModels(): Promise<string[]> {
+    const client = await this.getClient()
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('MODEL_LIST_TIMEOUT')), 15000)
+    })
+
+    const response: any = await Promise.race([
+      client.models.list(),
+      timeoutPromise
+    ])
+
+    const ids = Array.isArray(response?.data)
+      ? response.data
+        .map((item: any) => String(item?.id || '').trim())
+        .filter(Boolean)
+      : []
+
+    return Array.from(new Set(ids))
   }
 
   async chat(messages: OpenAI.Chat.ChatCompletionMessageParam[], options?: ChatOptions): Promise<string> {

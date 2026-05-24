@@ -233,7 +233,7 @@ class AIService {
   /**
    * 获取提供商实例
    */
-  private getProvider(providerName?: string, apiKey?: string): AIProvider {
+  private getProvider(providerName?: string, apiKey?: string, baseURLOverride?: string): AIProvider {
     const name = providerName || this.configService.getAICurrentProvider() || 'deepseek'
 
     // 如果没有传入 apiKey，从配置中获取当前提供商的配置
@@ -252,7 +252,7 @@ class AIService {
       case 'custom':
         // 自定义服务必须提供 baseURL
         const customConfig = this.configService.getAIProviderConfig('custom')
-        const customBaseURL = customConfig?.baseURL
+        const customBaseURL = baseURLOverride || customConfig?.baseURL
         if (!customBaseURL) {
           throw new Error('自定义服务需要配置服务地址')
         }
@@ -260,7 +260,7 @@ class AIService {
       case 'ollama':
         // Ollama 支持自定义 baseURL
         const ollamaConfig = this.configService.getAIProviderConfig('ollama')
-        const baseURL = ollamaConfig?.baseURL || 'http://localhost:11434/v1'
+        const baseURL = baseURLOverride || ollamaConfig?.baseURL || 'http://localhost:11434/v1'
         return new OllamaProvider(key || 'ollama', baseURL)
       case 'openai':
         return new OpenAIProvider(key!)
@@ -761,9 +761,9 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
   /**
    * 测试连接
    */
-  async testConnection(providerName: string, apiKey: string): Promise<{ success: boolean; error?: string; needsProxy?: boolean }> {
+  async testConnection(providerName: string, apiKey: string, baseURL?: string): Promise<{ success: boolean; error?: string; needsProxy?: boolean }> {
     try {
-      const provider = this.getProvider(providerName, apiKey)
+      const provider = this.getProvider(providerName, apiKey, baseURL)
       const result = await provider.testConnection()
 
       return result
@@ -773,6 +773,110 @@ ${detailInstructions[detail as keyof typeof detailInstructions] || detailInstruc
         error: `连接失败: ${String(error)}`,
         needsProxy: true
       }
+    }
+  }
+
+  private normalizeRemoteModelList(models: string[]): string[] {
+    const unique = Array.from(new Set(
+      models
+        .map((model) => String(model || '').trim())
+        .filter(Boolean)
+    ))
+
+    const nonChatPatterns = [
+      'embedding',
+      'rerank',
+      'whisper',
+      'tts',
+      'transcribe',
+      'speech',
+      'moderation',
+      'dall-e',
+      'image',
+      'stable-diffusion'
+    ]
+    const chatModels = unique.filter((model) => {
+      const lower = model.toLowerCase()
+      return !nonChatPatterns.some((pattern) => lower.includes(pattern))
+    })
+
+    return chatModels.length > 0 ? chatModels : unique
+  }
+
+  private compareDiscoveredModels(a: string, b: string): number {
+    const parseSortParts = (model: string) => {
+      const lower = model.toLowerCase()
+      const dateMatch = lower.match(/20\d{2}[-_.]?\d{2}[-_.]?\d{2}|20\d{4}/)
+      const dateValue = dateMatch ? Number(dateMatch[0].replace(/\D/g, '')) : 0
+      const numbers = Array.from(lower.matchAll(/\d+(?:\.\d+)?/g)).map(match => Number(match[0]))
+      const family = lower
+        .replace(/20\d{2}[-_.]?\d{2}[-_.]?\d{2}|20\d{4}/g, '')
+        .replace(/\d+(?:\.\d+)?/g, '')
+        .replace(/[-_.:]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      return {
+        lower,
+        family,
+        numbers,
+        dateValue,
+        latest: lower.includes('latest')
+      }
+    }
+
+    const left = parseSortParts(a)
+    const right = parseSortParts(b)
+    const familyCompare = left.family.localeCompare(right.family, 'en', { sensitivity: 'base' })
+    if (familyCompare !== 0) return familyCompare
+    if (left.latest !== right.latest) return left.latest ? -1 : 1
+    if (left.dateValue !== right.dateValue) return right.dateValue - left.dateValue
+
+    const maxLength = Math.max(left.numbers.length, right.numbers.length)
+    for (let index = 0; index < maxLength; index += 1) {
+      const leftNumber = left.numbers[index] ?? -1
+      const rightNumber = right.numbers[index] ?? -1
+      if (leftNumber !== rightNumber) return rightNumber - leftNumber
+    }
+
+    return left.lower.localeCompare(right.lower, 'en', { numeric: true, sensitivity: 'base' })
+  }
+
+  private mergeProviderModelLists(provider: AIProvider, remoteModels: string[]): string[] {
+    const result: string[] = []
+    const seen = new Set<string>()
+    const addModel = (model: string) => {
+      const value = String(model || '').trim()
+      if (!value) return
+      const identity = provider.getModelIdentity(value) || value.toLowerCase()
+      if (seen.has(identity)) return
+      seen.add(identity)
+      result.push(value)
+    }
+
+    provider.models.forEach(addModel)
+    remoteModels
+      .filter(model => !seen.has(provider.getModelIdentity(model) || model.toLowerCase()))
+      .sort((a, b) => this.compareDiscoveredModels(a, b))
+      .forEach(addModel)
+
+    return result
+  }
+
+  async listProviderModels(options: { provider: string; apiKey?: string; baseURL?: string }): Promise<{ success: boolean; models?: string[]; error?: string }> {
+    try {
+      const provider = this.getProvider(options.provider, options.apiKey, options.baseURL)
+      const models = this.mergeProviderModelLists(
+        provider,
+        this.normalizeRemoteModelList(await provider.listModels())
+      )
+      if (models.length === 0) {
+        return { success: false, error: '服务商未返回可用模型列表' }
+      }
+      return { success: true, models }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      console.error('[AIService] 获取模型列表失败:', message)
+      return { success: false, error: message }
     }
   }
 
