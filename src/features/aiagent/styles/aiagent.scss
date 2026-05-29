@@ -700,6 +700,69 @@
   overflow: hidden;
 }
 
+.agent-progress-timeline {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.agent-progress-timeline__item {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--agent-border-soft);
+  background: color-mix(in srgb, var(--agent-panel) 86%, transparent);
+  color: var(--agent-muted);
+  font-size: 12px;
+}
+
+.agent-progress-timeline__item.is-running {
+  color: var(--agent-accent);
+}
+
+.agent-progress-timeline__item.is-failed {
+  color: #ef4444;
+}
+
+.agent-progress-timeline__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-progress-timeline__spin {
+  animation: agent-spin 1s linear infinite;
+}
+
+.agent-progress-timeline__text {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.agent-progress-timeline__title {
+  flex: 0 0 auto;
+  font-weight: 800;
+  color: var(--agent-fg);
+}
+
+.agent-progress-timeline__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-progress-timeline__count {
+  font-size: 11px;
+  font-weight: 800;
+}
+
 .agent-tool {
   width: 100%;
   max-width: 100%;

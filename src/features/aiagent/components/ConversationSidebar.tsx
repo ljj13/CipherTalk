@@ -15,7 +15,7 @@ interface Props {
   onRename: (id: string, title: string) => void
 }
 
-export function AgentSidebar({
+export function ConversationSidebar({
   collapsed,
   conversations,
   activeId,

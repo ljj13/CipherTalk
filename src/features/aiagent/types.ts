@@ -43,7 +43,7 @@ export type StreamEvent =
   | { type: 'round_start' }
   | { type: 'message_done'; content?: string; reasoningContent?: string; toolCalls?: unknown[]; finishReason?: string | null }
 
-export type ProgressStatus = 'running' | 'completed' | 'failed'
+export type ProgressStatus = 'running' | 'completed' | 'failed' | string
 
 export interface ProgressEvent {
   id: string

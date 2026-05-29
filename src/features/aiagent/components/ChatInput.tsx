@@ -14,9 +14,10 @@ import {
 } from 'lucide-react'
 import { MCP } from '@lobehub/icons'
 import type { McpServerStatus } from '../../../hooks/useMcpSkillsData'
-import type { AgentSkill, AttachedResource, McpServer, SlashCommand } from '../types'
+import type { AgentSkill, AttachedResource, McpServer, Scope, SlashCommand } from '../types'
 
 interface Props {
+  scope: Scope
   onSend: (text: string, attached: AttachedResource[], readLimit: number, skillIds: string[]) => void
   disabled?: boolean
   suggestions: string[]
@@ -71,6 +72,7 @@ async function saveTemperature(v: number): Promise<void> {
 }
 
 export function ChatInput({
+  scope,
   onSend, disabled, suggestions, slashCommands,
   mcpServers, busyServers, onToggleServer, skills,
 }: Props) {
@@ -91,6 +93,7 @@ export function ChatInput({
   const mentionSearchRef = useRef<HTMLInputElement>(null)
   const mentionLoadingRef = useRef(false)
   const mentionLoadedRef = useRef(false)
+  const canAttachSessions = scope.kind === 'global'
 
   // 一次性拉取所有会话（最多 1000 条），后续纯客户端过滤
   const loadMentionSessions = useCallback(async () => {
@@ -169,7 +172,7 @@ export function ChatInput({
   const submit = () => {
     const text = value.trim()
     if (!text || disabled) return
-    onSend(text, attached, readLimit, [...enabledSkills])
+    onSend(text, canAttachSessions ? attached : [], readLimit, [...enabledSkills])
     setValue('')
     setAttached([])
     closeAll()
@@ -186,6 +189,7 @@ export function ChatInput({
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit() }
     if (e.key === '/' && !value) { setShowSlash(true) }
+    if (e.key === '@' && !canAttachSessions) return
     if (e.key === 'Escape' && showMention) { setShowMention(false); return }
     if (e.key === 'Escape') closeAll()
   }
@@ -243,14 +247,14 @@ export function ChatInput({
           value={value}
           disabled={disabled}
           className="agent-composer__textarea"
-          placeholder="给 Agent 安排一个任务... 按 @ 引用，按 / 输入命令"
+          placeholder={canAttachSessions ? '给 Agent 安排一个任务... 按 @ 引用，按 / 输入命令' : '询问当前会话... 按 / 输入命令'}
           onChange={event => {
             const text = event.target.value
             setValue(text)
             // 检测光标前的 @query 模式，自动打开 / 更新引用搜索
             const cursor = event.target.selectionStart ?? text.length
             const match = text.slice(0, cursor).match(/@(\S*)$/)
-            if (match) {
+            if (match && canAttachSessions) {
               if (!showMention) { setShowMention(true); loadMentionSessions() }
               setMentionQuery(match[1])
             }
@@ -263,6 +267,7 @@ export function ChatInput({
         <div className="agent-composer__bar">
           <div className="agent-composer__left">
             {/* 引用对象 */}
+            {canAttachSessions ? (
             <div className="agent-popover-host">
               <button
                 type="button"
@@ -329,6 +334,7 @@ export function ChatInput({
                 </ComposerPopover>
               ) : null}
             </div>
+            ) : null}
 
             {/* 斜杠命令 */}
             <div className="agent-popover-host">
@@ -522,7 +528,7 @@ export function ChatInput({
       <div className="agent-composer-hint">
         <span><kbd>Enter</kbd> 发送</span>
         <span><kbd>Shift</kbd> + <kbd>Enter</kbd> 换行</span>
-        <span><kbd>@</kbd> 引用</span>
+        {canAttachSessions ? <span><kbd>@</kbd> 引用</span> : null}
         <span><kbd>/</kbd> 命令</span>
         <span>AI生成，请注意甄别！</span>
       </div>

@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import type { AgentConversationSummary, AgentMessageRecord } from '../../../types/electron'
+import type { AiAgentConversationSummary, AiAgentMessageRecord, AiAgentProgressEvent, AiAgentScope } from '../../../types/electron'
 import type { AttachedResource, CardBlock, Message, AssistantBlock, ToolBlock, TextBlock, ThinkingBlock } from '../types'
 
-function recordToMessage(r: AgentMessageRecord): Message {
+function recordToMessage(r: AiAgentMessageRecord): Message {
   let blocks: AssistantBlock[] | undefined
   if (r.blocksJson) {
     try { blocks = JSON.parse(r.blocksJson) } catch {}
@@ -330,7 +330,20 @@ function markStreamingError(msgs: Message[], msgId: string | null, message: stri
   })
 }
 
-function buildHistory(msgs: Message[]): Array<{ role: string; content: string }> {
+function appendProgressEvent(msgs: Message[], msgId: string | null, event: AiAgentProgressEvent): Message[] {
+  if (!msgId) return msgs
+  return msgs.map(m => {
+    if (m.id !== msgId) return m
+    const events = m.progressEvents || []
+    const index = events.findIndex(item => item.id === event.id)
+    const nextEvents = index >= 0
+      ? events.map((item, itemIndex) => itemIndex === index ? { ...item, ...event } : item)
+      : [...events, event]
+    return { ...m, progressEvents: nextEvents }
+  })
+}
+
+function buildHistory(msgs: Message[]): Array<{ role: 'user' | 'assistant'; content: string }> {
   return msgs
     .filter(m => !m.streaming)
     .map(m => {
@@ -344,15 +357,15 @@ function buildHistory(msgs: Message[]): Array<{ role: string; content: string }>
 }
 
 function createAgentRequestId(): string {
-  return `agent-ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  return `aiagent-ui-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 
-export function useAgentChat() {
+export function useAiAgentChat(scope: AiAgentScope) {
   const [messages, setMessages] = useState<Message[]>([])
   const [loading, setLoading] = useState(false)
   const [conversationId, setConversationId] = useState<number | null>(null)
-  const [conversations, setConversations] = useState<AgentConversationSummary[]>([])
+  const [conversations, setConversations] = useState<AiAgentConversationSummary[]>([])
 
   const currentRequestIdRef = useRef<string | null>(null)
   const streamingMsgIdRef = useRef<string | null>(null)
@@ -361,28 +374,29 @@ export function useAgentChat() {
   const firstUserMessageRef = useRef('')
   const firstAssistantResponseRef = useRef('')
   const lastReadLimitRef = useRef(500)
+  const scopeKey = scope.kind === 'session' ? `session:${scope.sessionId}` : 'global'
 
   const loadConversations = async () => {
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
-    const result = await agentApi.listConversations()
+    const result = await agentApi.listConversations(scope)
     if (result.success && result.conversations) {
       setConversations(result.conversations)
     }
   }
 
   const selectConversation = async (id: number) => {
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
     const result = await agentApi.loadConversation(id)
-    if (result.success && result.messages) {
-      setMessages(result.messages.map(recordToMessage))
+    if (result.success && result.conversation) {
+      setMessages(result.conversation.messages.map(recordToMessage))
       setConversationId(id)
     }
   }
 
   const deleteConversation = async (id: number) => {
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
     await agentApi.deleteConversation(id)
     if (conversationId === id) {
@@ -393,24 +407,26 @@ export function useAgentChat() {
   }
 
   const renameConversation = async (id: number, title: string) => {
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
     await agentApi.updateTitle(id, title)
     await loadConversations()
   }
 
   useEffect(() => {
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
     let cancelled = false
     const restore = async () => {
+      setMessages([])
+      setConversationId(null)
       await loadConversations()
       try {
-        const last = await agentApi.getLastConversationId?.()
+        const last = await agentApi.getLastConversationId?.(scope)
         if (cancelled || !last?.success || !last.id) return
         const result = await agentApi.loadConversation(last.id)
-        if (cancelled || !result.success || !result.messages) return
-        setMessages(result.messages.map(recordToMessage))
+        if (cancelled || !result.success || !result.conversation) return
+        setMessages(result.conversation.messages.map(recordToMessage))
         setConversationId(last.id)
       } catch {
         // 兼容热更新时 main 进程还没注册新 IPC 的情况。
@@ -420,10 +436,10 @@ export function useAgentChat() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [scopeKey])
 
   useEffect(() => {
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
 
     const removeStreamEvent = agentApi.onStreamEvent(({ requestId, event }) => {
@@ -475,6 +491,11 @@ export function useAgentChat() {
       }
     })
 
+    const removeProgress = agentApi.onProgress(event => {
+      if (event.requestId && event.requestId !== currentRequestIdRef.current) return
+      setMessages(prev => appendProgressEvent(prev, streamingMsgIdRef.current, event))
+    })
+
     const removeDone = agentApi.onDone(({ requestId, conversationId: convId }) => {
       if (requestId !== currentRequestIdRef.current) return
       if (convId) setConversationId(convId)
@@ -505,9 +526,7 @@ export function useAgentChat() {
             conversationId: convId,
             userMessage: firstUserMessageRef.current,
             assistantResponse: firstAssistantResponseRef.current,
-            provider: cfg.provider,
-            apiKey: cfg.apiKey,
-            model: cfg.model,
+            provider: cfg,
           }).catch(() => {}).finally(() => loadConversations())
         })
       } else {
@@ -526,10 +545,11 @@ export function useAgentChat() {
 
     return () => {
       removeStreamEvent()
+      removeProgress()
       removeDone()
       removeError()
     }
-  }, [])
+  }, [scopeKey])
 
   const send = async (text: string, attached?: AttachedResource[], readLimit = 500, skillIds?: string[]) => {
     lastReadLimitRef.current = readLimit
@@ -578,8 +598,9 @@ export function useAgentChat() {
             ]
             setMessages(prev => [...prev, ...localMessages])
             try {
-              const saved = await window.electronAPI?.agent?.appendLocalMessages?.({
+              const saved = await window.electronAPI?.aiagent?.appendLocalMessages?.({
                 conversationId: conversationId ?? undefined,
+                scope,
                 messages: localMessages.map(msg => ({
                   role: msg.role,
                   content: msg.content,
@@ -605,7 +626,7 @@ export function useAgentChat() {
       }
     }
 
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) {
       const userMsg: Message = { id: `u-${Date.now()}`, role: 'user', content: text, attached: attached?.length ? attached : undefined }
       setMessages(prev => [...prev, userMsg])
@@ -646,16 +667,20 @@ export function useAgentChat() {
       .filter(r => r.icon === 'database')
       .map(r => ({ id: r.id, name: r.label }))
 
-    const result = await agentApi.sendMessage({
+    const result = await agentApi.send({
       requestId,
+      scope,
       conversationId: conversationId ?? undefined,
       history,
       message: text,
-      provider: providerSettings.provider,
-      apiKey: providerSettings.apiKey,
-      model: providerSettings.model,
-      enableThinking: forceThinking ?? providerSettings.enableThinking,
-      temperature: providerSettings.temperature,
+      provider: {
+        provider: providerSettings.provider,
+        apiKey: providerSettings.apiKey,
+        model: providerSettings.model,
+        enableThinking: providerSettings.enableThinking,
+        temperature: providerSettings.temperature,
+      },
+      forceThinking,
       commandHint,
       readLimit,
       scopedSessions: scopedSessions.length > 0 ? scopedSessions : undefined,
@@ -677,7 +702,7 @@ export function useAgentChat() {
 
   const regenerate = async (assistantMsgId: string) => {
     if (loading) return
-    const agentApi = window.electronAPI?.agent
+    const agentApi = window.electronAPI?.aiagent
     if (!agentApi) return
 
     const snapshot = messages
@@ -712,16 +737,19 @@ export function useAgentChat() {
       .filter(r => r.icon === 'database')
       .map(r => ({ id: r.id, name: r.label }))
 
-    const result = await agentApi.sendMessage({
+    const result = await agentApi.send({
       requestId,
+      scope,
       conversationId: conversationId ?? undefined,
       history,
       message: text,
-      provider: providerSettings.provider,
-      apiKey: providerSettings.apiKey,
-      model: providerSettings.model,
-      enableThinking: providerSettings.enableThinking,
-      temperature: providerSettings.temperature,
+      provider: {
+        provider: providerSettings.provider,
+        apiKey: providerSettings.apiKey,
+        model: providerSettings.model,
+        enableThinking: providerSettings.enableThinking,
+        temperature: providerSettings.temperature,
+      },
       readLimit,
       scopedSessions: scopedSessions.length > 0 ? scopedSessions : undefined,
     })
@@ -742,7 +770,7 @@ export function useAgentChat() {
   const cancel = () => {
     const reqId = currentRequestIdRef.current
     if (reqId) {
-      window.electronAPI?.agent?.cancel(reqId)
+      window.electronAPI?.aiagent?.cancel(reqId)
       setMessages(prev => markStreamingDone(prev, streamingMsgIdRef.current))
       setLoading(false)
       currentRequestIdRef.current = null

@@ -4,6 +4,7 @@ import { useAppStore } from '../../../stores/appStore'
 import AIProviderLogo from '../../../components/ai/AIProviderLogo'
 import type { AssistantBlock, Message, TextBlock } from '../types'
 import { AssistantBlocks } from './AssistantBlocks'
+import { ProgressTimeline } from './ProgressTimeline'
 import { ShareModal } from './ShareModal'
 
 interface Props {
@@ -149,6 +150,7 @@ export function MessageBubble({ message, userMessage, onCancel, onRegenerate, ai
         </div>
       ) : (
         <div className="agent-message__assistant-body qa-message-body">
+          <ProgressTimeline events={message.progressEvents} />
           <AssistantBlocks blocks={blocks} streaming={message.streaming} onStop={onCancel} />
           {showActions && (
             <div className="agent-message__actions agent-message__actions--assistant">
