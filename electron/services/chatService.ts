@@ -5,7 +5,7 @@ import * as https from 'https'
 import * as http from 'http'
 import { fileURLToPath } from 'url'
 import * as fzstd from 'fzstd'
-import { ConfigService } from './config'
+import { ChatServiceState } from './chat/state'
 import { getAppPath, getDocumentsPath, getExePath, isElectronPackaged } from './runtimePaths'
 import { dbAdapter } from './dbAdapter'
 import { findMessageDbPaths, getDbStoragePath } from './dbStoragePaths'
@@ -86,45 +86,10 @@ export type {
 }
 
 class ChatService extends EventEmitter {
-  private configService: ConfigService
-
-  // 缓存：会话ID -> 所有包含该会话消息的数据库和表名（增量更新）
-  private sessionTableCache: Map<string, { dbPath: string; tableName: string }[]> = new Map()
-  // 缓存时间戳
-  private sessionTableCacheTime: number = 0
-  // 缓存：已知的消息数据库文件列表
-  private knownMessageDbFiles: Set<string> = new Set()
-  // 缓存：当前用户在 Name2Id 表中的 rowid（按数据库路径）- 这个是稳定的
-  private myRowIdCache: Map<string, number | null> = new Map()
-  // 缓存：数据库是否有 Name2Id 表 - 表结构不会变
-  private hasName2IdCache: Map<string, boolean> = new Map()
-  // 缓存：联系人表结构信息 - 表结构不会变
-  private contactColumnsCache: { hasBigHeadUrl: boolean; hasSmallHeadUrl: boolean; hasExtraBuffer: boolean; selectCols: string[] } | null = null
-  // 缓存：企业微信企业 ID -> 企业名
-  private weComCorpNameCache: Map<string, string | undefined> = new Map()
-  private hasOpenImWordingTable: boolean | null = null
-  // 缓存：头像 base64 数据
-  private avatarBase64Cache: Map<string, string> = new Map()
-  // 标记：head_image.db 是否损坏
-  private headImageDbCorrupted: boolean = false
-
-  // 增量同步相关
-  private currentSessionId: string | null = null
-  // 记录每个会话已读取的最大 sortSeq (用于此后的增量查询)
-  private sessionCursor: Map<string, number> = new Map()
-
-  // 启动屏预加载缓存（DB 连接后预热，首次访问时消费）
-  private preloadCache: {
-    sessions: { success: boolean; sessions?: ChatSession[]; hasMore?: boolean } | null
-    contacts: { success: boolean; contacts?: ContactInfo[]; error?: string } | null
-    messages: Map<string, { success: boolean; messages?: Message[]; hasMore?: boolean }>
-    builtAt: number
-  } = { sessions: null, contacts: null, messages: new Map(), builtAt: 0 }
-  private readonly PRELOAD_CACHE_TTL = 5 * 60 * 1000
+  private state = new ChatServiceState()
 
   constructor() {
     super()
-    this.configService = new ConfigService()
   }
 
   /**
@@ -132,7 +97,7 @@ class ChatService extends EventEmitter {
    * 用于增量同步时只推送当前会话的消息
    */
   setCurrentSession(sessionId: string | null): void {
-    this.currentSessionId = sessionId
+    this.state.currentSessionId = sessionId
   }
 
   /**
@@ -143,21 +108,21 @@ class ChatService extends EventEmitter {
     const t0 = Date.now()
     try {
       const sessionsResult = await this.getSessions(0, 300)
-      this.preloadCache.sessions = {
+      this.state.preloadCache.sessions = {
         success: sessionsResult.success,
         sessions: sessionsResult.sessions,
         hasMore: sessionsResult.hasMore
       }
 
       const contactsResult = await this.getContacts()
-      this.preloadCache.contacts = contactsResult
+      this.state.preloadCache.contacts = contactsResult
 
       if (sessionsResult.success && sessionsResult.sessions?.length) {
         const topSessions = sessionsResult.sessions.slice(0, 5)
         await Promise.all(topSessions.map(async (session) => {
           const result = await this.getMessages(session.username, 0, 50)
           if (result.success) {
-            this.preloadCache.messages.set(session.username, {
+            this.state.preloadCache.messages.set(session.username, {
               success: result.success,
               messages: result.messages,
               hasMore: result.hasMore
@@ -166,8 +131,8 @@ class ChatService extends EventEmitter {
         }))
       }
 
-      this.preloadCache.builtAt = Date.now()
-      console.log(`[ChatService] 预加载完成，耗时 ${Date.now() - t0}ms，会话 ${this.preloadCache.sessions?.sessions?.length ?? 0} 条，消息缓存 ${this.preloadCache.messages.size} 个会话`)
+      this.state.preloadCache.builtAt = Date.now()
+      console.log(`[ChatService] 预加载完成，耗时 ${Date.now() - t0}ms，会话 ${this.state.preloadCache.sessions?.sessions?.length ?? 0} 条，消息缓存 ${this.state.preloadCache.messages.size} 个会话`)
     } catch (e) {
       console.warn('[ChatService] 预加载失败:', e)
     }
@@ -177,7 +142,7 @@ class ChatService extends EventEmitter {
    * 获取解密后的数据库目录（仅用于表情包/文件路径解析等非数据库场景）
    */
   private getDecryptedDbDir(): string {
-    const cachePath = this.configService.get('cachePath')
+    const cachePath = this.state.configService.get('cachePath')
     if (cachePath) return cachePath
 
     if (process.env.VITE_DEV_SERVER_URL) {
@@ -203,9 +168,9 @@ class ChatService extends EventEmitter {
    */
   async connect(): Promise<{ success: boolean; error?: string }> {
     try {
-      const wxid = String(this.configService.get('myWxid') || '').trim()
-      const dbPath = String(this.configService.get('dbPath') || '').trim()
-      const decryptKey = String(this.configService.get('decryptKey') || '').trim()
+      const wxid = String(this.state.configService.get('myWxid') || '').trim()
+      const dbPath = String(this.state.configService.get('dbPath') || '').trim()
+      const decryptKey = String(this.state.configService.get('decryptKey') || '').trim()
 
       if (!wxid || !dbPath || !decryptKey) {
         return { success: false, error: '数据库配置不完整' }
@@ -223,19 +188,19 @@ class ChatService extends EventEmitter {
    */
   close(): void {
     // 清理本地缓存（真正的句柄由 wcdbService 的 Worker 管理）
-    this.sessionTableCache.clear()
-    this.sessionTableCacheTime = 0
-    this.knownMessageDbFiles.clear()
-    this.myRowIdCache.clear()
-    this.hasName2IdCache.clear()
-    this.contactColumnsCache = null
-    this.weComCorpNameCache.clear()
-    this.hasOpenImWordingTable = null
-    this.avatarBase64Cache.clear()
-    this.preloadCache.sessions = null
-    this.preloadCache.contacts = null
-    this.preloadCache.messages.clear()
-    this.preloadCache.builtAt = 0
+    this.state.sessionTableCache.clear()
+    this.state.sessionTableCacheTime = 0
+    this.state.knownMessageDbFiles.clear()
+    this.state.myRowIdCache.clear()
+    this.state.hasName2IdCache.clear()
+    this.state.contactColumnsCache = null
+    this.state.weComCorpNameCache.clear()
+    this.state.hasOpenImWordingTable = null
+    this.state.avatarBase64Cache.clear()
+    this.state.preloadCache.sessions = null
+    this.state.preloadCache.contacts = null
+    this.state.preloadCache.messages.clear()
+    this.state.preloadCache.builtAt = 0
   }
 
   /**
@@ -243,13 +208,13 @@ class ChatService extends EventEmitter {
    */
   closeDatabase(_fileName: string): void {
     // 不再持有本地 better-sqlite3 句柄。清掉相关缓存即可。
-    this.sessionTableCache.clear()
-    this.sessionTableCacheTime = 0
-    this.knownMessageDbFiles.clear()
-    this.avatarBase64Cache.clear()
-    this.contactColumnsCache = null
-    this.weComCorpNameCache.clear()
-    this.hasOpenImWordingTable = null
+    this.state.sessionTableCache.clear()
+    this.state.sessionTableCacheTime = 0
+    this.state.knownMessageDbFiles.clear()
+    this.state.avatarBase64Cache.clear()
+    this.state.contactColumnsCache = null
+    this.state.weComCorpNameCache.clear()
+    this.state.hasOpenImWordingTable = null
   }
 
   /**
@@ -271,11 +236,11 @@ class ChatService extends EventEmitter {
     try {
       // 消费预加载缓存（仅首页请求）
       const isFirstPage = !offset || offset === 0
-      if (isFirstPage && this.preloadCache.builtAt > 0 &&
-          Date.now() - this.preloadCache.builtAt < this.PRELOAD_CACHE_TTL &&
-          this.preloadCache.sessions) {
-        const cached = this.preloadCache.sessions
-        this.preloadCache.sessions = null
+      if (isFirstPage && this.state.preloadCache.builtAt > 0 &&
+          Date.now() - this.state.preloadCache.builtAt < this.state.PRELOAD_CACHE_TTL &&
+          this.state.preloadCache.sessions) {
+        const cached = this.state.preloadCache.sessions
+        this.state.preloadCache.sessions = null
         return cached
       }
 
@@ -364,7 +329,7 @@ class ChatService extends EventEmitter {
       }
 
       // 使用缓存的列信息
-      if (!this.contactColumnsCache) {
+      if (!this.state.contactColumnsCache) {
         const columns = await dbAdapter.all<any>('contact', '', "PRAGMA table_info(contact)")
         const columnNames = columns.map((c: any) => c.name)
 
@@ -378,10 +343,10 @@ class ChatService extends EventEmitter {
         if (hasExtraBuffer) selectCols.push('extra_buffer')
         if (columnNames.includes('flag')) selectCols.push('flag')
 
-        this.contactColumnsCache = { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols }
+        this.state.contactColumnsCache = { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols }
       }
 
-      const { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols } = this.contactColumnsCache
+      const { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols } = this.state.contactColumnsCache
 
       const usernames = Array.from(new Set(sessions.map(s => s.username).filter(Boolean)))
       if (usernames.length === 0) return
@@ -433,11 +398,11 @@ class ChatService extends EventEmitter {
   async getContacts(): Promise<{ success: boolean; contacts?: ContactInfo[]; error?: string }> {
     try {
       // 消费预加载缓存
-      if (this.preloadCache.builtAt > 0 &&
-          Date.now() - this.preloadCache.builtAt < this.PRELOAD_CACHE_TTL &&
-          this.preloadCache.contacts) {
-        const cached = this.preloadCache.contacts
-        this.preloadCache.contacts = null
+      if (this.state.preloadCache.builtAt > 0 &&
+          Date.now() - this.state.preloadCache.builtAt < this.state.PRELOAD_CACHE_TTL &&
+          this.state.preloadCache.contacts) {
+        const cached = this.state.preloadCache.contacts
+        this.state.preloadCache.contacts = null
         return cached
       }
 
@@ -565,9 +530,9 @@ class ChatService extends EventEmitter {
     try {
       for (const fullPath of findMessageDbPaths()) {
         allDbs.push(fullPath)
-        if (!this.knownMessageDbFiles.has(fullPath)) {
+        if (!this.state.knownMessageDbFiles.has(fullPath)) {
           newDbs.push(fullPath)
-          this.knownMessageDbFiles.add(fullPath)
+          this.state.knownMessageDbFiles.add(fullPath)
         }
       }
     } catch { }
@@ -579,14 +544,14 @@ class ChatService extends EventEmitter {
    * 刷新消息数据库缓存（解密后调用）
    */
   refreshMessageDbCache(): void {
-    this.knownMessageDbFiles.clear()
-    this.sessionTableCache.clear()
-    this.sessionTableCacheTime = 0
-    this.myRowIdCache.clear()
-    this.hasName2IdCache.clear()
-    this.contactColumnsCache = null
-    this.weComCorpNameCache.clear()
-    this.hasOpenImWordingTable = null
+    this.state.knownMessageDbFiles.clear()
+    this.state.sessionTableCache.clear()
+    this.state.sessionTableCacheTime = 0
+    this.state.myRowIdCache.clear()
+    this.state.hasName2IdCache.clear()
+    this.state.contactColumnsCache = null
+    this.state.weComCorpNameCache.clear()
+    this.state.hasOpenImWordingTable = null
     clearMessageDbScannerCache()
     // 尝试推送增量消息（fire-and-forget，避免把同步方法改成 async）
     void this.checkNewMessagesForCurrentSession()
@@ -657,14 +622,14 @@ class ChatService extends EventEmitter {
     if (allDbs.length === 0) return []
 
     // 检查缓存是否过期
-    const cacheExpired = (now - this.sessionTableCacheTime) > SESSION_TABLE_CACHE_DURATION
+    const cacheExpired = (now - this.state.sessionTableCacheTime) > SESSION_TABLE_CACHE_DURATION
     if (cacheExpired) {
-      this.sessionTableCache.clear()
-      this.sessionTableCacheTime = now
+      this.state.sessionTableCache.clear()
+      this.state.sessionTableCacheTime = now
     }
 
     // 获取已缓存的结果
-    let cached = this.sessionTableCache.get(sessionId)
+    let cached = this.state.sessionTableCache.get(sessionId)
 
     // 情况1：有缓存，且有新数据库 -> 只在新数据库中查找
     if (cached && cached.length > 0 && newDbs.length > 0) {
@@ -680,7 +645,7 @@ class ChatService extends EventEmitter {
       // 合并到缓存
       if (newPairs.length > 0) {
         cached = [...cached, ...newPairs]
-        this.sessionTableCache.set(sessionId, cached)
+        this.state.sessionTableCache.set(sessionId, cached)
       }
     }
 
@@ -701,7 +666,7 @@ class ChatService extends EventEmitter {
 
     // 存入缓存
     if (dbTablePairs.length > 0) {
-      this.sessionTableCache.set(sessionId, dbTablePairs.map(p => ({ dbPath: p.dbPath, tableName: p.tableName })))
+      this.state.sessionTableCache.set(sessionId, dbTablePairs.map(p => ({ dbPath: p.dbPath, tableName: p.tableName })))
     }
 
     return dbTablePairs
@@ -712,7 +677,7 @@ class ChatService extends EventEmitter {
    */
   private async checkTableExists(dbPath: string, tableName: string): Promise<boolean> {
     const cacheKey = `${dbPath}:${tableName}`
-    const cached = this.hasName2IdCache.get(cacheKey)
+    const cached = this.state.hasName2IdCache.get(cacheKey)
     if (cached !== undefined) return cached
 
     try {
@@ -723,10 +688,10 @@ class ChatService extends EventEmitter {
         [tableName]
       )
       const exists = !!result
-      this.hasName2IdCache.set(cacheKey, exists)
+      this.state.hasName2IdCache.set(cacheKey, exists)
       return exists
     } catch {
-      this.hasName2IdCache.set(cacheKey, false)
+      this.state.hasName2IdCache.set(cacheKey, false)
       return false
     }
   }
@@ -742,7 +707,7 @@ class ChatService extends EventEmitter {
     if (!myWxid || !hasName2IdTable) return null
 
     const cacheKeyOriginal = `${dbPath}:${myWxid}`
-    const cachedRowIdOriginal = this.myRowIdCache.get(cacheKeyOriginal)
+    const cachedRowIdOriginal = this.state.myRowIdCache.get(cacheKeyOriginal)
     if (cachedRowIdOriginal !== undefined) return cachedRowIdOriginal
 
     const row = await dbAdapter.get<any>(
@@ -753,13 +718,13 @@ class ChatService extends EventEmitter {
     )
     if (row?.rowid) {
       const rid = row.rowid as number
-      this.myRowIdCache.set(cacheKeyOriginal, rid)
+      this.state.myRowIdCache.set(cacheKeyOriginal, rid)
       return rid
     }
 
     if (cleanedMyWxid && cleanedMyWxid !== myWxid) {
       const cacheKeyCleaned = `${dbPath}:${cleanedMyWxid}`
-      const cachedRowIdCleaned = this.myRowIdCache.get(cacheKeyCleaned)
+      const cachedRowIdCleaned = this.state.myRowIdCache.get(cacheKeyCleaned)
       if (cachedRowIdCleaned !== undefined) return cachedRowIdCleaned
 
       const row2 = await dbAdapter.get<any>(
@@ -769,11 +734,11 @@ class ChatService extends EventEmitter {
         [cleanedMyWxid]
       )
       const rid = row2?.rowid ?? null
-      this.myRowIdCache.set(cacheKeyCleaned, rid)
+      this.state.myRowIdCache.set(cacheKeyCleaned, rid)
       return rid
     }
 
-    this.myRowIdCache.set(cacheKeyOriginal, null)
+    this.state.myRowIdCache.set(cacheKeyOriginal, null)
     return null
   }
 
@@ -791,7 +756,7 @@ class ChatService extends EventEmitter {
     if (Number(rawIsSend) === 1 || Number(computedIsSend) === 1) return 1
 
     const senderKeys = this.buildIdentityKeys(String(senderUsername || row?.sender_username || row?.senderUsername || row?.sender || row?.talker || row?.src || ''))
-    const myWxid = String(this.configService.get('myWxid') || '').trim()
+    const myWxid = String(this.state.configService.get('myWxid') || '').trim()
     const selfKeys = this.buildIdentityKeys(myWxid)
     if (senderKeys.length > 0 && selfKeys.length > 0) {
       const matched = senderKeys.some(senderKey =>
@@ -875,9 +840,9 @@ class ChatService extends EventEmitter {
   private updateSessionCursorFromPage(sessionId: string, page: Message[]): void {
     if (page.length === 0) return
     const latestMsg = page[page.length - 1]
-    const currentCursor = this.sessionCursor.get(sessionId) || 0
+    const currentCursor = this.state.sessionCursor.get(sessionId) || 0
     if (latestMsg.sortSeq > currentCursor) {
-      this.sessionCursor.set(sessionId, latestMsg.sortSeq)
+      this.state.sessionCursor.set(sessionId, latestMsg.sortSeq)
     }
   }
 
@@ -1054,11 +1019,11 @@ class ChatService extends EventEmitter {
   ): Promise<{ success: boolean; messages?: Message[]; hasMore?: boolean; error?: string }> {
     try {
       // 消费预加载缓存（仅首页且缓存中有该会话）
-      if (!offset && this.preloadCache.builtAt > 0 &&
-          Date.now() - this.preloadCache.builtAt < this.PRELOAD_CACHE_TTL &&
-          this.preloadCache.messages.has(sessionId)) {
-        const cached = this.preloadCache.messages.get(sessionId)!
-        this.preloadCache.messages.delete(sessionId)
+      if (!offset && this.state.preloadCache.builtAt > 0 &&
+          Date.now() - this.state.preloadCache.builtAt < this.state.PRELOAD_CACHE_TTL &&
+          this.state.preloadCache.messages.has(sessionId)) {
+        const cached = this.state.preloadCache.messages.get(sessionId)!
+        this.state.preloadCache.messages.delete(sessionId)
         return cached
       }
 
@@ -1084,7 +1049,7 @@ class ChatService extends EventEmitter {
       }
 
       // 获取当前用户的 wxid
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
       // 使用缓存查找会话对应的数据库和表
@@ -1276,9 +1241,9 @@ class ChatService extends EventEmitter {
       // 更新增量游标（仅在拉取最新一页时）
       if (offset === 0 && messages.length > 0) {
         const latestMsg = messages[messages.length - 1]
-        const currentCursor = this.sessionCursor.get(sessionId) || 0
+        const currentCursor = this.state.sessionCursor.get(sessionId) || 0
         if (latestMsg.sortSeq > currentCursor) {
-          this.sessionCursor.set(sessionId, latestMsg.sortSeq)
+          this.state.sessionCursor.set(sessionId, latestMsg.sortSeq)
         }
       }
 
@@ -1323,9 +1288,9 @@ class ChatService extends EventEmitter {
 
         if (messages.length > 0) {
           const latestMsg = messages[messages.length - 1]
-          const currentCursor = this.sessionCursor.get(sessionId) || 0
+          const currentCursor = this.state.sessionCursor.get(sessionId) || 0
           if (latestMsg.sortSeq > currentCursor) {
-            this.sessionCursor.set(sessionId, latestMsg.sortSeq)
+            this.state.sessionCursor.set(sessionId, latestMsg.sortSeq)
           }
         }
 
@@ -1371,7 +1336,7 @@ class ChatService extends EventEmitter {
         return { success: true, messages: [], hasMore: false }
       }
 
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
       const dbTablePairs = await this.findSessionTables(sessionId)
 
@@ -1495,7 +1460,7 @@ class ChatService extends EventEmitter {
     cursorLocalId?: number
   ): Promise<{ success: boolean; messages?: Message[]; hasMore?: boolean; error?: string }> {
     try {
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
       const dbTablePairs = await this.findSessionTables(sessionId)
@@ -1624,7 +1589,7 @@ class ChatService extends EventEmitter {
     cursorLocalId?: number
   ): Promise<{ success: boolean; messages?: Message[]; hasMore?: boolean; error?: string }> {
     try {
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
       const dbTablePairs = await this.findSessionTables(sessionId)
@@ -1877,7 +1842,7 @@ class ChatService extends EventEmitter {
         ? Math.min(endTime, watermark)
         : (endTime ?? watermark)
 
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
       const dbTablePairs = await this.findSessionTables(sessionId)
 
@@ -1998,7 +1963,7 @@ class ChatService extends EventEmitter {
     sessionId: string
   ): Promise<{ success: boolean; messages?: Message[]; error?: string }> {
     try {
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
       // 使用与 getMessages 相同的方法查找会话对应的表
@@ -2188,7 +2153,7 @@ class ChatService extends EventEmitter {
     limit: number = 50
   ): Promise<{ success: boolean; messages?: Message[]; targetIndex?: number; error?: string }> {
     try {
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
       const dbTablePairs = await this.findSessionTables(sessionId)
@@ -2467,7 +2432,7 @@ class ChatService extends EventEmitter {
 
     try {
       // 使用缓存的列信息
-      if (!this.contactColumnsCache) {
+      if (!this.state.contactColumnsCache) {
         const columns = await dbAdapter.all<any>('contact', '', "PRAGMA table_info(contact)")
         const columnNames = columns.map((c: any) => c.name)
 
@@ -2481,10 +2446,10 @@ class ChatService extends EventEmitter {
         if (hasExtraBuffer) selectCols.push('extra_buffer')
         if (columnNames.includes('flag')) selectCols.push('flag')
 
-        this.contactColumnsCache = { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols }
+        this.state.contactColumnsCache = { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols }
       }
 
-      const { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols } = this.contactColumnsCache
+      const { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols } = this.state.contactColumnsCache
 
       const row = await dbAdapter.get<any>(
         'contact',
@@ -2570,7 +2535,7 @@ class ChatService extends EventEmitter {
       }
 
       // 获取当前用户 wxid，用于识别"自己"
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
       // 解析名称：自己 > 群昵称 > 备注 > 昵称 > alias > wxid
@@ -2618,8 +2583,8 @@ class ChatService extends EventEmitter {
 
     try {
       // 检查缓存
-      if (this.avatarBase64Cache.has(username)) {
-        return this.avatarBase64Cache.get(username)
+      if (this.state.avatarBase64Cache.has(username)) {
+        return this.state.avatarBase64Cache.get(username)
       }
 
       const row = await dbAdapter.get<any>(
@@ -2637,15 +2602,15 @@ class ChatService extends EventEmitter {
       const dataUrl = `data:image/jpeg;base64,${base64}`
 
       // 缓存结果
-      this.avatarBase64Cache.set(username, dataUrl)
+      this.state.avatarBase64Cache.set(username, dataUrl)
 
       return dataUrl
     } catch (e: any) {
       // 如果是数据库损坏错误，只记录一次警告，避免刷屏
       if (e?.code === 'SQLITE_CORRUPT' || e?.message?.includes('malformed')) {
-        if (!this.headImageDbCorrupted) {
+        if (!this.state.headImageDbCorrupted) {
           console.warn(`[ChatService] head_image.db 数据库文件损坏，头像功能可能受影响`)
-          this.headImageDbCorrupted = true
+          this.state.headImageDbCorrupted = true
         }
       } else {
         console.error(`获取 ${username} 的头像失败:`, e)
@@ -2659,7 +2624,7 @@ class ChatService extends EventEmitter {
    */
   async getMyAvatarUrl(): Promise<{ success: boolean; avatarUrl?: string; error?: string }> {
     try {
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       if (!myWxid) {
         return { success: false, error: '未配置微信ID' }
       }
@@ -2752,7 +2717,7 @@ class ChatService extends EventEmitter {
     error?: string
   }> {
     try {
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       if (!myWxid) {
         return { success: false, error: '未配置微信ID' }
       }
@@ -2903,11 +2868,11 @@ class ChatService extends EventEmitter {
 
       // 如果自动获取失败，尝试从配置读取
       if (!uin) {
-        uin = this.configService.get('emoticonUin') || null
+        uin = this.state.configService.get('emoticonUin') || null
       }
 
       // keyString 使用 myWxid
-      const keyString = this.configService.get('myWxid') || null
+      const keyString = this.state.configService.get('myWxid') || null
 
       return { uin, keyString }
     } catch (e) {
@@ -3056,8 +3021,8 @@ class ChatService extends EventEmitter {
    */
   private async findLocalEmojiFile(md5: string, productId: string): Promise<string | null> {
     try {
-      const dbPath = this.configService.get('dbPath')
-      const myWxid = this.configService.get('myWxid')
+      const dbPath = this.state.configService.get('dbPath')
+      const myWxid = this.state.configService.get('myWxid')
 
       if (!dbPath || !myWxid || !fs.existsSync(dbPath)) {
         return null
@@ -3177,8 +3142,8 @@ class ChatService extends EventEmitter {
       const size = row.emoticon_size_
 
       // 查找打包文件
-      const dbPath = this.configService.get('dbPath')
-      const myWxid = this.configService.get('myWxid')
+      const dbPath = this.state.configService.get('dbPath')
+      const myWxid = this.state.configService.get('myWxid')
 
       if (!dbPath || !myWxid) {
         return null
@@ -3358,7 +3323,7 @@ class ChatService extends EventEmitter {
    * 获取表情包缓存目录
    */
   private getEmojiCacheDir(): string {
-    const cachePath = this.configService.get('cachePath')
+    const cachePath = this.state.configService.get('cachePath')
     if (cachePath) {
       return path.join(cachePath, 'Emojis')
     }
@@ -3677,7 +3642,7 @@ class ChatService extends EventEmitter {
       let decryptedBuffer = buffer
 
       if (!mimeType) {
-        const xorKeyHex = this.configService.get('imageXorKey')
+        const xorKeyHex = this.state.configService.get('imageXorKey')
         const xorKey = xorKeyHex ? parseInt(xorKeyHex, 16) : null
 
         // 尝试偏移 0 和 16
@@ -3899,7 +3864,7 @@ class ChatService extends EventEmitter {
       let avatarUrl: string | undefined
 
       try {
-        if (!this.contactColumnsCache) {
+        if (!this.state.contactColumnsCache) {
           const columns = await dbAdapter.all<any>('contact', '', "PRAGMA table_info(contact)")
           const columnNames = columns.map((c: any) => c.name)
 
@@ -3913,10 +3878,10 @@ class ChatService extends EventEmitter {
           if (hasExtraBuffer) selectCols.push('extra_buffer')
           if (columnNames.includes('flag')) selectCols.push('flag')
 
-          this.contactColumnsCache = { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols }
+          this.state.contactColumnsCache = { hasBigHeadUrl, hasSmallHeadUrl, hasExtraBuffer, selectCols }
         }
 
-        const { hasBigHeadUrl, hasSmallHeadUrl, selectCols } = this.contactColumnsCache
+        const { hasBigHeadUrl, hasSmallHeadUrl, selectCols } = this.state.contactColumnsCache
 
         const contact = await dbAdapter.get<any>(
           'contact',
@@ -4033,21 +3998,21 @@ class ChatService extends EventEmitter {
     const ref = extractWeComWordingRef(extraBuffer)
     if (ref) {
       const cacheKey = `${ref.appId || ''}\n${ref.wordingId}`
-      if (this.weComCorpNameCache.has(cacheKey)) {
-        return this.weComCorpNameCache.get(cacheKey) || extractWeComCorpName(extraBuffer, knownStrings)
+      if (this.state.weComCorpNameCache.has(cacheKey)) {
+        return this.state.weComCorpNameCache.get(cacheKey) || extractWeComCorpName(extraBuffer, knownStrings)
       }
 
       try {
-        if (this.hasOpenImWordingTable === null) {
+        if (this.state.hasOpenImWordingTable === null) {
           const table = await dbAdapter.get<{ name: string }>(
             'contact',
             '',
             "SELECT name FROM sqlite_master WHERE type='table' AND name='openim_wording'"
           )
-          this.hasOpenImWordingTable = Boolean(table)
+          this.state.hasOpenImWordingTable = Boolean(table)
         }
 
-        if (this.hasOpenImWordingTable) {
+        if (this.state.hasOpenImWordingTable) {
           const sql = ref.appId
             ? `SELECT wording FROM openim_wording
                WHERE app_id = ? AND wording_id = ? AND wording <> ''
@@ -4061,11 +4026,11 @@ class ChatService extends EventEmitter {
           const row = await dbAdapter.get<{ wording?: string }>('contact', '', sql, params)
           const wording = typeof row?.wording === 'string' ? row.wording.trim() : ''
           if (wording) {
-            this.weComCorpNameCache.set(cacheKey, wording)
+            this.state.weComCorpNameCache.set(cacheKey, wording)
             return wording
           }
         }
-        this.weComCorpNameCache.set(cacheKey, undefined)
+        this.state.weComCorpNameCache.set(cacheKey, undefined)
       } catch {
         // 旧数据库可能没有 openim_wording；继续尝试旧的 extra_buffer 提取。
       }
@@ -4113,7 +4078,7 @@ class ChatService extends EventEmitter {
    */
   public async getMessageByLocalId(sessionId: string, localId: number): Promise<{ success: boolean; message?: Message; error?: string }> {
     const dbTablePairs = await this.findSessionTables(sessionId)
-    const myWxid = this.configService.get('myWxid')
+    const myWxid = this.state.configService.get('myWxid')
     const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
 
     for (const { tableName, dbPath } of dbTablePairs) {
@@ -4283,7 +4248,7 @@ class ChatService extends EventEmitter {
   ): Promise<{ success: boolean; message?: Message; error?: string }> {
     try {
       const hasName2IdTable = await this.checkTableExists(dbPath, 'Name2Id')
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       const cleanedMyWxid = myWxid ? cleanAccountDirName(myWxid) : ''
       const myRowId = await this.resolveMyRowId(dbPath, myWxid, cleanedMyWxid, hasName2IdTable)
       const qTable = quoteIdent(tableName)
@@ -4435,7 +4400,7 @@ class ChatService extends EventEmitter {
       // 构建查找候选：sessionId, myWxid
       const candidates: string[] = []
       if (sessionId) candidates.push(sessionId)
-      const myWxid = this.configService.get('myWxid')
+      const myWxid = this.state.configService.get('myWxid')
       if (myWxid && !candidates.includes(myWxid)) {
         candidates.push(myWxid)
       }
