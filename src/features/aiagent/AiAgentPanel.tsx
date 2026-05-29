@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { MessageList } from './components/MessageList'
-import { ChatInput } from './components/ChatInput'
+import { AgentComposer } from './components/AgentComposer'
 import { ConversationSidebar } from './components/ConversationSidebar'
 import { useAiAgentChat } from './hooks/useAiAgentChat'
 import { useMcpSkillsData } from '../../hooks/useMcpSkillsData'
@@ -106,7 +106,7 @@ export function AiAgentPanel({
           onRegenerate={regenerate}
           aiProvider={aiProvider}
         />
-        <ChatInput
+        <AgentComposer
           scope={scope}
           onSend={send}
           disabled={loading}
