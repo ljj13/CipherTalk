@@ -13,7 +13,6 @@ const toThemeMode = (key: Key): ThemeMode => String(key) as ThemeMode
 const toNavLayout = (key: Key): NavLayout => String(key) as NavLayout
 const toHomeBackgroundSource = (key: Key): HomeBackgroundSource => String(key) as HomeBackgroundSource
 
-const getFileName = (filePath: string) => filePath.split(/[\\/]/).filter(Boolean).pop() || '自定义背景'
 const toSliderNumber = (value: number | number[]): number => Array.isArray(value) ? value[0] ?? 0 : value
 const normalizeImageSrc = (value?: string): string | undefined => {
   const src = value?.trim()
@@ -176,9 +175,6 @@ function AppearanceTab() {
                 <Upload size={16} aria-hidden />
                 {backgroundImporting ? '导入中...' : customBackgroundReady ? '更换背景' : '选择背景'}
               </button>
-              <div className="home-background-file-name">
-                {customBackgroundReady ? getFileName(homeBackground.customPath) : '未选择自定义背景'}
-              </div>
               {backgroundError && <div className="home-background-error">{backgroundError}</div>}
             </div>
           )}

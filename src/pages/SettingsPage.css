@@ -430,16 +430,6 @@
   width: fit-content;
 }
 
-.home-background-file-name {
-  max-width: 100%;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  line-height: 1.5;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .home-background-error {
   color: var(--danger);
   font-size: 12px;
