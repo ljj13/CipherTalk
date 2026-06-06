@@ -25,33 +25,15 @@ export function registerAiHandlers(_ctx: MainProcessContext): void {
     agentAborters.set(runId, aborter)
     try {
       const { agentProcessService } = await import('../../services/agent/agentProcessService')
-      const { agentConversationStore } = await import('../../services/agent/conversationStore')
       const { resolveProviderConfig } = await import('../../services/agent/resolveProviderConfig')
       const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
       const { convertToModelMessages } = await import('ai')
       await refreshResolvedProxyUrl() // 主进程探测系统代理并持久化，供子进程 agent/嵌入读取
       const providerConfig = resolveProviderConfig(payload.modelConfig)
       const messages = await convertToModelMessages(payload.messages)
-      const conversationId = Number(payload.conversationId || 0) || null
-      let chunkIndex = 0
       await agentProcessService.run(
         { messages, providerConfig, scope: payload.scope ?? { kind: 'global' } },
-        (chunk) => {
-          try {
-            agentConversationStore.appendRawResponse({
-              conversationId,
-              runId,
-              chunkIndex: chunkIndex++,
-              chunk,
-              scope: payload.scope ?? { kind: 'global' },
-              modelProvider: providerConfig.name,
-              modelId: providerConfig.model,
-            })
-          } catch (error) {
-            console.warn('[AI] 保存原始响应 chunk 失败:', error)
-          }
-          send(chunk)
-        },
+        (chunk) => send(chunk),
         (progress) => sendProgress(progress),
         aborter.signal,
       )

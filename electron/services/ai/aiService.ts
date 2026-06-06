@@ -43,6 +43,10 @@ class AIService {
     const { name, definition, providerConfig } = this.resolveProviderDefinition(providerName, protocolOverride)
     const key = apiKey || providerConfig?.apiKey || ''
     const baseURL = baseURLOverride || providerConfig?.baseURL || definition.baseURL
+    const effectiveDefinition = {
+      ...definition,
+      protocol: protocolOverride || providerConfig?.protocol || definition.protocol
+    }
 
     if (!key && !definition.optionalApiKey) {
       throw new Error('未配置API密钥')
@@ -51,7 +55,7 @@ class AIService {
       throw new Error('自定义服务需要配置服务地址')
     }
 
-    return new CatalogAIProvider(definition, key || name, baseURL)
+    return new CatalogAIProvider(effectiveDefinition, key || name, baseURL)
   }
 
   estimateTokens(text: string): number {
@@ -176,8 +180,12 @@ class AIService {
       const providerConfig = this.configService.getAIProviderConfig(providerId)
         || (options.provider !== providerId ? this.configService.getAIProviderConfig(options.provider) : null)
       const key = options.apiKey || providerConfig?.apiKey || ''
+      const effectiveDefinition = {
+        ...definition,
+        protocol: options.protocol || providerConfig?.protocol || definition.protocol
+      }
       const provider = new CatalogAIProvider(
-        definition,
+        effectiveDefinition,
         key || providerId,
         options.baseURL || providerConfig?.baseURL || definition.baseURL
       )

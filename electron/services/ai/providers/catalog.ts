@@ -78,6 +78,21 @@ const EMPTY_PRICING = {
   pricingDetail: { input: 0, output: 0 }
 }
 
+const CUSTOM_PROVIDER_DEFINITION: AIProviderMetadata = {
+  id: 'custom',
+  name: 'custom',
+  displayName: '自定义',
+  description: '自定义 OpenAI、Anthropic 或 Gemini 兼容接口',
+  protocol: 'openai-compatible',
+  baseURL: '',
+  models: [],
+  modelDetails: [],
+  pricing: '自定义',
+  pricingDetail: { input: 0, output: 0 },
+  allowCustomBaseURL: true,
+  protocolOptions: ['openai-responses', 'openai-compatible', 'anthropic', 'google']
+}
+
 const PROVIDER_ID_ALIASES: Record<string, string> = {
   gemini: 'google',
   qwen: 'alibaba-cn',
@@ -460,6 +475,13 @@ function sortProviderDefinitions(providers: AIProviderMetadata[]): AIProviderMet
   })
 }
 
+function withCustomProvider(providers: AIProviderMetadata[]): AIProviderMetadata[] {
+  return [
+    cloneMetadata(CUSTOM_PROVIDER_DEFINITION),
+    ...providers.filter(provider => provider.id !== CUSTOM_PROVIDER_DEFINITION.id)
+  ]
+}
+
 function getProviderDefinitionsFromModelsDevData(data: any): AIProviderMetadata[] {
   const result = new Map<string, AIProviderMetadata>()
   const providers = getModelsDevProviders(data)
@@ -475,17 +497,21 @@ function getProviderDefinitionsFromModelsDevData(data: any): AIProviderMetadata[
 export async function getProviderDefinitions(): Promise<AIProviderMetadata[]> {
   try {
     const data = await getModelsDevData()
-    return getProviderDefinitionsFromModelsDevData(data)
+    return withCustomProvider(getProviderDefinitionsFromModelsDevData(data))
   } catch (error) {
     console.warn('[AIProviderCatalog] models.dev 获取失败，使用可用缓存:', error instanceof Error ? error.message : String(error))
     const data = readAvailableModelsDevData()
-    if (data) return getProviderDefinitionsFromModelsDevData(data)
-    return []
+    if (data) return withCustomProvider(getProviderDefinitionsFromModelsDevData(data))
+    return withCustomProvider([])
   }
 }
 
 export function getProviderDefinition(providerId: string): AIProviderMetadata | undefined {
   const resolvedProviderId = normalizeProviderId(providerId)
+  if (resolvedProviderId === CUSTOM_PROVIDER_DEFINITION.id) {
+    return cloneMetadata(CUSTOM_PROVIDER_DEFINITION)
+  }
+
   const data = readAvailableModelsDevData()
   if (data) {
     const definition = getProviderDefinitionsFromModelsDevData(data).find(provider => provider.id === resolvedProviderId)
@@ -497,6 +523,10 @@ export function getProviderDefinition(providerId: string): AIProviderMetadata | 
 
 export async function getProviderDefinitionOnline(providerId: string): Promise<AIProviderMetadata | undefined> {
   const resolvedProviderId = normalizeProviderId(providerId)
+  if (resolvedProviderId === CUSTOM_PROVIDER_DEFINITION.id) {
+    return cloneMetadata(CUSTOM_PROVIDER_DEFINITION)
+  }
+
   const data = await getModelsDevData()
   const definition = getProviderDefinitionsFromModelsDevData(data).find(provider => provider.id === resolvedProviderId)
   return definition
@@ -531,15 +561,19 @@ export class CatalogAIProvider extends BaseAIProvider {
 }
 
 export async function getModelsDevModels(providerId: string): Promise<string[]> {
-  const data = await getModelsDevData()
   const resolvedProviderId = normalizeProviderId(providerId)
+  if (resolvedProviderId === CUSTOM_PROVIDER_DEFINITION.id) return []
+
+  const data = await getModelsDevData()
   const provider = getModelsDevProvider(data, resolvedProviderId)
   return provider ? Array.from(new Set(readModelDetailsFromModelsDevProvider(resolvedProviderId, provider).map(model => model.id))) : []
 }
 
 export async function getModelsDevModelDetails(providerId: string): Promise<AIModelInfo[]> {
-  const data = await getModelsDevData()
   const resolvedProviderId = normalizeProviderId(providerId)
+  if (resolvedProviderId === CUSTOM_PROVIDER_DEFINITION.id) return []
+
+  const data = await getModelsDevData()
   const provider = getModelsDevProvider(data, resolvedProviderId)
   return provider ? readModelDetailsFromModelsDevProvider(resolvedProviderId, provider) : []
 }

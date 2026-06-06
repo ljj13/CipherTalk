@@ -340,7 +340,9 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
   })
 
   const currentProvider = providers.find(p => p.id === provider)
-  const currentProtocol: AiProviderProtocol = currentProvider?.protocol || 'openai-responses'
+  const currentProtocol: AiProviderProtocol = currentProvider?.protocolOptions?.length
+    ? customProtocol
+    : (currentProvider?.protocol || 'openai-responses')
   const modelDetails = remoteModelDetails.length > 0 ? remoteModelDetails : (currentProvider?.modelDetails || [])
   const modelDetailById = useMemo(() => new Map(modelDetails.map(item => [item.id, item])), [modelDetails])
   const currentModelDetail = modelDetailById.get(model)
@@ -412,10 +414,11 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
     } else if (currentProvider?.models?.length && !model) {
       setField('aiModel', normalizeProviderModel(provider, currentProvider.models[0]))
     }
+    setCustomProtocol(config?.protocol || currentProvider?.protocol || 'openai-responses')
     setRemoteModels([])
     setRemoteModelDetails([])
     setModelListError('')
-  }, [provider, providerConfigs, currentProvider?.models])
+  }, [provider, providerConfigs, currentProvider?.models, currentProvider?.protocol])
 
   useEffect(() => {
     const normalized = normalizeProviderModel(provider, model)
@@ -517,13 +520,14 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
     nextBaseURL = baseURL,
     nextProtocol = customProtocol
   ) => {
-    const payload = {
+    const providerInfo = providers.find(item => item.id === nextProvider)
+    const payload: configService.AiProviderConfig = {
       apiKey: nextApiKey,
       model: normalizeProviderModel(nextProvider, nextModel),
-      baseURL: providers.find(item => item.id === nextProvider)?.allowCustomBaseURL
+      baseURL: providerInfo?.allowCustomBaseURL
         ? normalizeProviderBaseURL(nextProvider, nextBaseURL)
         : undefined,
-      protocol: undefined
+      protocol: providerInfo?.protocolOptions?.length ? nextProtocol : undefined
     }
     await configService.setAiProvider(nextProvider)
     await configService.setAiProviderConfig(nextProvider, payload)
@@ -549,7 +553,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
         provider,
         apiKey,
         baseURL,
-        protocol: undefined
+        protocol: currentProvider?.protocolOptions?.length ? customProtocol : undefined
       })
       if (!result.success || !result.models?.length) {
         const error = result.error || '模型列表为空'
@@ -586,7 +590,12 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
 
     setIsTesting(true)
     try {
-      const result = await window.electronAPI.ai.testConnection(provider, apiKey, baseURL, undefined)
+      const result = await window.electronAPI.ai.testConnection(
+        provider,
+        apiKey,
+        baseURL,
+        currentProvider?.protocolOptions?.length ? customProtocol : undefined
+      )
       showMessage(result.success ? '连接测试成功' : (result.error || '连接测试失败'), result.success)
       if (result.success) {
         await persistProviderConfig()
@@ -645,8 +654,10 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
       provider: presetDraft.provider,
       apiKey: presetDraft.apiKey,
       model: normalizeProviderModel(presetDraft.provider, presetDraft.model),
-      baseURL: draftProviderInfo?.allowCustomBaseURL ? (presetDraft.baseURL || undefined) : undefined,
-      protocol: undefined
+      baseURL: draftProviderInfo?.allowCustomBaseURL
+        ? (normalizeProviderBaseURL(presetDraft.provider, presetDraft.baseURL) || undefined)
+        : undefined,
+      protocol: draftProviderInfo?.protocolOptions?.length ? presetDraft.protocol : undefined
     }
     if (editingPresetId) {
       await configService.updateAiConfigPreset(editingPresetId, payload)
@@ -671,7 +682,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
       apiKey,
       model,
       baseURL,
-      protocol: currentProvider?.protocol || 'openai-responses'
+      protocol: currentProvider?.protocolOptions?.length ? customProtocol : (currentProvider?.protocol || 'openai-responses')
     })
     setShowSavePresetDialog(true)
   }
