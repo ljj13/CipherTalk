@@ -63,10 +63,12 @@ export function withToolTimeouts(tools: ToolSet, defaultMs = DEFAULT_TOOL_TIMEOU
       execute: (input: unknown, options) => {
         let timer: ReturnType<typeof setTimeout> | undefined
         const startedAt = Date.now()
+        const toolCallId = typeof options?.toolCallId === 'string' ? options.toolCallId : undefined
         reportAgentProgress({
           stage: 'tool_started',
           title: `调用工具 ${name}`,
           toolName: name,
+          toolCallId,
         })
         const timeout = new Promise((resolve) => {
           timer = setTimeout(() => resolve({ error: `工具 ${name} 执行超时（>${ms}ms）` }), ms)
@@ -81,6 +83,7 @@ export function withToolTimeouts(tools: ToolSet, defaultMs = DEFAULT_TOOL_TIMEOU
               title: error ? `工具 ${name} 返回错误` : `工具 ${name} 完成`,
               detail: error || undefined,
               toolName: name,
+              toolCallId,
               elapsedMs: Date.now() - startedAt,
             })
             return result

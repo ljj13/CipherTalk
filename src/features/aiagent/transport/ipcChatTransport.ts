@@ -21,6 +21,7 @@ export type AgentProgressEvent = {
   title: string
   detail?: string
   toolName?: string
+  toolCallId?: string
   sessionId?: string
   elapsedMs?: number
   messagesScanned?: number

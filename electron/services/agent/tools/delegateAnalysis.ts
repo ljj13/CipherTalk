@@ -1,19 +1,41 @@
 /**
  * delegate_analysis —— 子 Agent 委托（见文档 §9.3 / D7）。
  *
- * 把「读大量消息」的子任务交给独立的 ToolLoopAgent 跑完，只把结论回给主 Agent，
- * 子任务的原始工具结果不进主上下文（配合 compaction，进一步压住上下文体积）。
+ * 把「读大量消息」的子任务交给独立的 ToolLoopAgent 跑完，只把结论 + 出处回给主 Agent，
+ * 子任务翻的原始消息不进主上下文（配合 compaction，进一步压住上下文体积）。
  * 子 Agent 用 buildBaseTools（不含本工具，避免递归委托），带步数上限 + 死循环检测。
- * toModelOutput 让主模型只看到结论文本。
+ * 出处：从子 Agent 各工具结果里聚合 evidence 回传，让主 Agent 也能给可点 Sources（带出处硬要求）。
  */
 import { ToolLoopAgent, stepCountIs, tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { createLanguageModel } from '../provider'
 import { buildSystemPrompt } from '../prompts'
 import { loopGuardCondition } from '../guards'
+import type { AgentEvidenceItem } from './shared'
 import type { AgentProviderConfig, AgentScope } from '../types'
 
 const SUB_AGENT_MAX_STEPS = 12
+const MAX_DELEGATED_EVIDENCE = 15
+
+/** 从子 Agent 的各步工具结果里聚合 evidence（去重、限量），供主 Agent 标注可点出处。 */
+function collectEvidence(steps: ReadonlyArray<{ toolResults?: ReadonlyArray<{ output?: unknown }> }>): AgentEvidenceItem[] {
+  const out: AgentEvidenceItem[] = []
+  const seen = new Set<string>()
+  for (const step of steps) {
+    for (const tr of step.toolResults ?? []) {
+      const ev = (tr.output as { evidence?: unknown } | undefined)?.evidence
+      if (!Array.isArray(ev)) continue
+      for (const item of ev as AgentEvidenceItem[]) {
+        const id = item?.id
+        if (!id || seen.has(id)) continue
+        seen.add(id)
+        out.push(item)
+        if (out.length >= MAX_DELEGATED_EVIDENCE) return out
+      }
+    }
+  }
+  return out
+}
 
 const DELEGATE_SUFFIX =
   '\n\n你现在是被主助手委托的【子助手】：只专注完成下面这一个子任务，' +
@@ -49,14 +71,11 @@ export function createDelegateAnalysis(opts: {
         return {
           conclusion: conclusion || '（子助手未得出结论，可能任务过大或数据不足，建议缩小范围重试）',
           steps: result.steps.length,
+          evidence: collectEvidence(result.steps),
         }
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) }
       }
     },
-    toModelOutput: ({ output }) => ({
-      type: 'text',
-      value: 'error' in output ? `委托失败：${output.error}` : output.conclusion,
-    }),
   })
 }

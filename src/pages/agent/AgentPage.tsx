@@ -182,6 +182,21 @@ function renderChainLabel(label: string, active: boolean) {
   )
 }
 
+function formatElapsed(ms: number) {
+  return `${Math.round(ms / 100) / 10}s`
+}
+
+function toolProgressKey(toolName: string, toolCallId?: string) {
+  return toolCallId ? `call:${toolCallId}` : `name:${toolName}`
+}
+
+function toolPartProgressKey(part: unknown, toolName: string) {
+  const toolCallId = typeof (part as { toolCallId?: unknown }).toolCallId === 'string'
+    ? (part as { toolCallId: string }).toolCallId
+    : undefined
+  return toolProgressKey(toolName, toolCallId)
+}
+
 function collectToolBadges(value: unknown, badges: string[] = []): string[] {
   if (badges.length >= 6 || value == null) return badges
   if (typeof value === 'string') {
@@ -604,6 +619,7 @@ export default function AgentPage() {
   const [currentProviderId, setCurrentProviderId] = useState('')
   const [currentModelId, setCurrentModelId] = useState('')
   const [agentProgress, setAgentProgress] = useState<AgentProgressEvent | null>(null)
+  const [toolElapsedByKey, setToolElapsedByKey] = useState<Record<string, number>>({})
   const [agentNotice, setAgentNotice] = useState('')
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
@@ -695,6 +711,12 @@ export default function AgentPage() {
 
   const handleAgentProgress = useCallback((progress: AgentProgressEvent) => {
     setAgentProgress(progress)
+    if (progress.stage === 'tool_finished' && progress.toolName && progress.elapsedMs) {
+      setToolElapsedByKey((prev) => ({
+        ...prev,
+        [toolProgressKey(progress.toolName!, progress.toolCallId)]: progress.elapsedMs!,
+      }))
+    }
   }, [])
   const transport = useMemo(
     () => new IpcChatTransport(() => submitScopeRef.current ?? scopeRef.current, () => selectedModelConfigRef.current, handleAgentProgress),
@@ -703,6 +725,12 @@ export default function AgentPage() {
   const { messages, sendMessage, setMessages, status, stop } = useChat({ transport })
   const [modelOpen, setModelOpen] = useState(false)
   const busy = status === 'submitted' || status === 'streaming'
+  const visibleAgentProgress = agentProgress
+    && agentProgress.stage !== 'tool_started'
+    && agentProgress.stage !== 'tool_finished'
+    && agentProgress.stage !== 'run_finished'
+    ? agentProgress
+    : null
   const [conversationId, setConversationId] = useState<number | null>(null)
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
@@ -838,6 +866,7 @@ export default function AgentPage() {
     setConversationTitle('新对话')
     setTitleLoading(false)
     setAgentProgress(null)
+    setToolElapsedByKey({})
     setAgentNotice('')
     activeScopeRef.current = { kind: 'global' }
     lastSavedMessagesRef.current = ''
@@ -862,6 +891,7 @@ export default function AgentPage() {
       activeScopeRef.current = loaded.scope || { kind: 'global' }
       setMentions([])
       setAgentProgress(null)
+      setToolElapsedByKey({})
       setAgentNotice('')
       setTitleLoading(false)
       titleRequestSeqRef.current += 1
@@ -880,6 +910,7 @@ export default function AgentPage() {
         activeScopeRef.current = { kind: 'global' }
         lastSavedMessagesRef.current = ''
         setAgentProgress(null)
+        setToolElapsedByKey({})
       }
     })
   }, [setMessages])
@@ -1096,13 +1127,15 @@ export default function AgentPage() {
                           const toolName = part.type.replace(/^tool-/, '')
                           const done = part.state === 'output-available' || part.state === 'output-error'
                           const toolLabel = formatToolName(toolName)
+                          const elapsedMs = toolElapsedByKey[toolPartProgressKey(part, toolName)]
+                          const label = done && elapsedMs ? `${toolLabel} · ${formatElapsed(elapsedMs)}` : toolLabel
                           const badges = collectToolBadges(part.input)
                           if (part.state === 'output-available') collectToolBadges(part.output, badges)
                           return (
                             <ChainOfThoughtStep
                               icon={toolName.includes('search') ? Search : Wrench}
                               key={`chain-${index}`}
-                              label={renderChainLabel(toolLabel, !done)}
+                              label={renderChainLabel(label, !done)}
                               status={done ? 'complete' : 'active'}
                             >
                               {badges.length > 0 && (
@@ -1143,9 +1176,9 @@ export default function AgentPage() {
               )
             })
           )}
-          {(agentNotice || agentProgress) && (
+          {(agentNotice || visibleAgentProgress) && (
             <div className={`mt-3 rounded-(--agent-radius,12px) border px-3 py-2 text-xs ${agentNotice ? 'border-destructive/30 bg-destructive/5 text-destructive' : 'border-border/60 bg-muted/40 text-muted-foreground'}`}>
-              {agentNotice || progressLine(agentProgress)}
+              {agentNotice || progressLine(visibleAgentProgress)}
             </div>
           )}
           {status === 'submitted' && <Loader />}

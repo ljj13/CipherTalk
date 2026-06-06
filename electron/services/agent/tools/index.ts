@@ -17,6 +17,7 @@ import { listGroups } from './listGroups'
 import { groupMembers } from './groupMembers'
 import { groupMemberRanking } from './groupMemberRanking'
 import { querySql } from './querySql'
+import { updatePlan } from './updatePlan'
 import { createDelegateAnalysis } from './delegateAnalysis'
 
 /** 基础读/查工具（不含 delegate_analysis），主 Agent 与子 Agent 共用。 */
@@ -32,6 +33,7 @@ export function buildBaseTools(_scope: AgentScope): ToolSet {
     group_members: groupMembers,
     group_member_ranking: groupMemberRanking,
     query_sql: querySql,
+    update_plan: updatePlan,
   }
 }
 
