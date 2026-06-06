@@ -73,12 +73,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
     abort: (runId: string) => ipcRenderer.invoke('agent:abort', runId) as Promise<{ success: boolean }>,
     generateTitle: (firstMessage: string, modelConfig?: unknown) =>
       ipcRenderer.invoke('agent:generateTitle', { firstMessage, modelConfig }) as Promise<{ success: boolean; title?: string; error?: string }>,
+    listConversations: (scope?: unknown) =>
+      ipcRenderer.invoke('agent:listConversations', scope) as Promise<{ success: boolean; conversations?: unknown[]; error?: string }>,
+    loadConversation: (id: number) =>
+      ipcRenderer.invoke('agent:loadConversation', id) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
+    createConversation: (payload: unknown) =>
+      ipcRenderer.invoke('agent:createConversation', payload) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
+    deleteConversation: (id: number) =>
+      ipcRenderer.invoke('agent:deleteConversation', id) as Promise<{ success: boolean; error?: string }>,
+    renameConversation: (id: number, title: string) =>
+      ipcRenderer.invoke('agent:renameConversation', id, title) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
+    saveConversationMessages: (payload: unknown) =>
+      ipcRenderer.invoke('agent:saveConversationMessages', payload) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
+    getLastConversation: (scope?: unknown) =>
+      ipcRenderer.invoke('agent:getLastConversation', scope) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
     onChunk: (runId: string, callback: (chunk: unknown) => void): (() => void) => {
       const listener = (_e: unknown, data: { runId: string; chunk: unknown }) => {
         if (data?.runId === runId) callback(data.chunk)
       }
       ipcRenderer.on('agent:chunk', listener)
       return () => ipcRenderer.removeListener('agent:chunk', listener)
+    },
+    onProgress: (runId: string, callback: (progress: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, data: { runId: string; progress: unknown }) => {
+        if (data?.runId === runId) callback(data.progress)
+      }
+      ipcRenderer.on('agent:progress', listener)
+      return () => ipcRenderer.removeListener('agent:progress', listener)
     },
   },
 

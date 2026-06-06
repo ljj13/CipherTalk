@@ -160,6 +160,18 @@ class MessageVectorService {
     return db
   }
 
+  close(): void {
+    if (!this.db) return
+    try {
+      this.db.close()
+    } catch {
+      // ignore
+    } finally {
+      this.db = null
+      this.dbPath = null
+    }
+  }
+
   /** 已启用且配置完整才可用。 */
   isReady(cfg?: EmbeddingConfig): boolean {
     const c = cfg || getEmbeddingConfig()

@@ -9,7 +9,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 import type { UIMessageChunk } from 'ai'
 import { getAppPath, isElectronPackaged } from '../runtimePaths'
-import type { AgentProviderConfig, AgentRunInput } from './types'
+import type { AgentProgressEvent, AgentProviderConfig, AgentRunInput } from './types'
 
 const UTILITY_FILE = 'aiAgentUtilityProcess.js'
 const RESTART_DELAY_MS = 2000
@@ -20,6 +20,7 @@ export class AgentProcessService {
   private worker: UtilityProcess | null = null
   private pending = new Map<number, Pending>()
   private chunkHandlers = new Map<string, (chunk: UIMessageChunk) => void>()
+  private progressHandlers = new Map<string, (progress: AgentProgressEvent) => void>()
   private seq = 0
   private runSeq = 0
   private initPromise: Promise<void> | null = null
@@ -37,10 +38,12 @@ export class AgentProcessService {
   async run(
     input: AgentRunInput,
     onChunk: (chunk: UIMessageChunk) => void,
+    onProgress?: (progress: AgentProgressEvent) => void,
     signal?: AbortSignal,
   ): Promise<void> {
     const runId = `run-${++this.runSeq}`
     this.chunkHandlers.set(runId, onChunk)
+    if (onProgress) this.progressHandlers.set(runId, onProgress)
     if (signal) {
       signal.addEventListener('abort', () => { void this.call('abort', { runId }).catch(() => undefined) })
     }
@@ -48,6 +51,7 @@ export class AgentProcessService {
       await this.call<{ done: boolean }>('run', { runId, ...input })
     } finally {
       this.chunkHandlers.delete(runId)
+      this.progressHandlers.delete(runId)
     }
   }
 
@@ -63,6 +67,7 @@ export class AgentProcessService {
     this.initPromise = null
     this.rejectAllPending('agent utility process shutdown')
     this.chunkHandlers.clear()
+    this.progressHandlers.clear()
     if (w) {
       try { w.kill() } catch { /* ignore */ }
     }
@@ -130,6 +135,11 @@ export class AgentProcessService {
         if (msg?.id === -1 && msg.type === 'chunk') {
           const { runId, chunk } = msg.payload || {}
           this.chunkHandlers.get(runId)?.(chunk)
+          return
+        }
+        if (msg?.id === -2 && msg.type === 'progress') {
+          const { runId, progress } = msg.payload || {}
+          this.progressHandlers.get(runId)?.(progress)
           return
         }
         if (typeof msg?.id === 'number') {

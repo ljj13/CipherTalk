@@ -5,7 +5,7 @@
  */
 import { tool } from 'ai'
 import { z } from 'zod'
-import { compactMessage, resolveSenders, type CompactMessage } from './shared'
+import { compactMessage, evidenceFromMessage, resolveSenders, type CompactMessage } from './shared'
 
 export const getContext = tool({
   description:
@@ -50,10 +50,12 @@ export const getContext = tool({
       }
 
       const senderMap = await resolveSenders(ordered.map((m) => m.senderUsername || ''))
+      const messages = ordered.map((m) => compactMessage(m, senderMap.get(m.senderUsername || '')))
       return {
         sessionId,
         anchorLocalId: localId,
-        messages: ordered.map((m) => compactMessage(m, senderMap.get(m.senderUsername || ''))),
+        messages,
+        evidence: messages.map((message) => evidenceFromMessage(sessionId, message)),
       }
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }

@@ -6,7 +6,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProper
 import { useChat } from '@ai-sdk/react'
 import { isToolUIPart, type ChatStatus, type UIMessage } from 'ai'
 import { Surface } from '@heroui/react'
-import { AtSign, BarChart3, Braces, Brain, CheckIcon, Clock3, FileText, History, Image as ImageIcon, Quote, Search, SquarePen, Users, Wrench, X } from 'lucide-react'
+import { AtSign, BarChart3, Braces, Brain, CheckIcon, Clock3, FileText, History, Image as ImageIcon, Quote, Search, SquarePen, Trash2, Users, Wrench, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useChatStore } from '@/stores/chatStore'
 import { Sources, SourcesContent, SourcesTrigger } from '@/components/ai-elements/sources'
@@ -67,7 +67,7 @@ import {
 } from '@/components/ai-elements/chain-of-thought'
 import { Loader } from '@/components/ai-elements/loader'
 import { Shimmer } from '@/components/ai-elements/shimmer'
-import { IpcChatTransport, type AgentModelConfig, type AgentReasoningEffort, type AgentScope } from '@/features/aiagent/transport/ipcChatTransport'
+import { IpcChatTransport, type AgentModelConfig, type AgentProgressEvent, type AgentReasoningEffort, type AgentScope } from '@/features/aiagent/transport/ipcChatTransport'
 import * as configService from '@/services/config'
 
 const PROMPT_PRESETS = [
@@ -106,6 +106,7 @@ type AgentModelItem = {
   id: string
   name: string
   modelDetail?: AIModelInfo
+  disabled?: boolean
 }
 
 // 与设置页 ModelCapabilityStrip 同一套能力图标
@@ -133,13 +134,16 @@ function ModelCapabilityIcons({ detail }: { detail: AIModelInfo }) {
 
 const ModelItem = memo(
   ({ model, selectedModel, onSelect }: { model: AgentModelItem; selectedModel: string; onSelect: (id: string) => void }) => {
-    const handleSelect = useCallback(() => onSelect(model.id), [onSelect, model.id])
+    const handleSelect = useCallback(() => {
+      if (!model.disabled) onSelect(model.id)
+    }, [model.disabled, model.id, onSelect])
     return (
-      <ModelSelectorItem key={model.id} onSelect={handleSelect} value={model.id}>
+      <ModelSelectorItem disabled={model.disabled} key={model.id} onSelect={handleSelect} value={model.id}>
         {model.chefSlug && <AIProviderLogo providerId={model.chefSlug} alt={model.chef} className="shrink-0" size={20} />}
         <ModelSelectorName>{model.name}</ModelSelectorName>
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {model.modelDetail && <ModelCapabilityIcons detail={model.modelDetail} />}
+          {model.disabled && <span className="text-[10px] text-muted-foreground">无工具</span>}
           {selectedModel === model.id ? <CheckIcon className="size-4" /> : <div className="size-4" />}
         </span>
       </ModelSelectorItem>
@@ -239,10 +243,16 @@ function buildFallbackConversationTitle(text: string): string {
 }
 
 type AgentConversationRecord = {
-  id: string
+  id: number
   title: string
-  messages: UIMessage[]
+  scope?: AgentScope
+  modelProvider?: string
+  modelId?: string
   updatedAt: number
+}
+
+type AgentConversationLoaded = AgentConversationRecord & {
+  messages: UIMessage[]
 }
 
 function MentionAvatar({ target, className = 'size-7' }: { target: MentionTarget; className?: string }) {
@@ -473,6 +483,19 @@ function extractSources(parts: any[]): SourceItem[] {
     const name = part.type.replace(/^tool-/, '')
     const out: any = part.output
     if (!out || out.error) continue
+    if (Array.isArray(out.evidence)) {
+      for (const item of out.evidence) {
+        push({
+          id: String(item.id || `${item.sessionId}:${item.localId ?? item.text ?? ''}`),
+          sessionId: String(item.sessionId || ''),
+          localId: item.localId,
+          time: item.time,
+          sender: item.sender,
+          text: String(item.text || ''),
+        })
+      }
+      continue
+    }
     if (name === 'get_context' || name === 'get_timeline') {
       const sid = out.sessionId
       for (const m of out.messages || []) {
@@ -533,11 +556,55 @@ function MessageSources({
   )
 }
 
+function normalizeConversationRecord(value: any): AgentConversationRecord | null {
+  const id = Number(value?.id)
+  if (!Number.isFinite(id) || id <= 0) return null
+  return {
+    id,
+    title: String(value?.title || '新对话'),
+    scope: value?.scope,
+    modelProvider: value?.modelProvider,
+    modelId: value?.modelId,
+    updatedAt: Number(value?.updatedAt || Date.now()),
+  }
+}
+
+function normalizeLoadedConversation(value: any): AgentConversationLoaded | null {
+  const record = normalizeConversationRecord(value)
+  if (!record) return null
+  return {
+    ...record,
+    messages: Array.isArray(value?.messages) ? value.messages as UIMessage[] : [],
+  }
+}
+
+function modelConfigProvider(config: AgentModelConfig | null): string {
+  return String(config?.provider || 'current')
+}
+
+function modelConfigId(config: AgentModelConfig | null): string {
+  return String(config?.model || '')
+}
+
+function progressLine(progress: AgentProgressEvent | null): string {
+  if (!progress) return ''
+  const parts = [progress.title]
+  if (progress.detail) parts.push(progress.detail)
+  if (progress.sessionsScanned) parts.push(`已扫 ${progress.sessionsScanned} 个会话`)
+  if (progress.indexedCount) parts.push(`索引 ${progress.indexedCount} 条`)
+  if (progress.elapsedMs) parts.push(`${Math.round(progress.elapsedMs / 100) / 10}s`)
+  return parts.filter(Boolean).join(' · ')
+}
+
 export default function AgentPage() {
   const [presets, setPresets] = useState<configService.AiConfigPreset[]>([])
   const [providersInfo, setProvidersInfo] = useState<AIProviderInfo[]>([])
   const [selectedPresetId, setSelectedPresetId] = useState('current')
   const [reasoningEffort, setReasoningEffort] = useState<AgentReasoningEffort>('auto')
+  const [currentProviderId, setCurrentProviderId] = useState('')
+  const [currentModelId, setCurrentModelId] = useState('')
+  const [agentProgress, setAgentProgress] = useState<AgentProgressEvent | null>(null)
+  const [agentNotice, setAgentNotice] = useState('')
   const selectedPreset = useMemo(
     () => presets.find((preset) => preset.id === selectedPresetId) || null,
     [presets, selectedPresetId]
@@ -559,11 +626,32 @@ export default function AgentPage() {
       id: preset.id,
       name: preset.name,
       modelDetail: modelInfoByKey.get(`${preset.provider}::${preset.model}`) || modelInfoByKey.get(preset.model),
+      disabled: (() => {
+        const detail = modelInfoByKey.get(`${preset.provider}::${preset.model}`) || modelInfoByKey.get(preset.model)
+        return detail ? !detail.capabilities.toolCall : false
+      })(),
     }))
-    return [{ chef: '默认', chefSlug: '', id: 'current', name: '当前配置' }, ...list]
-  }, [presets, modelInfoByKey])
+    const currentDetail = modelInfoByKey.get(`${currentProviderId}::${currentModelId}`) || modelInfoByKey.get(currentModelId)
+    return [{
+      chef: '默认',
+      chefSlug: currentProviderId,
+      id: 'current',
+      name: currentModelId ? `当前配置 · ${currentModelId}` : '当前配置',
+      modelDetail: currentDetail,
+      disabled: currentDetail ? !currentDetail.capabilities.toolCall : false,
+    }, ...list]
+  }, [currentModelId, currentProviderId, presets, modelInfoByKey])
   const chefs = useMemo(() => [...new Set(models.map((model) => model.chef))], [models])
   const selectedModelData = models.find((model) => model.id === selectedPresetId)
+  const selectedModelSupportsTools = selectedModelData?.modelDetail
+    ? selectedModelData.modelDetail.capabilities.toolCall
+    : true
+  useEffect(() => {
+    const selected = models.find((model) => model.id === selectedPresetId)
+    if (!selected?.disabled) return
+    const fallback = models.find((model) => !model.disabled)
+    if (fallback) setSelectedPresetId(fallback.id)
+  }, [models, selectedPresetId])
   const selectedModelConfig = useMemo<AgentModelConfig | null>(() => {
     if (!selectedPreset) return { reasoningEffort }
     return {
@@ -599,19 +687,23 @@ export default function AgentPage() {
   // 单个 @ → 锁定该会话 scope；多个/零个 → 全局（多个走消息注入，见 handleSubmit）
   const scopeRef = useRef<AgentScope>({ kind: 'global' })
   const submitScopeRef = useRef<AgentScope | null>(null)
+  const activeScopeRef = useRef<AgentScope>({ kind: 'global' })
   scopeRef.current =
     mentions.length === 1
       ? { kind: 'session', sessionId: mentions[0].username, displayName: mentions[0].displayName }
       : { kind: 'global' }
 
+  const handleAgentProgress = useCallback((progress: AgentProgressEvent) => {
+    setAgentProgress(progress)
+  }, [])
   const transport = useMemo(
-    () => new IpcChatTransport(() => submitScopeRef.current ?? scopeRef.current, () => selectedModelConfigRef.current),
-    []
+    () => new IpcChatTransport(() => submitScopeRef.current ?? scopeRef.current, () => selectedModelConfigRef.current, handleAgentProgress),
+    [handleAgentProgress]
   )
   const { messages, sendMessage, setMessages, status, stop } = useChat({ transport })
   const [modelOpen, setModelOpen] = useState(false)
   const busy = status === 'submitted' || status === 'streaming'
-  const [conversationId, setConversationId] = useState(() => `agent-${Date.now()}`)
+  const [conversationId, setConversationId] = useState<number | null>(null)
   const conversationIdRef = useRef(conversationId)
   conversationIdRef.current = conversationId
   const [conversationTitle, setConversationTitle] = useState('新对话')
@@ -670,19 +762,49 @@ export default function AgentPage() {
     }
   }, [appendMentionTargets, updateMentionHasMore])
 
-  const saveCurrentConversation = useCallback(() => {
-    if (messages.length === 0) return
-    const record: AgentConversationRecord = {
-      id: conversationIdRef.current,
-      title: conversationTitle || '新对话',
-      messages,
-      updatedAt: Date.now(),
-    }
-    setConversationRecords((prev) => {
-      const rest = prev.filter((item) => item.id !== record.id)
-      return [record, ...rest].slice(0, 20)
+  const refreshConversationRecords = useCallback(async () => {
+    const result = await window.electronAPI.agent.listConversations()
+    if (!result.success || !Array.isArray(result.conversations)) return
+    setConversationRecords(
+      result.conversations
+        .map(normalizeConversationRecord)
+        .filter((item): item is AgentConversationRecord => !!item)
+    )
+  }, [])
+
+  const persistConversationMessages = useCallback(async (
+    targetId: number | null,
+    nextMessages: UIMessage[],
+    nextScope: AgentScope,
+  ) => {
+    if (!targetId || nextMessages.length === 0) return
+    const config = selectedModelConfigRef.current
+    const result = await window.electronAPI.agent.saveConversationMessages({
+      id: targetId,
+      messages: nextMessages,
+      scope: nextScope,
+      modelProvider: modelConfigProvider(config),
+      modelId: modelConfigId(config),
     })
-  }, [conversationTitle, messages])
+    if (result.success) void refreshConversationRecords()
+  }, [refreshConversationRecords])
+
+  const createConversation = useCallback(async (scope: AgentScope, title: string): Promise<number | null> => {
+    const config = selectedModelConfigRef.current
+    const result = await window.electronAPI.agent.createConversation({
+      scope,
+      title,
+      modelProvider: modelConfigProvider(config),
+      modelId: modelConfigId(config),
+    })
+    const record = result.success ? normalizeConversationRecord(result.conversation) : null
+    if (!record) return null
+    setConversationId(record.id)
+    conversationIdRef.current = record.id
+    setConversationTitle(record.title)
+    void refreshConversationRecords()
+    return record.id
+  }, [refreshConversationRecords])
 
   const generateTitleFromFirstMessage = useCallback((firstMessage: string) => {
     const fallback = buildFallbackConversationTitle(firstMessage)
@@ -695,7 +817,11 @@ export default function AgentPage() {
       .then((result) => {
         if (requestSeq !== titleRequestSeqRef.current || targetConversationId !== conversationIdRef.current) return
         if (result.success && result.title?.trim()) {
-          setConversationTitle(result.title.trim().slice(0, 24))
+          const nextTitle = result.title.trim().slice(0, 24)
+          setConversationTitle(nextTitle)
+          if (targetConversationId) {
+            void window.electronAPI.agent.renameConversation(targetConversationId, nextTitle).then(() => refreshConversationRecords())
+          }
         }
       })
       .finally(() => {
@@ -707,25 +833,56 @@ export default function AgentPage() {
 
   const handleNewConversation = useCallback(() => {
     if (busy) void stop()
-    saveCurrentConversation()
     setMessages([])
     setMentions([])
     setConversationTitle('新对话')
     setTitleLoading(false)
+    setAgentProgress(null)
+    setAgentNotice('')
+    activeScopeRef.current = { kind: 'global' }
+    lastSavedMessagesRef.current = ''
     titleRequestSeqRef.current += 1
-    setConversationId(`agent-${Date.now()}`)
+    setConversationId(null)
     setRecordsOpen(false)
-  }, [busy, saveCurrentConversation, setMessages, stop])
+  }, [busy, setMessages, stop])
 
   const handleOpenRecord = useCallback((record: AgentConversationRecord) => {
-    saveCurrentConversation()
-    setMessages(record.messages)
-    setConversationId(record.id)
-    setConversationTitle(record.title)
-    setTitleLoading(false)
-    titleRequestSeqRef.current += 1
-    setRecordsOpen(false)
-  }, [saveCurrentConversation, setMessages])
+    if (busy) void stop()
+    void window.electronAPI.agent.loadConversation(record.id).then((result) => {
+      const loaded = result.success ? normalizeLoadedConversation(result.conversation) : null
+      if (!loaded) return
+      setMessages(loaded.messages)
+      try {
+        lastSavedMessagesRef.current = JSON.stringify(loaded.messages)
+      } catch {
+        lastSavedMessagesRef.current = ''
+      }
+      setConversationId(loaded.id)
+      setConversationTitle(loaded.title)
+      activeScopeRef.current = loaded.scope || { kind: 'global' }
+      setMentions([])
+      setAgentProgress(null)
+      setAgentNotice('')
+      setTitleLoading(false)
+      titleRequestSeqRef.current += 1
+      setRecordsOpen(false)
+    })
+  }, [busy, setMessages, stop])
+
+  const handleDeleteRecord = useCallback((record: AgentConversationRecord) => {
+    void window.electronAPI.agent.deleteConversation(record.id).then((result) => {
+      if (!result.success) return
+      setConversationRecords((prev) => prev.filter((item) => item.id !== record.id))
+      if (conversationIdRef.current === record.id) {
+        setMessages([])
+        setConversationId(null)
+        setConversationTitle('新对话')
+        activeScopeRef.current = { kind: 'global' }
+        lastSavedMessagesRef.current = ''
+        setAgentProgress(null)
+      }
+    })
+  }, [setMessages])
 
   useEffect(() => {
     let cancelled = false
@@ -740,40 +897,87 @@ export default function AgentPage() {
     void getAIProviders().then((items) => {
       if (!cancelled) setProvidersInfo(items)
     })
+    void Promise.all([configService.getAiProvider(), configService.getAiModel()]).then(([provider, model]) => {
+      if (cancelled) return
+      setCurrentProviderId(provider)
+      setCurrentModelId(model)
+    })
+    void window.electronAPI.agent.listConversations().then((result) => {
+      if (cancelled || !result.success || !Array.isArray(result.conversations)) return
+      setConversationRecords(
+        result.conversations
+          .map(normalizeConversationRecord)
+          .filter((item): item is AgentConversationRecord => !!item)
+      )
+    })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [refreshConversationRecords])
 
   const handleSubmit = (message: PromptInputMessage) => {
     if (busy) {
       void stop()
       return
     }
-    const isFirstUserMessage = messages.length === 0
-    const firstMessageForTitle = message.text.trim()
-    let text = message.text.trim()
-    const currentMentions = mentions
-    if (currentMentions.length > 0) {
-      const mentionLine = currentMentions.map((m) => `@${m.displayName}[${m.username}]`).join(' ')
-      text = text ? `${mentionLine}\n${text}` : mentionLine
+    if (!selectedModelSupportsTools) {
+      setAgentNotice('当前模型不支持工具调用，无法查询本地聊天记录。请切换到带“工具调用”能力的模型。')
+      return
     }
-    if (!text && message.files.length === 0) return
-    if (isFirstUserMessage) generateTitleFromFirstMessage(firstMessageForTitle || text)
-    submitScopeRef.current =
-      currentMentions.length === 1
-        ? { kind: 'session', sessionId: currentMentions[0].username, displayName: currentMentions[0].displayName }
-        : { kind: 'global' }
-    void Promise.resolve(sendMessage({ text, files: message.files })).finally(() => {
-      submitScopeRef.current = null
-    })
-    setMentions([])
+    void (async () => {
+      const isFirstUserMessage = messages.length === 0
+      const firstMessageForTitle = message.text.trim()
+      let text = message.text.trim()
+      const currentMentions = mentions
+      if (currentMentions.length > 0) {
+        const mentionLine = currentMentions.map((m) => `@${m.displayName}[${m.username}]`).join(' ')
+        text = text ? `${mentionLine}\n${text}` : mentionLine
+      }
+      if (!text && message.files.length === 0) return
+
+      const submitScope: AgentScope =
+        currentMentions.length === 1
+          ? { kind: 'session', sessionId: currentMentions[0].username, displayName: currentMentions[0].displayName }
+          : { kind: 'global' }
+      activeScopeRef.current = submitScope
+      submitScopeRef.current = submitScope
+      setAgentNotice('')
+      setAgentProgress({ stage: 'run_started', title: '准备发送问题', at: Date.now() })
+
+      if (!conversationIdRef.current) {
+        const fallback = buildFallbackConversationTitle(firstMessageForTitle || text)
+        setConversationTitle(fallback)
+        await createConversation(submitScope, fallback)
+      }
+
+      if (isFirstUserMessage) generateTitleFromFirstMessage(firstMessageForTitle || text)
+
+      await Promise.resolve(sendMessage({ text, files: message.files })).finally(() => {
+        submitScopeRef.current = null
+      })
+      setMentions([])
+    })()
   }
 
   const handleModelSelect = useCallback((id: string) => {
+    if (models.find((model) => model.id === id)?.disabled) return
     setSelectedPresetId(id)
     setModelOpen(false)
-  }, [])
+  }, [models])
+
+  const lastSavedMessagesRef = useRef('')
+  useEffect(() => {
+    if (busy || !conversationId || messages.length === 0) return
+    let signature = ''
+    try {
+      signature = JSON.stringify(messages)
+    } catch {
+      signature = `${messages.length}:${Date.now()}`
+    }
+    if (signature === lastSavedMessagesRef.current) return
+    lastSavedMessagesRef.current = signature
+    void persistConversationMessages(conversationId, messages, activeScopeRef.current)
+  }, [busy, conversationId, messages, persistConversationMessages])
 
   // 出处：会话名解析 + 点击打开该会话
   const navigate = useNavigate()
@@ -826,17 +1030,26 @@ export default function AgentPage() {
             <div className="absolute right-0 top-10 z-50 w-72 overflow-hidden rounded-(--agent-radius,12px) border border-border bg-popover p-1 shadow-lg">
               {conversationRecords.length > 0 ? (
                 conversationRecords.map((record) => (
-                  <button
-                    className="flex w-full flex-col rounded-(--agent-radius,12px) px-2 py-1.5 text-left hover:bg-accent"
-                    key={record.id}
-                    onClick={() => handleOpenRecord(record)}
-                    type="button"
-                  >
-                    <span className="w-full truncate text-sm text-foreground">{record.title}</span>
-                    <span className="text-muted-foreground text-xs">
-                      {new Date(record.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  </button>
+                  <div className="flex items-center gap-1 rounded-(--agent-radius,12px) hover:bg-accent" key={record.id}>
+                    <button
+                      className="flex min-w-0 flex-1 flex-col px-2 py-1.5 text-left"
+                      onClick={() => handleOpenRecord(record)}
+                      type="button"
+                    >
+                      <span className="w-full truncate text-sm text-foreground">{record.title}</span>
+                      <span className="text-muted-foreground text-xs">
+                        {new Date(record.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </button>
+                    <button
+                      aria-label={`删除 ${record.title}`}
+                      className="mr-1 inline-flex size-7 shrink-0 items-center justify-center rounded-(--agent-radius,12px) text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => handleDeleteRecord(record)}
+                      type="button"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
                 ))
               ) : (
                 <div className="px-2 py-3 text-center text-muted-foreground text-xs">暂无对话记录</div>
@@ -929,6 +1142,11 @@ export default function AgentPage() {
                 </Message>
               )
             })
+          )}
+          {(agentNotice || agentProgress) && (
+            <div className={`mt-3 rounded-(--agent-radius,12px) border px-3 py-2 text-xs ${agentNotice ? 'border-destructive/30 bg-destructive/5 text-destructive' : 'border-border/60 bg-muted/40 text-muted-foreground'}`}>
+              {agentNotice || progressLine(agentProgress)}
+            </div>
           )}
           {status === 'submitted' && <Loader />}
         </ConversationContent>

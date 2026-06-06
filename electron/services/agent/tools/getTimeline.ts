@@ -4,7 +4,7 @@
  */
 import { tool } from 'ai'
 import { z } from 'zod'
-import { compactMessage, resolveSenders, msToSeconds } from './shared'
+import { compactMessage, evidenceFromMessage, resolveSenders, msToSeconds } from './shared'
 
 export const getTimeline = tool({
   description:
@@ -31,10 +31,12 @@ export const getTimeline = tool({
         .slice()
         .sort((a, b) => a.sortSeq - b.sortSeq || a.createTime - b.createTime || a.localId - b.localId)
       const senderMap = await resolveSenders(ordered.map((m) => m.senderUsername || ''))
+      const messages = ordered.map((m) => compactMessage(m, senderMap.get(m.senderUsername || '')))
       return {
         sessionId,
         hasMore: !!res.hasMore,
-        messages: ordered.map((m) => compactMessage(m, senderMap.get(m.senderUsername || ''))),
+        messages,
+        evidence: messages.map((message) => evidenceFromMessage(sessionId, message)),
       }
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }

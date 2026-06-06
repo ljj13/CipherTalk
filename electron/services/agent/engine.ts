@@ -7,7 +7,9 @@ import { createLanguageModel } from './provider'
 import { buildSystemPrompt } from './prompts'
 import { buildTools } from './tools'
 import { compactMessages } from './compaction'
-import type { AgentProviderConfig, AgentRunInput } from './types'
+import { loopGuardCondition, withToolTimeouts } from './guards'
+import { reportAgentProgress, withAgentProgress } from './progress'
+import type { AgentProgressReporter, AgentProviderConfig, AgentRunInput } from './types'
 
 const MAX_STEPS = 24
 
@@ -36,21 +38,27 @@ export async function runAgent(
   input: AgentRunInput,
   onChunk: (chunk: UIMessageChunk) => void,
   signal?: AbortSignal,
+  onProgress?: AgentProgressReporter,
 ): Promise<void> {
-  const agent = new ToolLoopAgent({
-    model: createLanguageModel(input.providerConfig),
-    instructions: buildSystemPrompt(input.scope),
-    tools: buildTools(input.scope),
-    stopWhen: stepCountIs(MAX_STEPS),
-    providerOptions: buildReasoningProviderOptions(input),
-    // 每步压缩上下文：裁掉旧工具结果/推理痕迹，防长对话或多工具循环爆上下文（见 compaction.ts）
-    prepareStep: ({ messages }) => ({ messages: compactMessages(messages) }),
-  })
+  await withAgentProgress(onProgress, async () => {
+    reportAgentProgress({ stage: 'run_started', title: '开始分析聊天记录' })
+    const agent = new ToolLoopAgent({
+      model: createLanguageModel(input.providerConfig),
+      instructions: buildSystemPrompt(input.scope),
+      tools: withToolTimeouts(buildTools(input.scope)),
+      // 步数上限 + 死循环检测（连续 N 步相同工具调用即停），见 guards.ts
+      stopWhen: [stepCountIs(MAX_STEPS), loopGuardCondition()],
+      providerOptions: buildReasoningProviderOptions(input),
+      // 每步压缩上下文：裁掉旧工具结果/推理痕迹，防长对话或多工具循环爆上下文（见 compaction.ts）
+      prepareStep: ({ messages }) => ({ messages: compactMessages(messages) }),
+    })
 
-  const result = await agent.stream({ messages: input.messages, abortSignal: signal })
-  for await (const chunk of result.toUIMessageStream()) {
-    onChunk(chunk)
-  }
+    const result = await agent.stream({ messages: input.messages, abortSignal: signal })
+    for await (const chunk of result.toUIMessageStream()) {
+      onChunk(chunk)
+    }
+    reportAgentProgress({ stage: 'run_finished', title: '回答生成完成' })
+  })
 }
 
 export async function generateConversationTitle(

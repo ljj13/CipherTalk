@@ -930,6 +930,14 @@ export interface ElectronAPI {
     abort: (runId: string) => Promise<{ success: boolean }>
     generateTitle: (firstMessage: string, modelConfig?: unknown) => Promise<{ success: boolean; title?: string; error?: string }>
     onChunk: (runId: string, callback: (chunk: unknown) => void) => () => void
+    onProgress: (runId: string, callback: (progress: unknown) => void) => () => void
+    listConversations: (scope?: unknown) => Promise<{ success: boolean; conversations?: unknown[]; error?: string }>
+    loadConversation: (id: number) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
+    createConversation: (payload: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
+    deleteConversation: (id: number) => Promise<{ success: boolean; error?: string }>
+    renameConversation: (id: number, title: string) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
+    saveConversationMessages: (payload: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
+    getLastConversation: (scope?: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
   }
   embedding: {
     getConfig: () => Promise<{ success: boolean; config?: EmbeddingConfig; error?: string }>

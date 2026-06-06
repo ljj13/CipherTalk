@@ -6,6 +6,7 @@
  */
 import type { Message } from '../../chatService'
 import type { ChatSearchIndexHit } from '../../search/chatSearchIndexService'
+import { reportAgentProgress } from '../progress'
 
 /** 归一到毫秒：秒级(<=1e12)自动 ×1000。无效返回 null。 */
 export function toMs(value?: number | null): number | null {
@@ -79,6 +80,15 @@ export interface ChatSearchHit {
   anchor: { sessionId: string; localId: number; sortSeq: number; createTime: number }
 }
 
+export interface AgentEvidenceItem {
+  id: string
+  sessionId: string
+  localId?: number
+  time?: string | null
+  sender?: string
+  text: string
+}
+
 /** 最近活跃的会话 username（只取真人/群，跳过公众号 gh_、聚合/虚拟会话）。检索与向量索引共用。 */
 export async function getRecentChatSessions(cap: number): Promise<string[]> {
   const { chatService } = await import('../../chatService')
@@ -99,28 +109,61 @@ export async function searchChat(opts: {
   startTimeMs?: number
   endTimeMs?: number
   limit: number
-}): Promise<{ hits: ChatSearchHit[]; sessionsScanned: number }> {
-  const RECENT_SESSION_CAP = 20
+}): Promise<{ hits: ChatSearchHit[]; sessionsScanned: number; coverage: string }> {
+  const INITIAL_SESSION_CAP = 20
+  const EXPANDED_SESSION_CAP = 100
   const { chatSearchIndexService } = await import('../../search/chatSearchIndexService')
 
-  const targetSessions = opts.sessionId ? [opts.sessionId] : await getRecentChatSessions(RECENT_SESSION_CAP)
+  const targetSessions = opts.sessionId
+    ? [opts.sessionId]
+    : await getRecentChatSessions(EXPANDED_SESSION_CAP)
+  const batches = opts.sessionId
+    ? [targetSessions]
+    : [targetSessions.slice(0, INITIAL_SESSION_CAP), targetSessions.slice(INITIAL_SESSION_CAP)]
+        .filter((batch) => batch.length > 0)
 
   const perSession = Math.max(opts.limit, 10)
   const raw: ChatSearchIndexHit[] = []
   let sessionsScanned = 0
-  for (const sid of targetSessions) {
-    try {
-      const r = await chatSearchIndexService.searchSession({
-        sessionId: sid,
-        query: opts.query,
-        limit: perSession,
-        startTimeMs: opts.startTimeMs,
-        endTimeMs: opts.endTimeMs,
-      })
-      sessionsScanned += 1
-      raw.push(...r.hits)
-    } catch {
-      /* 单会话索引/检索失败则跳过 */
+  for (const [batchIndex, batch] of batches.entries()) {
+    if (batch.length === 0) continue
+    reportAgentProgress({
+      stage: 'searching',
+      title: opts.sessionId ? '搜索当前会话' : (batchIndex === 0 ? '搜索最近活跃会话' : '扩展搜索更多会话'),
+      detail: opts.query,
+      sessionsScanned,
+      coverage: opts.sessionId ? 'session' : `recent_${batchIndex === 0 ? INITIAL_SESSION_CAP : EXPANDED_SESSION_CAP}`,
+    })
+
+    for (const sid of batch) {
+      try {
+        const r = await chatSearchIndexService.searchSession({
+          sessionId: sid,
+          query: opts.query,
+          limit: perSession,
+          startTimeMs: opts.startTimeMs,
+          endTimeMs: opts.endTimeMs,
+          onProgress: (progress) => {
+            reportAgentProgress({
+              stage: progress.stage === 'searching_index' ? 'searching' : 'indexing',
+              title: progress.message,
+              sessionId: progress.sessionId,
+              messagesScanned: progress.messagesScanned,
+              indexedCount: progress.indexedCount,
+              sessionsScanned,
+            })
+          },
+        })
+        sessionsScanned += 1
+        raw.push(...r.hits)
+      } catch {
+        /* 单会话索引/检索失败则跳过 */
+      }
+    }
+
+    raw.sort((a, b) => b.score - a.score)
+    if (opts.sessionId || raw.length >= opts.limit) {
+      break
     }
   }
 
@@ -138,5 +181,32 @@ export async function searchChat(opts: {
       anchor: { sessionId: h.sessionId, localId: m.localId, sortSeq: m.sortSeq, createTime: m.createTime },
     }
   })
-  return { hits, sessionsScanned }
+  const coverage = opts.sessionId
+    ? 'session'
+    : sessionsScanned > INITIAL_SESSION_CAP
+      ? `recent_${EXPANDED_SESSION_CAP}`
+      : `recent_${INITIAL_SESSION_CAP}`
+  return { hits, sessionsScanned, coverage }
+}
+
+export function evidenceFromHit(hit: ChatSearchHit): AgentEvidenceItem {
+  return {
+    id: `${hit.sessionId}:${hit.anchor.localId}`,
+    sessionId: hit.sessionId,
+    localId: hit.anchor.localId,
+    time: hit.time,
+    sender: hit.sender,
+    text: hit.excerpt,
+  }
+}
+
+export function evidenceFromMessage(sessionId: string, message: CompactMessage): AgentEvidenceItem {
+  return {
+    id: `${sessionId}:${message.localId}`,
+    sessionId,
+    localId: message.localId,
+    time: message.time,
+    sender: message.sender,
+    text: message.text,
+  }
 }

@@ -5,7 +5,7 @@
  */
 import { tool } from 'ai'
 import { z } from 'zod'
-import { searchChat } from './shared'
+import { evidenceFromHit, searchChat } from './shared'
 
 export const searchMessages = tool({
   description:
@@ -22,11 +22,13 @@ export const searchMessages = tool({
   }),
   execute: async ({ query, sessionId, startTimeMs, endTimeMs, limit }) => {
     try {
-      const { hits, sessionsScanned } = await searchChat({ query, sessionId, startTimeMs, endTimeMs, limit })
+      const { hits, sessionsScanned, coverage } = await searchChat({ query, sessionId, startTimeMs, endTimeMs, limit })
       return {
         sessionsScanned,
+        coverage,
         scope: sessionId ? 'session' : 'recent_sessions',
         hits,
+        evidence: hits.map(evidenceFromHit),
       }
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }

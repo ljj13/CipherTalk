@@ -341,7 +341,9 @@ export class CacheService {
     const dbNames = [
       'ai_summary.db',
       'agent_memory.db',
-      'chat_search_index.db'
+      'chat_search_index.db',
+      'chat_vectors.db',
+      'agent_conversations.db'
     ]
 
     return Array.from(new Set(
@@ -381,6 +383,12 @@ export class CacheService {
         .catch(() => undefined),
       import('./search/chatSearchIndexService')
         .then(({ chatSearchIndexService }) => chatSearchIndexService.close?.())
+        .catch(() => undefined),
+      import('./search/messageVectorService')
+        .then(({ messageVectorService }) => messageVectorService.close())
+        .catch(() => undefined),
+      import('./agent/conversationStore')
+        .then(({ agentConversationStore }) => agentConversationStore.close())
         .catch(() => undefined)
     ])
   }

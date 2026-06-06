@@ -8,7 +8,8 @@
 import { tool } from 'ai'
 import { z } from 'zod'
 import { reciprocalRankFusion } from '../../retrieval/rrf'
-import { searchChat, resolveSenders, toLocalTime } from './shared'
+import { reportAgentProgress } from '../progress'
+import { evidenceFromHit, searchChat, resolveSenders, toLocalTime } from './shared'
 
 interface FusedHit {
   key: string
@@ -44,7 +45,20 @@ export const semanticSearch = tool({
         const [vector, keyword] = await Promise.all([
           (async () => {
             const queryVec = await embedQuery(query, cfg)
+            reportAgentProgress({
+              stage: 'indexing',
+              title: '准备会话语义索引',
+              detail: query,
+              sessionId,
+            })
             const indexed = await messageVectorService.ensureSessionVectors(sessionId, cfg)
+            reportAgentProgress({
+              stage: 'searching',
+              title: '搜索会话语义索引',
+              detail: query,
+              sessionId,
+              indexedCount: indexed,
+            })
             return { hits: messageVectorService.searchSession(sessionId, queryVec, limit), indexed }
           })(),
           searchChat({ query, sessionId, startTimeMs, endTimeMs, limit }),
@@ -87,24 +101,34 @@ export const semanticSearch = tool({
           (item) => item.key,
         )
 
+        const hits = merged.slice(0, limit).map((m) => ({
+          sessionId: m.item.sessionId,
+          time: m.item.time,
+          sender: m.item.sender,
+          excerpt: m.item.excerpt,
+          score: Number(m.rrfScore.toFixed(4)),
+          matchedBy: m.ranks.length >= 2 ? 'both' : m.item.source,
+          anchor: m.item.anchor,
+        }))
+
         return {
           mode: 'hybrid',
           indexedVectors: vector.indexed,
-          hits: merged.slice(0, limit).map((m) => ({
-            sessionId: m.item.sessionId,
-            time: m.item.time,
-            sender: m.item.sender,
-            excerpt: m.item.excerpt,
-            score: Number(m.rrfScore.toFixed(4)),
-            matchedBy: m.ranks.length >= 2 ? 'both' : m.item.source,
-            anchor: m.item.anchor,
+          hits,
+          evidence: hits.map((hit) => ({
+            id: `${hit.sessionId}:${hit.anchor.localId}`,
+            sessionId: hit.sessionId,
+            localId: hit.anchor.localId,
+            time: hit.time,
+            sender: hit.sender,
+            text: hit.excerpt,
           })),
         }
       }
 
       // 关键词回退（全局 / 未配嵌入）
-      const { hits, sessionsScanned } = await searchChat({ query, sessionId, startTimeMs, endTimeMs, limit })
-      return { mode: 'keyword', sessionsScanned, scope: sessionId ? 'session' : 'recent_sessions', hits }
+      const { hits, sessionsScanned, coverage } = await searchChat({ query, sessionId, startTimeMs, endTimeMs, limit })
+      return { mode: 'keyword', sessionsScanned, coverage, scope: sessionId ? 'session' : 'recent_sessions', hits, evidence: hits.map(evidenceFromHit) }
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) }
     }

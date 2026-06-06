@@ -34,6 +34,31 @@ export type AgentScope =
   | { kind: 'global' }
   | { kind: 'session'; sessionId: string; displayName?: string }
 
+export type AgentProgressStage =
+  | 'run_started'
+  | 'tool_started'
+  | 'tool_finished'
+  | 'indexing'
+  | 'searching'
+  | 'run_finished'
+  | 'error'
+
+export interface AgentProgressEvent {
+  stage: AgentProgressStage
+  title: string
+  detail?: string
+  toolName?: string
+  sessionId?: string
+  elapsedMs?: number
+  messagesScanned?: number
+  indexedCount?: number
+  sessionsScanned?: number
+  coverage?: string
+  at: number
+}
+
+export type AgentProgressReporter = (event: AgentProgressEvent) => void
+
 /** 一次 agent 运行的输入。 */
 export interface AgentRunInput {
   messages: ModelMessage[]
@@ -53,3 +78,4 @@ export type AgentResponse =
   | { id: number; result?: unknown; error?: string }
   | { id: 0; type: 'ready' }
   | { id: -1; type: 'chunk'; payload: { runId: string; chunk: UIMessageChunk } }
+  | { id: -2; type: 'progress'; payload: { runId: string; progress: AgentProgressEvent } }

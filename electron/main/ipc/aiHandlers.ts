@@ -19,6 +19,7 @@ export function registerAiHandlers(_ctx: MainProcessContext): void {
     const sender = event.sender
     const { runId } = payload
     const send = (chunk: unknown) => { if (!sender.isDestroyed()) sender.send('agent:chunk', { runId, chunk }) }
+    const sendProgress = (progress: unknown) => { if (!sender.isDestroyed()) sender.send('agent:progress', { runId, progress }) }
     const aborter = new AbortController()
     agentAborters.set(runId, aborter)
     try {
@@ -30,17 +31,105 @@ export function registerAiHandlers(_ctx: MainProcessContext): void {
       await agentProcessService.run(
         { messages, providerConfig, scope: payload.scope ?? { kind: 'global' } },
         (chunk) => send(chunk),
+        (progress) => sendProgress(progress),
         aborter.signal,
       )
       send('[DONE]')
       return { success: true }
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
+      sendProgress({ stage: 'error', title: 'AI 助手运行失败', detail: message, at: Date.now() })
       send({ type: 'error', errorText: message })
       send('[DONE]')
       return { success: false, error: message }
     } finally {
       agentAborters.delete(runId)
+    }
+  })
+
+  ipcMain.handle('agent:listConversations', async (_event, scope?: AgentScope) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversations: agentConversationStore.list({ scope }) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:loadConversation', async (_event, id: number) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      const conversation = agentConversationStore.load(Number(id))
+      return conversation
+        ? { success: true, conversation }
+        : { success: false, error: 'AI 对话不存在' }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:createConversation', async (_event, payload: {
+    scope?: AgentScope
+    title?: string
+    modelProvider?: string
+    modelId?: string
+  }) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversation: agentConversationStore.create(payload || {}) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:deleteConversation', async (_event, id: number) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      agentConversationStore.remove(Number(id))
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:renameConversation', async (_event, id: number, title: string) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversation: agentConversationStore.rename(Number(id), title) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:saveConversationMessages', async (_event, payload: {
+    id: number
+    messages: UIMessage[]
+    scope?: AgentScope
+    modelProvider?: string
+    modelId?: string
+  }) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      if (payload.scope || payload.modelProvider !== undefined || payload.modelId !== undefined) {
+        agentConversationStore.updateMeta(Number(payload.id), {
+          scope: payload.scope,
+          modelProvider: payload.modelProvider,
+          modelId: payload.modelId,
+        })
+      }
+      const conversation = agentConversationStore.replaceMessages(Number(payload.id), payload.messages || [])
+      return { success: true, conversation }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:getLastConversation', async (_event, scope?: AgentScope) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversation: agentConversationStore.getLast(scope) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
     }
   })
 

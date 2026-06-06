@@ -16,10 +16,25 @@ export type AgentModelConfig = {
   reasoningEffort?: AgentReasoningEffort
 }
 
+export type AgentProgressEvent = {
+  stage: 'run_started' | 'tool_started' | 'tool_finished' | 'indexing' | 'searching' | 'run_finished' | 'error'
+  title: string
+  detail?: string
+  toolName?: string
+  sessionId?: string
+  elapsedMs?: number
+  messagesScanned?: number
+  indexedCount?: number
+  sessionsScanned?: number
+  coverage?: string
+  at: number
+}
+
 interface AgentBridge {
   run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: AgentModelConfig | null) => Promise<{ success: boolean; error?: string }>
   abort: (runId: string) => Promise<{ success: boolean }>
   onChunk: (runId: string, callback: (chunk: unknown) => void) => () => void
+  onProgress: (runId: string, callback: (progress: unknown) => void) => () => void
 }
 
 function getAgentBridge(): AgentBridge {
@@ -36,7 +51,8 @@ function randomRunId(): string {
 export class IpcChatTransport<UI_MESSAGE extends UIMessage = UIMessage> implements ChatTransport<UI_MESSAGE> {
   constructor(
     private readonly getScope?: () => AgentScope,
-    private readonly getModelConfig?: () => AgentModelConfig | null
+    private readonly getModelConfig?: () => AgentModelConfig | null,
+    private readonly onProgress?: (progress: AgentProgressEvent) => void
   ) {}
 
   async sendMessages(options: {
@@ -48,6 +64,7 @@ export class IpcChatTransport<UI_MESSAGE extends UIMessage = UIMessage> implemen
     const scope = this.getScope?.() ?? { kind: 'global' }
     const messages = options.messages as unknown[]
     const modelConfig = this.getModelConfig?.() ?? null
+    const progressHandler = this.onProgress
 
     options.abortSignal?.addEventListener('abort', () => { void bridge.abort(runId) })
 
@@ -61,6 +78,11 @@ export class IpcChatTransport<UI_MESSAGE extends UIMessage = UIMessage> implemen
           }
           controller.enqueue(chunk as UIMessageChunk)
         })
+        const offProgress = bridge.onProgress(runId, (progress) => {
+          if (progress && typeof progress === 'object') {
+            progressHandler?.(progress as AgentProgressEvent)
+          }
+        })
         // 触发主进程运行；run resolve 即代表本次结束（chunk 已通过 onChunk 推完，[DONE] 关流）
         void bridge.run(runId, messages, scope, modelConfig).catch((error: unknown) => {
           try {
@@ -68,6 +90,9 @@ export class IpcChatTransport<UI_MESSAGE extends UIMessage = UIMessage> implemen
             controller.close()
           } catch { /* 已关闭 */ }
           off()
+          offProgress()
+        }).finally(() => {
+          offProgress()
         })
       },
     })

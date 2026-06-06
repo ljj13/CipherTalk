@@ -45,6 +45,7 @@ async function handleMessage(msg: any): Promise<void> {
             input,
             (chunk) => parentPort!.postMessage({ id: -1, type: 'chunk', payload: { runId, chunk } }),
             aborter.signal,
+            (progress) => parentPort!.postMessage({ id: -2, type: 'progress', payload: { runId, progress } }),
           )
           parentPort!.postMessage({ id, result: { done: true } })
         } finally {
