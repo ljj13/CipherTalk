@@ -236,6 +236,7 @@
       "!node_modules/**/*.pdb",
       "!node_modules/**/*.lib",
       "!node_modules/**/build/!(Release)/**/*",
+      "node_modules/@opentelemetry/api/build/**/*",
       "node_modules/@fast-csv/*/build/**/*",
       "node_modules/fast-csv/build/**/*",
       "!node_modules/**/deps/**/*",
