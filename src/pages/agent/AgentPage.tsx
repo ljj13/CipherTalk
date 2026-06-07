@@ -168,9 +168,18 @@ function MessageChainOfThought({ active, children }: { active: boolean; children
   )
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  delegate_analysis: '委托子助手',
+  remember: '记住',
+  recall: '回忆',
+  list_memories: '浏览记忆',
+  forget: '忘记',
+  consolidate_memory: '整理记忆',
+  auto_memory: '自动记忆',
+}
+
 function formatToolName(toolName: string) {
-  if (toolName === 'delegate_analysis') return '委托子助手'
-  return toolName.replace(/[_-]+/g, ' ')
+  return TOOL_LABELS[toolName] ?? toolName.replace(/[_-]+/g, ' ')
 }
 
 /** @ 单个会话且其未建语义索引时，提示建立（可建/可跳过，跳过后本会话不再提示）。 */

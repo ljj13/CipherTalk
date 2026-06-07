@@ -563,6 +563,27 @@ export class MemoryDatabase {
     return result.changes > 0
   }
 
+  /** 分组（session_id × source_type）超量淘汰：每组按 importance×新近度保留前 cap 条，删其余。返回删除数。 */
+  consolidate(capPerGroup = 50): { removed: number; groups: number; scanned: number } {
+    const all = this.listMemoryItems({ limit: 1000 })
+    const groups = new Map<string, MemoryItem[]>()
+    for (const m of all) {
+      const key = `${m.sessionId ?? ''}::${m.sourceType}`
+      const bucket = groups.get(key)
+      if (bucket) bucket.push(m)
+      else groups.set(key, [m])
+    }
+    let removed = 0
+    for (const items of groups.values()) {
+      if (items.length <= capPerGroup) continue
+      const sorted = [...items].sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
+      for (const victim of sorted.slice(capPerGroup)) {
+        if (this.deleteMemoryItem(victim.id)) removed += 1
+      }
+    }
+    return { removed, groups: groups.size, scanned: all.length }
+  }
+
   getStats(): MemoryDatabaseStats {
     const db = this.getDb()
     const itemRow = db.prepare('SELECT COUNT(*) AS count FROM memory_items').get() as { count: number }

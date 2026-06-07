@@ -6,10 +6,11 @@
  * 复用 memoryDatabase 现成读写层——子进程经 ConfigService + better-sqlite3 直连 app 派生库（同 messageVectorService）。
  * 故意只挂在主 Agent（buildTools），子 Agent（delegate）不带，避免子任务乱写记忆。
  */
-import { tool } from 'ai'
+import { tool, generateObject } from 'ai'
 import { z } from 'zod'
-import type { AgentScope } from '../types'
+import type { AgentScope, AgentProviderConfig } from '../types'
 import { memoryDatabase, hashMemoryContent } from '../../memory/memoryDatabase'
+import { createLanguageModel } from '../provider'
 
 /** 开场注入的画像/会话事实条数上限；先取 SCAN_LIMIT 再按 importance 排序截断。 */
 const INJECT_PROFILE_LIMIT = 10
@@ -86,6 +87,7 @@ export function createRecall(scope: AgentScope) {
         return {
           count: hits.length,
           memories: hits.map((h) => ({
+            id: h.item.id,
             kind: h.item.sourceType,
             content: h.item.content,
             about: h.item.sessionId,
@@ -93,6 +95,77 @@ export function createRecall(scope: AgentScope) {
             tags: h.item.tags,
           })),
         }
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  })
+}
+
+export function createListMemories(scope: AgentScope) {
+  return tool({
+    description:
+      '列出已记的长期记忆（按范围/类型浏览，不带检索词）。用于盘点、整理前查看；要按内容找用 recall。',
+    inputSchema: z.object({
+      about: z.string().optional().describe('限定关于某联系人/会话 username；不填且已 @ 某会话则默认该会话'),
+      kind: z.enum(['profile', 'fact']).optional().describe('只看某类；不填两类都列'),
+      limit: z.number().int().min(1).max(100).default(30).describe('返回条数上限'),
+    }),
+    execute: async ({ about, kind, limit }) => {
+      try {
+        const sessionId = resolveAbout(about, scope)
+        const items = memoryDatabase.listMemoryItems({
+          ...(kind ? { sourceType: kind } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          limit,
+        })
+        return {
+          count: items.length,
+          memories: items.map((m) => ({
+            id: m.id,
+            kind: m.sourceType,
+            content: m.content,
+            about: m.sessionId,
+            importance: m.importance,
+            tags: m.tags,
+          })),
+        }
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  })
+}
+
+export function createForget() {
+  return tool({
+    description:
+      '删除一条过时或记错的长期记忆（id 来自 recall / list_memories）。' +
+      '用户纠正"我已经不是…了 / 那条记错了"时，先 forget 旧的再 remember 新的。',
+    inputSchema: z.object({
+      id: z.number().int().describe('要删除的记忆 id（来自 recall / list_memories）'),
+    }),
+    execute: async ({ id }) => {
+      try {
+        const ok = memoryDatabase.deleteMemoryItem(id)
+        return ok ? { forgotten: true, id } : { forgotten: false, id, reason: '未找到该记忆' }
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) }
+      }
+    },
+  })
+}
+
+export function createConsolidate() {
+  return tool({
+    description:
+      '整理记忆：按"关于谁 × 类型"分组，每组只保留最重要的若干条，删掉低价值冗余，防止记忆库越积越乱。' +
+      '记了很多条、或用户让你"整理一下记忆"时调用。',
+    inputSchema: z.object({}),
+    execute: async () => {
+      try {
+        // 确定性巩固：分组超量淘汰，逻辑在 memoryDatabase（IPC 管理界面共用）。语义合并（需 LLM）留后续。
+        return memoryDatabase.consolidate()
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) }
       }
@@ -121,5 +194,86 @@ export async function buildMemoryContext(scope: AgentScope): Promise<string> {
     return `\n\n# 你记住的长期记忆\n以下是你在过往对话中记下的、关于用户的长期记忆，回答时可参考；若与当前对话冲突，以当前对话为准。需要更多细节用 recall 检索。\n${lines.join('\n')}`
   } catch {
     return ''
+  }
+}
+
+// ============ L1 自动来源：一轮对话结束后从对话里抽取稳定事实，自动写入 ============
+
+const AUTO_MEMORY_MAX = 5
+/** 自动抽取的记忆 confidence 低于主动 remember（默认 1），标记其来源不如用户明说可靠。 */
+const AUTO_MEMORY_CONFIDENCE = 0.6
+const AUTO_MEMORY_MIN_USER_CHARS = 6
+
+export interface AutoMemoryResult {
+  id: number
+  content: string
+  kind: 'profile' | 'fact'
+  importance: number
+}
+
+/**
+ * L1：用一次 LLM 调用从本轮对话抽取「关于用户的稳定事实/偏好」，自动写入（confidence=0.6，tags=['auto']）。
+ * 抽取前把已记内容塞进 prompt 让模型别重复；upsert 按 uid=hash 幂等挡完全重复。失败返回 []（不影响主回答）。
+ */
+export async function extractMemories(opts: {
+  scope: AgentScope
+  providerConfig: AgentProviderConfig
+  userText: string
+  assistantText: string
+  signal?: AbortSignal
+}): Promise<AutoMemoryResult[]> {
+  const { scope, providerConfig, userText, assistantText, signal } = opts
+  if (userText.trim().length < AUTO_MEMORY_MIN_USER_CHARS) return []
+
+  try {
+    const sessionId = scope.kind === 'session' ? scope.sessionId : null
+    const existing = memoryDatabase
+      .listMemoryItems({ ...(sessionId ? { sessionId } : {}), limit: 30 })
+      .map((m) => m.content)
+    const known = existing.length
+      ? `\n\n已记过的（不要重复抽取）：\n${existing.map((c) => `- ${c}`).join('\n')}`
+      : ''
+
+    const { object } = await generateObject({
+      model: createLanguageModel(providerConfig),
+      schema: z.object({
+        memories: z
+          .array(
+            z.object({
+              content: z.string().describe('一句话写清的稳定长期事实/偏好'),
+              kind: z.enum(['profile', 'fact']),
+              importance: z.number().min(0).max(1),
+            }),
+          )
+          .max(AUTO_MEMORY_MAX),
+      }),
+      abortSignal: signal,
+      system:
+        '你从对话中抽取「关于用户本人的、值得长期记住的稳定事实/偏好」（身份、职业、长期偏好、重要关系）。' +
+        '只抽用户明确陈述过的，不要推断、不要抽一次性或琐碎信息。没有可抽的就返回空数组。',
+      prompt: `对话：\n用户：${userText}\n助手：${assistantText}${known}`,
+    })
+
+    const out: AutoMemoryResult[] = []
+    for (const m of object.memories) {
+      const content = m.content.trim()
+      if (!content) continue
+      const title = content.slice(0, 40)
+      const item = memoryDatabase.upsertMemoryItem({
+        memoryUid: memoryUid(title, content),
+        sourceType: m.kind,
+        sessionId,
+        contactId: sessionId,
+        title,
+        content,
+        importance: m.importance,
+        confidence: AUTO_MEMORY_CONFIDENCE,
+        tags: ['auto'],
+      })
+      out.push({ id: item.id, content, kind: m.kind, importance: item.importance })
+    }
+    return out
+  } catch {
+    return []
   }
 }

@@ -18,7 +18,7 @@ import {
   Eye, EyeOff, Key, FolderSearch, FolderOpen, Search,
   RotateCcw, Trash2, Plug, X, Check,
   Palette, Database, ImageIcon, Download, HardDrive, Info, RefreshCw, Shield, CheckCircle, AlertCircle, Mic,
-  Zap, Layers, User, Sparkles, Lock, ShieldCheck, Minus, Plus, Smile, ChevronDown
+  Zap, Layers, User, Sparkles, Lock, ShieldCheck, Minus, Plus, Smile, ChevronDown, Brain
 } from 'lucide-react'
 import '../../pages/SettingsPage.css'
 
@@ -26,8 +26,9 @@ const AISummarySettings = lazy(() => import('../ai/AISummarySettings'))
 const DataManagementTab = lazy(() => import('./tabs/DataManagementTab'))
 const DatabaseTab = lazy(() => import('./tabs/DatabaseTab'))
 const SttTab = lazy(() => import('./tabs/SttTab'))
+const MemoryTab = lazy(() => import('./tabs/MemoryTab'))
 
-type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'data' | 'security' | 'activation' | 'about'
+type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'memory' | 'data' | 'security' | 'activation' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -35,6 +36,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'security', label: '安全设置', icon: Lock },
   { id: 'stt', label: '语音转文字', icon: Mic },
   { id: 'ai', label: 'AI 接入', icon: Sparkles },
+  { id: 'memory', label: '记忆', icon: Brain },
   { id: 'data', label: '数据管理', icon: HardDrive },
   // { id: 'activation', label: '激活', icon: Shield },
   { id: 'about', label: '关于', icon: Info }
@@ -1425,6 +1427,11 @@ function SettingsLayout() {
         {activeTab === 'ai' && (
           <Suspense fallback={<AISettingsSkeleton />}>
             <AISummarySettings showMessage={showMessage} />
+          </Suspense>
+        )}
+        {activeTab === 'memory' && (
+          <Suspense fallback={<div className="tab-content">加载中...</div>}>
+            <MemoryTab showMessage={showMessage} />
           </Suspense>
         )}
         {activeTab === 'data' && (

@@ -205,6 +205,39 @@ export function registerAiHandlers(_ctx: MainProcessContext): void {
     }
   })
 
+  // ========= AI 长期记忆管理（agent_memory.db；纯 DB，无 LLM 依赖）=========
+  ipcMain.handle('memory:list', async (_event, opts?: { sourceType?: 'profile' | 'fact'; sessionId?: string; limit?: number }) => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const items = memoryDatabase.listMemoryItems({
+        ...(opts?.sourceType ? { sourceType: opts.sourceType } : {}),
+        ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
+        limit: opts?.limit ?? 300,
+      })
+      return { success: true, items, stats: memoryDatabase.getStats() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:delete', async (_event, id: number) => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      return { success: memoryDatabase.deleteMemoryItem(Number(id)) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:consolidate', async () => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      return { success: true, result: memoryDatabase.consolidate() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   ipcMain.handle('agent:generateTitle', async (_event, payload: {
     firstMessage: string
     modelConfig?: AgentProviderConfigOverride | null

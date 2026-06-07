@@ -2,11 +2,11 @@
  * 编排引擎 —— 用 AI SDK 的 ToolLoopAgent 跑 ReAct 循环，流式产出 UIMessageChunk。
  * 运行在 AI utilityProcess 子进程内（见文档 §3.1/§5.2）。
  */
-import { generateText, ToolLoopAgent, stepCountIs, type ProviderOptions, type UIMessageChunk } from 'ai'
+import { generateText, ToolLoopAgent, stepCountIs, type ModelMessage, type ProviderOptions, type UIMessageChunk } from 'ai'
 import { createLanguageModel } from './provider'
 import { buildSystemPrompt } from './prompts'
 import { buildTools } from './tools'
-import { buildMemoryContext } from './tools/memory'
+import { buildMemoryContext, extractMemories } from './tools/memory'
 import { compactMessages } from './compaction'
 import { loopGuardCondition, withToolTimeouts } from './guards'
 import { reportAgentProgress, withAgentProgress } from './progress'
@@ -35,6 +35,56 @@ function buildReasoningProviderOptions(input: AgentRunInput): ProviderOptions | 
   return Object.fromEntries([...keys].map((key) => [key, option])) as ProviderOptions
 }
 
+/** 取最后一条 user 消息的纯文本，供 L1 自动抽取。 */
+function lastUserText(messages: ModelMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const m = messages[i]
+    if (m.role !== 'user') continue
+    if (typeof m.content === 'string') return m.content
+    if (Array.isArray(m.content)) {
+      return m.content
+        .map((p) => (p && typeof p === 'object' && 'type' in p && (p as { type?: unknown }).type === 'text'
+          ? String((p as { text?: unknown }).text || '')
+          : ''))
+        .filter(Boolean)
+        .join('\n')
+    }
+    return ''
+  }
+  return ''
+}
+
+/**
+ * L1 自动记忆：主回答流完后抽取稳定事实写库，并把每条写入作为合成 auto_memory 工具 part 注入思考链
+ * （static 工具形态 tool-input/output-available，前端 isToolUIPart 可识别）。失败静默。
+ */
+async function injectAutoMemories(
+  assistantText: string,
+  input: AgentRunInput,
+  onChunk: (chunk: UIMessageChunk) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  try {
+    const auto = await extractMemories({
+      scope: input.scope,
+      providerConfig: input.providerConfig,
+      userText: lastUserText(input.messages),
+      assistantText,
+      signal,
+    })
+    if (auto.length === 0) return
+    onChunk({ type: 'start-step' })
+    for (const m of auto) {
+      const toolCallId = `automem-${m.id}`
+      onChunk({ type: 'tool-input-available', toolCallId, toolName: 'auto_memory', input: { content: m.content, kind: m.kind, importance: m.importance } })
+      onChunk({ type: 'tool-output-available', toolCallId, output: { remembered: true, source: 'auto', id: m.id } })
+    }
+    onChunk({ type: 'finish-step' })
+  } catch {
+    /* 自动记忆失败不影响主回答 */
+  }
+}
+
 export async function runAgent(
   input: AgentRunInput,
   onChunk: (chunk: UIMessageChunk) => void,
@@ -56,6 +106,8 @@ export async function runAgent(
     })
 
     const result = await agent.stream({ messages: input.messages, abortSignal: signal })
+    // 截留 message 的 finish，等 L1 自动记忆注入完再补发，让自动写入的工具 part 落在本条消息内
+    let finishChunk: UIMessageChunk | undefined
     for await (const chunk of result.toUIMessageStream({
       messageMetadata: ({ part }) => {
         if (part.type !== 'finish') return undefined
@@ -68,8 +120,15 @@ export async function runAgent(
         }
       },
     })) {
+      if (chunk.type === 'finish') { finishChunk = chunk; continue }
       onChunk(chunk)
     }
+    let assistantText = ''
+    try { assistantText = await result.text } catch { /* abort/异常：跳过自动记忆 */ }
+    if (assistantText && !signal?.aborted) {
+      await injectAutoMemories(assistantText, input, onChunk, signal)
+    }
+    if (finishChunk) onChunk(finishChunk)
     reportAgentProgress({ stage: 'run_finished', title: '回答生成完成' })
   })
 }

@@ -108,6 +108,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  // AI 长期记忆管理（agent_memory.db）
+  memory: {
+    list: (opts?: { sourceType?: 'profile' | 'fact'; sessionId?: string; limit?: number }) =>
+      ipcRenderer.invoke('memory:list', opts) as Promise<{ success: boolean; items?: unknown[]; stats?: { itemCount: number }; error?: string }>,
+    delete: (id: number) =>
+      ipcRenderer.invoke('memory:delete', id) as Promise<{ success: boolean; error?: string }>,
+    consolidate: () =>
+      ipcRenderer.invoke('memory:consolidate') as Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number }; error?: string }>,
+  },
+
   // 嵌入模型（语义/向量检索）
   embedding: {
     getConfig: () => ipcRenderer.invoke('embedding:getConfig') as Promise<{ success: boolean; config?: unknown; error?: string }>,

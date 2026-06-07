@@ -84,6 +84,20 @@ export interface StatsPartialError {
   message: string
 }
 
+export interface AgentMemoryItem {
+  id: number
+  sourceType: 'profile' | 'fact' | string
+  sessionId: string | null
+  contactId: string | null
+  title: string
+  content: string
+  importance: number
+  confidence: number
+  tags: string[]
+  createdAt: number
+  updatedAt: number
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -957,6 +971,11 @@ export interface ElectronAPI {
     renameConversation: (id: number, title: string) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     saveConversationMessages: (payload: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     getLastConversation: (scope?: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
+  }
+  memory: {
+    list: (opts?: { sourceType?: 'profile' | 'fact'; sessionId?: string; limit?: number }) => Promise<{ success: boolean; items?: AgentMemoryItem[]; stats?: { itemCount: number }; error?: string }>
+    delete: (id: number) => Promise<{ success: boolean; error?: string }>
+    consolidate: () => Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number }; error?: string }>
   }
   embedding: {
     getConfig: () => Promise<{ success: boolean; config?: EmbeddingConfig; error?: string }>
