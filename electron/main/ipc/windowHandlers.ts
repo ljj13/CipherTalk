@@ -93,11 +93,6 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
     ctx.getWindowManager().openBrowserWindow(url, title)
   })
 
-  ipcMain.handle('window:openAISummaryWindow', (_, sessionId: string, sessionName: string) => {
-    ctx.getWindowManager().openAISummaryWindow(sessionId, sessionName)
-    return true
-  })
-
   ipcMain.handle('window:openChatHistoryWindow', (_, sessionId: string, messageId: number) => {
     ctx.getWindowManager().openChatHistoryWindow(sessionId, messageId)
     return true
@@ -125,16 +120,6 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
 
   ipcMain.handle('window:openMomentsWindow', async (_event, filterUsername?: string) => {
     ctx.getWindowManager().openMomentsWindow(filterUsername)
-    return true
-  })
-
-  ipcMain.handle('window:openGroupAnalyticsWindow', async () => {
-    ctx.getWindowManager().openGroupAnalyticsWindow()
-    return true
-  })
-
-  ipcMain.handle('window:openAnnualReportWindow', async (_, year: number) => {
-    ctx.getWindowManager().openAnnualReportWindow(year)
     return true
   })
 

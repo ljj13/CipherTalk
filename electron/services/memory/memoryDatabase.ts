@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3'
+import { cosineSimilarity } from 'ai'
 import { createHash } from 'crypto'
 import { existsSync, mkdirSync } from 'fs'
 import { dirname, join } from 'path'
@@ -7,17 +8,12 @@ import {
   MEMORY_DB_NAME,
   MEMORY_SCHEMA_VERSION,
   MEMORY_SOURCE_TYPES,
-  MEMORY_VECTOR_STORES,
   type MemoryDatabaseStats,
-  type MemoryEmbedding,
-  type MemoryEmbeddingInput,
-  type MemoryEmbeddingRow,
   type MemoryEvidenceRef,
   type MemoryItem,
   type MemoryItemInput,
   type MemoryItemRow,
-  type MemorySourceType,
-  type MemoryVectorStoreName
+  type MemorySourceType
 } from './memorySchema'
 
 export type MemoryKeywordSearchOptions = {
@@ -184,12 +180,6 @@ function safeSourceType(value: string): MemorySourceType {
     : 'message'
 }
 
-function safeVectorStore(value: string): MemoryVectorStoreName {
-  return MEMORY_VECTOR_STORES.includes(value as MemoryVectorStoreName)
-    ? value as MemoryVectorStoreName
-    : 'sqlite_vec0'
-}
-
 function toMemoryItem(row: MemoryItemRow): MemoryItem {
   return {
     id: Number(row.id),
@@ -210,20 +200,6 @@ function toMemoryItem(row: MemoryItemRow): MemoryItem {
     sourceRefs: parseEvidenceRefsJson(row.source_refs_json),
     createdAt: Number(row.created_at || 0),
     updatedAt: Number(row.updated_at || 0)
-  }
-}
-
-function toMemoryEmbedding(row: MemoryEmbeddingRow): MemoryEmbedding {
-  return {
-    id: Number(row.id),
-    memoryId: Number(row.memory_id),
-    modelId: row.model_id,
-    modelRevision: row.model_revision,
-    vectorDim: Number(row.vector_dim),
-    vectorStore: safeVectorStore(row.vector_store),
-    vectorRef: row.vector_ref,
-    contentHash: row.content_hash,
-    indexedAt: Number(row.indexed_at || 0)
   }
 }
 
@@ -310,20 +286,6 @@ export class MemoryDatabase {
         updated_at INTEGER NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS memory_embeddings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        memory_id INTEGER NOT NULL,
-        model_id TEXT NOT NULL,
-        model_revision TEXT NOT NULL DEFAULT '',
-        vector_dim INTEGER NOT NULL,
-        vector_store TEXT NOT NULL,
-        vector_ref TEXT NOT NULL,
-        content_hash TEXT NOT NULL,
-        indexed_at INTEGER NOT NULL,
-        UNIQUE(memory_id, model_id, vector_dim),
-        FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
-      );
-
       CREATE INDEX IF NOT EXISTS idx_memory_items_source_type
         ON memory_items(source_type);
       CREATE INDEX IF NOT EXISTS idx_memory_items_session_time
@@ -334,12 +296,18 @@ export class MemoryDatabase {
         ON memory_items(group_id);
       CREATE INDEX IF NOT EXISTS idx_memory_items_hash
         ON memory_items(content_hash);
-      CREATE INDEX IF NOT EXISTS idx_memory_embeddings_memory
-        ON memory_embeddings(memory_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model
-        ON memory_embeddings(model_id, vector_dim);
-      CREATE INDEX IF NOT EXISTS idx_memory_embeddings_store
-        ON memory_embeddings(vector_store, vector_ref);
+    `)
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_embeddings (
+        memory_id    INTEGER NOT NULL,
+        model_id     TEXT NOT NULL,
+        dim          INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        embedding    BLOB NOT NULL,
+        indexed_at   INTEGER NOT NULL,
+        PRIMARY KEY (memory_id, model_id)
+      );
     `)
 
     db.exec(`
@@ -602,134 +570,223 @@ export class MemoryDatabase {
   deleteMemoryItem(id: number): boolean {
     const db = this.getDb()
     db.prepare('DELETE FROM memory_items_fts WHERE rowid = ?').run(id)
+    db.prepare('DELETE FROM memory_embeddings WHERE memory_id = ?').run(id)
     const result = db.prepare('DELETE FROM memory_items WHERE id = ?').run(id)
     return result.changes > 0
   }
 
-  upsertMemoryEmbedding(input: MemoryEmbeddingInput): MemoryEmbedding {
-    const db = this.getDb()
-    const indexedAt = input.indexedAt || nowMs()
-    if (!Number.isInteger(input.memoryId) || input.memoryId <= 0) throw new Error('memoryId is required')
-    if (!String(input.modelId || '').trim()) throw new Error('modelId is required')
-    if (!Number.isInteger(input.vectorDim) || input.vectorDim <= 0) throw new Error('vectorDim is required')
-    if (!MEMORY_VECTOR_STORES.includes(input.vectorStore)) {
-      throw new Error(`Unsupported memory vector store: ${input.vectorStore}`)
-    }
-    if (!String(input.vectorRef || '').trim()) throw new Error('vectorRef is required')
-    if (!String(input.contentHash || '').trim()) throw new Error('contentHash is required')
+  updateMemoryItem(id: number, input: {
+    sourceType?: MemorySourceType
+    title?: string
+    content?: string
+    importance?: number
+    confidence?: number
+    tags?: string[]
+  }): MemoryItem | null {
+    const existing = this.getMemoryItemById(id)
+    if (!existing) return null
 
-    db.prepare(`
-      INSERT INTO memory_embeddings (
-        memory_id, model_id, model_revision, vector_dim,
-        vector_store, vector_ref, content_hash, indexed_at
-      ) VALUES (
-        @memoryId, @modelId, @modelRevision, @vectorDim,
-        @vectorStore, @vectorRef, @contentHash, @indexedAt
-      )
-      ON CONFLICT(memory_id, model_id, vector_dim) DO UPDATE SET
-        model_revision = excluded.model_revision,
-        vector_store = excluded.vector_store,
-        vector_ref = excluded.vector_ref,
-        content_hash = excluded.content_hash,
-        indexed_at = excluded.indexed_at
+    const sourceType = input.sourceType ?? existing.sourceType
+    if (!MEMORY_SOURCE_TYPES.includes(sourceType)) {
+      throw new Error(`Unsupported memory source type: ${sourceType}`)
+    }
+
+    const content = input.content !== undefined ? String(input.content) : existing.content
+    const title = input.title !== undefined ? String(input.title) : existing.title
+    if (!content.trim()) throw new Error('memory content is required')
+
+    const nextTags = input.tags ?? existing.tags
+    const contentHash = hashMemoryContent(title, content)
+    const updatedAt = nowMs()
+
+    this.getDb().prepare(`
+      UPDATE memory_items SET
+        source_type = @sourceType,
+        title = @title,
+        content = @content,
+        content_hash = @contentHash,
+        tags_json = @tagsJson,
+        importance = @importance,
+        confidence = @confidence,
+        updated_at = @updatedAt
+      WHERE id = @id
     `).run({
-      memoryId: input.memoryId,
-      modelId: String(input.modelId).trim(),
-      modelRevision: String(input.modelRevision || ''),
-      vectorDim: input.vectorDim,
-      vectorStore: input.vectorStore,
-      vectorRef: String(input.vectorRef).trim(),
-      contentHash: String(input.contentHash).trim(),
-      indexedAt
+      id,
+      sourceType,
+      title,
+      content,
+      contentHash,
+      tagsJson: safeJsonStringify(nextTags, []),
+      importance: clamp01(input.importance, existing.importance),
+      confidence: clamp01(input.confidence, existing.confidence),
+      updatedAt
     })
 
-    const embedding = this.getMemoryEmbedding(input.memoryId, input.modelId, input.vectorDim)
-    if (!embedding) throw new Error('Failed to load upserted memory embedding')
-    return embedding
+    this.getDb().prepare('DELETE FROM memory_embeddings WHERE memory_id = ?').run(id)
+    const item = this.getMemoryItemById(id)
+    if (item) this.upsertMemoryFtsRow(item)
+    return item
   }
 
-  getMemoryEmbeddingById(id: number): MemoryEmbedding | null {
-    const row = this.getDb().prepare('SELECT * FROM memory_embeddings WHERE id = ?').get(id) as MemoryEmbeddingRow | undefined
-    return row ? toMemoryEmbedding(row) : null
-  }
+  /**
+   * 巩固：先语义去重（给了 semantic.modelId 时，用已建向量把同组里意思相近的合并为保留最优一条），
+   * 再分组（session_id × source_type）超量淘汰（每组按 importance×新近度保留前 cap 条）。返回删除数。
+   */
+  consolidate(
+    capPerGroup = 50,
+    semantic?: { modelId: string; threshold?: number }
+  ): { removed: number; semanticRemoved: number; groups: number; scanned: number } {
+    const semanticRemoved = semantic?.modelId
+      ? this.dedupeBySemantic(semantic.modelId, semantic.threshold ?? 0.93)
+      : 0
 
-  getMemoryEmbedding(memoryId: number, modelId: string, vectorDim: number): MemoryEmbedding | null {
-    const row = this.getDb().prepare(`
-      SELECT * FROM memory_embeddings
-      WHERE memory_id = ? AND model_id = ? AND vector_dim = ?
-    `).get(memoryId, modelId, vectorDim) as MemoryEmbeddingRow | undefined
-    return row ? toMemoryEmbedding(row) : null
-  }
-
-  listEmbeddingsForMemory(memoryId: number): MemoryEmbedding[] {
-    const rows = this.getDb().prepare(`
-      SELECT * FROM memory_embeddings
-      WHERE memory_id = ?
-      ORDER BY indexed_at DESC, id DESC
-    `).all(memoryId) as MemoryEmbeddingRow[]
-    return rows.map(toMemoryEmbedding)
-  }
-
-  deleteEmbeddingsByMemoryIds(memoryIds: number[]): number {
-    const ids = Array.from(new Set(memoryIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)))
-    if (ids.length === 0) return 0
-
-    const placeholders = ids.map(() => '?').join(',')
-    const result = this.getDb().prepare(`DELETE FROM memory_embeddings WHERE memory_id IN (${placeholders})`).run(...ids)
-    return result.changes
-  }
-
-  clearEmbeddingsByModel(modelId: string, vectorDim?: number): number {
-    const model = String(modelId || '').trim()
-    if (!model) return 0
-
-    const sql = Number.isInteger(vectorDim) && Number(vectorDim) > 0
-      ? 'DELETE FROM memory_embeddings WHERE model_id = ? AND vector_dim = ?'
-      : 'DELETE FROM memory_embeddings WHERE model_id = ?'
-    const result = Number.isInteger(vectorDim) && Number(vectorDim) > 0
-      ? this.getDb().prepare(sql).run(model, vectorDim)
-      : this.getDb().prepare(sql).run(model)
-    return result.changes
-  }
-
-  listStaleEmbeddings(options: { modelId?: string; vectorDim?: number; limit?: number } = {}): MemoryEmbedding[] {
-    const clauses = ['e.content_hash != m.content_hash']
-    const params: Record<string, unknown> = {}
-    if (options.modelId) {
-      clauses.push('e.model_id = @modelId')
-      params.modelId = options.modelId
+    const all = this.listMemoryItems({ limit: 1000 })
+    const groups = new Map<string, MemoryItem[]>()
+    for (const m of all) {
+      const key = `${m.sessionId ?? ''}::${m.sourceType}`
+      const bucket = groups.get(key)
+      if (bucket) bucket.push(m)
+      else groups.set(key, [m])
     }
-    if (Number.isInteger(options.vectorDim) && Number(options.vectorDim) > 0) {
-      clauses.push('e.vector_dim = @vectorDim')
-      params.vectorDim = options.vectorDim
+    let capRemoved = 0
+    for (const items of groups.values()) {
+      if (items.length <= capPerGroup) continue
+      const sorted = [...items].sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
+      for (const victim of sorted.slice(capPerGroup)) {
+        if (this.deleteMemoryItem(victim.id)) capRemoved += 1
+      }
     }
-    params.limit = Math.max(1, Math.min(Math.floor(options.limit || 100), 1000))
+    return { removed: semanticRemoved + capRemoved, semanticRemoved, groups: groups.size, scanned: all.length }
+  }
 
-    const rows = this.getDb().prepare(`
-      SELECT e.* FROM memory_embeddings e
+  /**
+   * 语义去重：同（session_id × source_type）组内，向量 cosine > threshold 视为同义；
+   * 按 importance×confidence 排序保留最优、删其余。只用已建向量（缺向量的不参与）。返回删除数。
+   * threshold 偏高（默认 0.93），宁可漏合并不误删——不同事实（如"喜欢咖啡"/"喜欢茶"）达不到该相似度。
+   */
+  private dedupeBySemantic(modelId: string, threshold: number): number {
+    const db = this.getDb()
+    const rows = db.prepare(`
+      SELECT m.id AS id, m.session_id AS session_id, m.source_type AS source_type,
+             m.importance AS importance, m.confidence AS confidence, m.updated_at AS updated_at,
+             e.embedding AS embedding
+      FROM memory_embeddings e
+      JOIN memory_items m ON m.id = e.memory_id
+      WHERE e.model_id = ?
+    `).all(modelId) as Array<{
+      id: number; session_id: string | null; source_type: string
+      importance: number; confidence: number; updated_at: number; embedding: Buffer
+    }>
+
+    type Node = { id: number; vec: number[]; rankScore: number; updatedAt: number }
+    const groups = new Map<string, Node[]>()
+    for (const r of rows) {
+      const buf = r.embedding
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+      const node: Node = {
+        id: Number(r.id),
+        vec: Array.from(new Float32Array(ab)),
+        rankScore: Number(r.importance || 0) * 0.5 + Number(r.confidence || 0) * 0.5,
+        updatedAt: Number(r.updated_at || 0),
+      }
+      const key = `${r.session_id ?? ''}::${r.source_type}`
+      const bucket = groups.get(key)
+      if (bucket) bucket.push(node)
+      else groups.set(key, [node])
+    }
+
+    let removed = 0
+    for (const nodes of groups.values()) {
+      if (nodes.length < 2) continue
+      nodes.sort((a, b) => b.rankScore - a.rankScore || b.updatedAt - a.updatedAt)
+      const kept: Node[] = []
+      for (const n of nodes) {
+        const isDup = kept.some((k) => k.vec.length === n.vec.length && cosineSimilarity(k.vec, n.vec) > threshold)
+        if (isDup) {
+          if (this.deleteMemoryItem(n.id)) removed += 1
+        } else {
+          kept.push(n)
+        }
+      }
+    }
+    return removed
+  }
+
+  // ===== 语义检索：记忆向量（memory_embeddings，Float32 blob，与 messageVectorService 同套存取）=====
+
+  /** 写入/更新某记忆在某嵌入模型下的向量。 */
+  upsertMemoryVector(memoryId: number, modelId: string, dim: number, contentHash: string, embedding: Buffer): void {
+    this.getDb().prepare(`
+      INSERT INTO memory_embeddings (memory_id, model_id, dim, content_hash, embedding, indexed_at)
+      VALUES (@memoryId, @modelId, @dim, @contentHash, @embedding, @indexedAt)
+      ON CONFLICT(memory_id, model_id) DO UPDATE SET
+        dim = excluded.dim,
+        content_hash = excluded.content_hash,
+        embedding = excluded.embedding,
+        indexed_at = excluded.indexed_at
+    `).run({ memoryId, modelId, dim, contentHash, embedding, indexedAt: nowMs() })
+  }
+
+  /** 某模型下已建向量的元信息（memory_id → {contentHash, dim}），供懒构建判断哪些缺失/过期。 */
+  getVectorMeta(modelId: string): Map<number, { contentHash: string; dim: number }> {
+    const rows = this.getDb().prepare(
+      'SELECT memory_id, content_hash, dim FROM memory_embeddings WHERE model_id = ?'
+    ).all(modelId) as Array<{ memory_id: number; content_hash: string; dim: number }>
+    const map = new Map<number, { contentHash: string; dim: number }>()
+    for (const row of rows) map.set(Number(row.memory_id), { contentHash: row.content_hash, dim: Number(row.dim) })
+    return map
+  }
+
+  /** 向量 KNN：对候选记忆算 cosine，降序返回 {item, score}。维度不符的旧向量跳过。 */
+  searchMemoryVectors(
+    queryVec: number[],
+    modelId: string,
+    opts: { sourceTypes?: MemorySourceType[]; sessionId?: string; limit?: number } = {}
+  ): Array<{ item: MemoryItem; score: number }> {
+    const db = this.getDb()
+    const clauses: string[] = ['e.model_id = @modelId']
+    const params: Record<string, unknown> = { modelId }
+    if (opts.sessionId) {
+      clauses.push('m.session_id = @sessionId')
+      params.sessionId = opts.sessionId
+    }
+    const sourceTypes = Array.from(new Set((opts.sourceTypes || []).filter((t) => MEMORY_SOURCE_TYPES.includes(t))))
+    if (sourceTypes.length > 0) {
+      const placeholders = sourceTypes.map((_, i) => `@st${i}`)
+      sourceTypes.forEach((t, i) => { params[`st${i}`] = t })
+      clauses.push(`m.source_type IN (${placeholders.join(', ')})`)
+    }
+    const rows = db.prepare(`
+      SELECT m.*, e.dim AS e_dim, e.embedding AS e_embedding
+      FROM memory_embeddings e
       JOIN memory_items m ON m.id = e.memory_id
       WHERE ${clauses.join(' AND ')}
-      ORDER BY e.indexed_at ASC
-      LIMIT @limit
-    `).all(params) as MemoryEmbeddingRow[]
-    return rows.map(toMemoryEmbedding)
+    `).all(params) as Array<MemoryItemRow & { e_dim: number; e_embedding: Buffer }>
+
+    const scored: Array<{ item: MemoryItem; score: number }> = []
+    for (const row of rows) {
+      if (Number(row.e_dim) !== queryVec.length) continue
+      const buf = row.e_embedding
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+      const vec = Array.from(new Float32Array(ab))
+      let score = 0
+      try {
+        score = cosineSimilarity(queryVec, vec)
+      } catch {
+        continue
+      }
+      scored.push({ item: toMemoryItem(row), score })
+    }
+    scored.sort((a, b) => b.score - a.score)
+    return scored.slice(0, Math.max(1, Math.floor(opts.limit || 10)))
   }
 
   getStats(): MemoryDatabaseStats {
     const db = this.getDb()
     const itemRow = db.prepare('SELECT COUNT(*) AS count FROM memory_items').get() as { count: number }
-    const embeddingRow = db.prepare('SELECT COUNT(*) AS count FROM memory_embeddings').get() as { count: number }
-    const staleRow = db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM memory_embeddings e
-      JOIN memory_items m ON m.id = e.memory_id
-      WHERE e.content_hash != m.content_hash
-    `).get() as { count: number }
 
     return {
-      itemCount: Number(itemRow.count || 0),
-      embeddingCount: Number(embeddingRow.count || 0),
-      staleEmbeddingCount: Number(staleRow.count || 0)
+      itemCount: Number(itemRow.count || 0)
     }
   }
 }

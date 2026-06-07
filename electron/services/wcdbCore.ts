@@ -1,9 +1,13 @@
-import { basename, join } from 'path'
+import { basename, delimiter, dirname, join } from 'path'
 import { existsSync, readdirSync, statSync } from 'fs'
+
+// 稳定性开关：native 消息游标保留原生速度。若 koffi/native 触发 fatal，
+// 现在只会终止 Electron utilityProcess，主进程会重启子进程并让本次请求回退 SQL。
+const NATIVE_MESSAGE_CURSOR_ENABLED = true
 
 /**
  * WcdbCore —— 直连微信加密数据库的底层封装。
- * - 不依赖 Electron `app`，可在 worker_threads 中实例化
+ * - 不依赖 Electron `app`，可在 utilityProcess 中实例化
  * - 所有资源路径通过 setPaths() 注入
  * - C 符号按需探测，未绑定的新符号不会导致初始化失败（特性可降级）
  */
@@ -65,6 +69,24 @@ export class WcdbCore {
     return join(baseDir, 'WCDB.dll')
   }
 
+  private prepareWindowsDllSearchPath(libraryPath: string): { success: boolean; error?: string } {
+    if (process.platform !== 'win32') return { success: true }
+
+    const wcdbCorePath = this.getWindowsCoreLibraryPath()
+    if (!existsSync(wcdbCorePath)) {
+      return { success: false, error: `WCDB 依赖库不存在: ${wcdbCorePath}` }
+    }
+
+    const dllDir = dirname(libraryPath)
+    const pathParts = (process.env.PATH || '').split(delimiter).filter(Boolean)
+    const hasDllDir = pathParts.some(item => item.toLowerCase() === dllDir.toLowerCase())
+    if (!hasDllDir) {
+      process.env.PATH = [dllDir, ...pathParts].join(delimiter)
+    }
+
+    return { success: true }
+  }
+
   async initialize(): Promise<{ success: boolean; error?: string }> {
     if (this.initialized) return { success: true }
 
@@ -75,16 +97,8 @@ export class WcdbCore {
         return { success: false, error: `WCDB 原生库不存在: ${libraryPath}` }
       }
 
-      if (process.platform === 'win32') {
-        const wcdbCorePath = this.getWindowsCoreLibraryPath()
-        if (existsSync(wcdbCorePath)) {
-          try {
-            this.koffi.load(wcdbCorePath)
-          } catch (e: any) {
-            console.warn('预加载 WCDB.dll 失败:', e.message || e)
-          }
-        }
-      }
+      const dllSearchRes = this.prepareWindowsDllSearchPath(libraryPath)
+      if (!dllSearchRes.success) return dllSearchRes
 
       this.lib = this.koffi.load(libraryPath)
 
@@ -479,6 +493,10 @@ export class WcdbCore {
     return Array.isArray(parsed) ? parsed : [parsed]
   }
 
+  private shouldTraceNativeCursor(): boolean {
+    return process.env.CIPHERTALK_CHAT_DEBUG === '1' || process.env.CIPHERTALK_WCDB_DEBUG === '1'
+  }
+
   async getNativeMessages(sessionId: string, limit: number, offset: number): Promise<{ success: boolean; rows?: any[]; error?: string }> {
     return { success: false, error: 'direct native 消息读取已禁用，请使用 cursor 路径' }
   }
@@ -490,6 +508,9 @@ export class WcdbCore {
     beginTimestamp: number,
     endTimestamp: number
   ): Promise<{ success: boolean; cursor?: number; error?: string }> {
+    if (!NATIVE_MESSAGE_CURSOR_ENABLED) {
+      return { success: false, error: 'native 消息游标已禁用（稳定性），回退 SQL' }
+    }
     if (!this.initialized || this.handle === null) {
       return { success: false, error: 'WCDB 未初始化' }
     }
@@ -498,6 +519,7 @@ export class WcdbCore {
     }
 
     try {
+      const startedAt = Date.now()
       const outCursor = [0]
       const result = this.wcdbOpenMessageCursor(
         this.handle,
@@ -508,8 +530,15 @@ export class WcdbCore {
         Math.max(0, Math.floor(Number(endTimestamp) || 0)),
         outCursor
       )
+      const elapsed = Date.now() - startedAt
       if (result !== 0 || outCursor[0] <= 0) {
+        console.warn(`[wcdbCore] native cursor open failed session=${sessionId} rc=${result} elapsed=${elapsed}ms`)
+        await this.printLogs()
         return { success: false, error: this.mapCursorStatusCode(result, '创建游标失败') }
+      }
+      if (this.shouldTraceNativeCursor() || elapsed >= 800) {
+        console.warn(`[wcdbCore] native cursor open ok session=${sessionId} cursor=${outCursor[0]} batch=${batchSize} asc=${ascending ? 1 : 0} begin=${beginTimestamp || 0} end=${endTimestamp || 0} elapsed=${elapsed}ms`)
+        await this.printLogs()
       }
       return { success: true, cursor: outCursor[0] }
     } catch (e: any) {
@@ -524,6 +553,9 @@ export class WcdbCore {
     beginTimestamp: number,
     endTimestamp: number
   ): Promise<{ success: boolean; cursor?: number; error?: string }> {
+    if (!NATIVE_MESSAGE_CURSOR_ENABLED) {
+      return { success: false, error: 'native 消息游标已禁用（稳定性），回退 SQL' }
+    }
     if (!this.wcdbOpenMessageCursorLite) {
       return this.openMessageCursor(sessionId, batchSize, ascending, beginTimestamp, endTimestamp)
     }
@@ -532,6 +564,7 @@ export class WcdbCore {
     }
 
     try {
+      const startedAt = Date.now()
       const outCursor = [0]
       const result = this.wcdbOpenMessageCursorLite(
         this.handle,
@@ -542,8 +575,15 @@ export class WcdbCore {
         Math.max(0, Math.floor(Number(endTimestamp) || 0)),
         outCursor
       )
+      const elapsed = Date.now() - startedAt
       if (result !== 0 || outCursor[0] <= 0) {
+        console.warn(`[wcdbCore] native cursor lite open failed session=${sessionId} rc=${result} elapsed=${elapsed}ms`)
+        await this.printLogs()
         return { success: false, error: this.mapCursorStatusCode(result, '创建轻量游标失败') }
+      }
+      if (this.shouldTraceNativeCursor() || elapsed >= 800) {
+        console.warn(`[wcdbCore] native cursor lite open ok session=${sessionId} cursor=${outCursor[0]} batch=${batchSize} asc=${ascending ? 1 : 0} begin=${beginTimestamp || 0} end=${endTimestamp || 0} elapsed=${elapsed}ms`)
+        await this.printLogs()
       }
       return { success: true, cursor: outCursor[0] }
     } catch (e: any) {
@@ -560,15 +600,25 @@ export class WcdbCore {
     }
 
     try {
+      const startedAt = Date.now()
       const outJson = [null as any]
       const outHasMore = [0]
       const result = this.wcdbFetchMessageBatch(this.handle, cursor, outJson, outHasMore)
+      const elapsed = Date.now() - startedAt
       if (result !== 0 || !outJson[0]) {
+        console.warn(`[wcdbCore] native cursor fetch failed cursor=${cursor} rc=${result} elapsed=${elapsed}ms`)
+        await this.printLogs()
         return { success: false, error: this.mapCursorStatusCode(result, '获取批次失败') }
       }
       const jsonStr = this.decodeJsonPtr(outJson[0])
       if (!jsonStr) return { success: false, error: '解析批次失败' }
-      return { success: true, rows: this.parseMessageJson(jsonStr), hasMore: outHasMore[0] === 1 }
+      const rows = this.parseMessageJson(jsonStr)
+      const hasMore = outHasMore[0] === 1
+      if (this.shouldTraceNativeCursor() || elapsed >= 800) {
+        console.warn(`[wcdbCore] native cursor fetch ok cursor=${cursor} rows=${rows.length} hasMore=${hasMore ? 1 : 0} jsonBytes=${jsonStr.length} elapsed=${elapsed}ms`)
+        await this.printLogs()
+      }
+      return { success: true, rows, hasMore }
     } catch (e: any) {
       return { success: false, error: e?.message || String(e) }
     }
@@ -583,11 +633,13 @@ export class WcdbCore {
     useLite: boolean = true,
     maxBatches: number = 1
   ): Promise<{ success: boolean; rows?: any[]; hasMore?: boolean; error?: string }> {
+    const startedAt = Date.now()
     const openRes = useLite
       ? await this.openMessageCursorLite(sessionId, batchSize, ascending, beginTimestamp, endTimestamp)
       : await this.openMessageCursor(sessionId, batchSize, ascending, beginTimestamp, endTimestamp)
 
     if (!openRes.success || !openRes.cursor) {
+      console.warn(`[wcdbCore] native cursor batch open failed session=${sessionId} elapsed=${Date.now() - startedAt}ms error=${openRes.error || ''}`)
       return { success: false, error: openRes.error || '创建消息游标失败' }
     }
 
@@ -609,6 +661,10 @@ export class WcdbCore {
         if (!hasMore || batchRows.length === 0) break
       }
 
+      const elapsed = Date.now() - startedAt
+      if (this.shouldTraceNativeCursor() || elapsed >= 1000) {
+        console.warn(`[wcdbCore] native cursor batch done session=${sessionId} cursor=${openRes.cursor} rows=${rows.length} hasMore=${hasMore ? 1 : 0} elapsed=${elapsed}ms`)
+      }
       return { success: true, rows, hasMore }
     } finally {
       await this.closeMessageCursor(openRes.cursor).catch(() => undefined)
@@ -785,12 +841,19 @@ export class WcdbCore {
       case -4: return '数据库打开失败'
       case -5: return '查询执行失败'
       case -6: return 'WCDB 尚未初始化'
+      case -7: return 'WCDB 表结构不匹配'
+      case -8: return '软件偷来的吧！'
+      case -9: return '快提醒作者更新软件了！'
+      case -10: return '靠，你从哪搞得软件？'
       default: return `WCDB 错误码: ${code}`
     }
   }
 
   private mapCursorStatusCode(code: number, prefix: string): string {
     if (code === -7) return 'message schema mismatch：当前账号消息表结构与程序要求不一致'
+    if (code === -8) return `${prefix}: ${code}（软件偷来的吧！）`
+    if (code === -9) return `${prefix}: ${code}（快提醒作者更新软件了！）`
+    if (code === -10) return `${prefix}: ${code}（靠，你从哪搞得软件？）`
     if (code === -3) return `${prefix}: ${code}（消息数据库未找到）`
     return `${prefix}: ${code}`
   }

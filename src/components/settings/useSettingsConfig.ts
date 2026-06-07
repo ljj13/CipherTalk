@@ -50,19 +50,12 @@ export function useSettingsConfig() {
         aiProvider: await configService.getAiProvider(),
         aiApiKey: await configService.getAiApiKey(),
         aiModel: await configService.getAiModel(),
-        aiDefaultTimeRange: await configService.getAiDefaultTimeRange(),
-        aiSummaryDetail: await configService.getAiSummaryDetail(),
-        aiSystemPromptPreset: await configService.getAiSystemPromptPreset(),
-        aiCustomSystemPrompt: await configService.getAiCustomSystemPrompt(),
-        aiEnableThinking: await configService.getAiEnableThinking(),
-        aiMessageLimit: await configService.getAiMessageLimit(),
-        aiAgentDecisionMaxTokens: await configService.getAiAgentDecisionMaxTokens(),
-        aiAgentAnswerMaxTokens: await configService.getAiAgentAnswerMaxTokens(),
 
         quoteStyle: await configService.getQuoteStyle(),
         exportPath: await configService.getExportPath() || '',
         exportDefaultDateRange: await configService.getExportDefaultDateRange(),
-        closeToTray: await configService.getCloseToTray()
+        closeToTray: await configService.getCloseToTray(),
+        hardwareAccelerationEnabled: await configService.getHardwareAccelerationEnabled()
       }
 
       store.hydrate(config)
@@ -111,14 +104,6 @@ export function useSettingsConfig() {
       await configService.setAiProvider(config.aiProvider)
       await configService.setAiApiKey(config.aiApiKey)
       await configService.setAiModel(config.aiModel)
-      await configService.setAiDefaultTimeRange(config.aiDefaultTimeRange)
-      await configService.setAiSummaryDetail(config.aiSummaryDetail)
-      await configService.setAiSystemPromptPreset(config.aiSystemPromptPreset)
-      await configService.setAiCustomSystemPrompt(config.aiCustomSystemPrompt)
-      await configService.setAiEnableThinking(config.aiEnableThinking)
-      await configService.setAiMessageLimit(config.aiMessageLimit)
-      await configService.setAiAgentDecisionMaxTokens(config.aiAgentDecisionMaxTokens)
-      await configService.setAiAgentAnswerMaxTokens(config.aiAgentAnswerMaxTokens)
       await configService.setSttLanguages(config.sttLanguages)
       await configService.setSttModelType(config.sttModelType)
       await configService.setSttMode(config.sttMode)
@@ -130,6 +115,7 @@ export function useSettingsConfig() {
       await configService.setSttOnlineTimeoutMs(config.sttOnlineTimeoutMs)
       await configService.setSttOnlineMaxConcurrency(config.sttOnlineMaxConcurrency)
       await configService.setCloseToTray(config.closeToTray)
+      await configService.setHardwareAccelerationEnabled(config.hardwareAccelerationEnabled)
 
       store.commit()
       showMessage('配置保存成功', true)

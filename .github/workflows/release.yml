@@ -58,9 +58,6 @@ jobs:
             exit 1
           }
 
-      - name: Install dependencies
-        run: npm ci
-
       - name: Generate force update manifest
         run: npm run build:force-update-manifest
 
@@ -104,7 +101,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Rebuild native modules
         run: npx electron-rebuild
@@ -117,6 +114,9 @@ jobs:
 
       - name: Generate embedded release body
         run: npm run build:release-body
+
+      - name: Refresh models.dev snapshot
+        run: npm run build:models-snapshot
 
       - name: Build app
         run: npm run build:win
@@ -166,7 +166,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Rebuild native modules
         run: npx electron-rebuild
@@ -179,6 +179,9 @@ jobs:
 
       - name: Generate embedded release body
         run: npm run build:release-body
+
+      - name: Refresh models.dev snapshot
+        run: npm run build:models-snapshot
 
       - name: Build mac app
         run: npm run build:mac
@@ -224,9 +227,6 @@ jobs:
         with:
           node-version: 22.12.0
           cache: npm
-
-      - name: Install dependencies
-        run: npm ci
 
       - name: Download release metadata
         uses: actions/download-artifact@v4

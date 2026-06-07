@@ -3,12 +3,17 @@
 本文档记录了密语 CipherTalk 的所有重要更改。
 
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
-并且本项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+并且本项目自 2026.6.8 起使用年月日日期版本号。
 
 ## [未发布]
 
 ### 变更
 - 暂无
+
+## [2026.6.8] - 2026-06-08
+
+### 变更
+- 版本号改为年月日日期格式，后续版本按发布日期命名。
 
 ## [6.0.2] - 2026-05-16
 
@@ -78,7 +83,7 @@
 ## [5.0.3] - 2026-05-06
 
 ### 修复
-- 修复 MCP 工具错误返回仍携带 `structuredContent`，导致 `get_messages`、`get_session_context`、`get_session_statistics`、`search_messages`、`get_keyword_statistics` 等带 `outputSchema` 的工具在宿主端被误判为结构化输出缺字段的问题。
+- 修复 MCP 工具错误返回仍携带 `structuredContent`，导致 `get_messages`、`get_session_context`、`search_messages` 等带 `outputSchema` 的工具在宿主端被误判为结构化输出缺字段的问题。
 
 ## [4.2.3] - 2026-04-27
 

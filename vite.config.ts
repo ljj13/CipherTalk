@@ -92,7 +92,7 @@ export default defineConfig(async () => {
           }
         },
         {
-          entry: 'electron/wcdbWorker.ts',
+          entry: 'electron/wcdbUtilityProcess.ts',
           vite: {
             build: {
               outDir: 'dist-electron',
@@ -101,34 +101,7 @@ export default defineConfig(async () => {
           }
         },
         {
-          entry: 'electron/sessionQaWorker.ts',
-          vite: {
-            build: {
-              outDir: 'dist-electron',
-              rollupOptions: { external }
-            }
-          }
-        },
-        {
-          entry: 'electron/sessionVectorIndexWorker.ts',
-          vite: {
-            build: {
-              outDir: 'dist-electron',
-              rollupOptions: { external }
-            }
-          }
-        },
-        {
-          entry: 'electron/sessionMemoryBuildWorker.ts',
-          vite: {
-            build: {
-              outDir: 'dist-electron',
-              rollupOptions: { external }
-            }
-          }
-        },
-        {
-          entry: 'electron/agentToolWorker.ts',
+          entry: 'electron/aiAgentUtilityProcess.ts',
           vite: {
             build: {
               outDir: 'dist-electron',

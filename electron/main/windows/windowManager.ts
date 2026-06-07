@@ -217,11 +217,8 @@ function getImageViewerQueryParams(
 export function createWindowManager(ctx: MainProcessContext): WindowManager {
   let chatWindow: BrowserWindow | null = null
   let momentsWindow: BrowserWindow | null = null
-  let groupAnalyticsWindow: BrowserWindow | null = null
-  let annualReportWindow: BrowserWindow | null = null
   let agreementWindow: BrowserWindow | null = null
   let purchaseWindow: BrowserWindow | null = null
-  let aiSummaryWindow: BrowserWindow | null = null
   let welcomeWindow: BrowserWindow | null = null
   let chatHistoryWindow: BrowserWindow | null = null
 
@@ -301,7 +298,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       attachWindowStartupDiagnostics(win, 'main')
       ctx.setMainWindow(win)
       markStartupMilestone('window:main-services-init-start')
-      const configService = new ConfigService()
+      const configService = ctx.getConfigService() ?? new ConfigService()
       ctx.setConfigService(configService)
       ctx.setDbService(new DatabaseService())
 
@@ -484,45 +481,6 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       return chatWindow
     },
 
-    openGroupAnalyticsWindow() {
-      if (groupAnalyticsWindow && !groupAnalyticsWindow.isDestroyed()) {
-        if (groupAnalyticsWindow.isMinimized()) groupAnalyticsWindow.restore()
-        groupAnalyticsWindow.focus()
-        return groupAnalyticsWindow
-      }
-
-      const isDark = nativeTheme.shouldUseDarkColors
-      groupAnalyticsWindow = new BrowserWindow({
-        width: 1100,
-        height: 750,
-        minWidth: 900,
-        minHeight: 600,
-        ...getWindowIconOptions(ctx),
-        webPreferences: {
-          preload: join(__dirname, 'preload.js'),
-          devTools: ctx.allowDevTools,
-          contextIsolation: true,
-          nodeIntegration: false,
-          webSecurity: false
-        },
-        titleBarStyle: 'hidden',
-        titleBarOverlay: {
-          color: '#00000000',
-          symbolColor: '#666666',
-          height: 40
-        },
-        show: false,
-        backgroundColor: isDark ? '#1A1A1A' : '#F0F0F0'
-      })
-
-      groupAnalyticsWindow.once('ready-to-show', () => groupAnalyticsWindow?.show())
-      loadWindowRoute(ctx, groupAnalyticsWindow, '/group-analytics-window')
-      groupAnalyticsWindow.on('closed', () => {
-        groupAnalyticsWindow = null
-      })
-      return groupAnalyticsWindow
-    },
-
     openMomentsWindow(filterUsername?: string) {
       if (momentsWindow && !momentsWindow.isDestroyed()) {
         if (momentsWindow.isMinimized()) momentsWindow.restore()
@@ -637,53 +595,6 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       return chatHistoryWindow
     },
 
-    openAnnualReportWindow(year: number) {
-      if (annualReportWindow && !annualReportWindow.isDestroyed()) {
-        annualReportWindow.close()
-        annualReportWindow = null
-      }
-
-      const isDark = nativeTheme.shouldUseDarkColors
-      annualReportWindow = new BrowserWindow({
-        width: 1200,
-        height: 800,
-        minWidth: 900,
-        minHeight: 650,
-        ...getWindowIconOptions(ctx),
-        webPreferences: {
-          preload: join(__dirname, 'preload.js'),
-          devTools: ctx.allowDevTools,
-          contextIsolation: true,
-          nodeIntegration: false,
-          webSecurity: false
-        },
-        titleBarStyle: 'hidden',
-        titleBarOverlay: {
-          color: '#00000000',
-          symbolColor: isDark ? '#FFFFFF' : '#333333',
-          height: 40
-        },
-        show: false,
-        backgroundColor: isDark ? '#1A1A1A' : '#F9F8F6'
-      })
-
-      annualReportWindow.once('ready-to-show', () => annualReportWindow?.show())
-      if (process.env.VITE_DEV_SERVER_URL) {
-        annualReportWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${getThemeQueryParams(ctx)}#/annual-report-window?year=${year}`)
-        setupDevToolsShortcut(annualReportWindow)
-      } else {
-        annualReportWindow.loadFile(join(__dirname, '../dist/index.html'), {
-          hash: `/annual-report-window?year=${year}`,
-          query: getThemeQuery(ctx)
-        })
-      }
-
-      annualReportWindow.on('closed', () => {
-        annualReportWindow = null
-      })
-      return annualReportWindow
-    },
-
     openAgreementWindow() {
       if (agreementWindow && !agreementWindow.isDestroyed()) {
         agreementWindow.focus()
@@ -733,10 +644,11 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         height: 760,
         minWidth: 900,
         minHeight: 640,
-        frame: false,
+        frame: true,
         transparent: false,
         backgroundColor: nativeTheme.shouldUseDarkColors ? '#1A1A1A' : '#FFFFFF',
         hasShadow: true,
+        autoHideMenuBar: true,
         ...getWindowIconOptions(ctx),
         webPreferences: {
           preload: join(__dirname, 'preload.js'),
@@ -946,56 +858,6 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       }
 
       return win
-    },
-
-    openAISummaryWindow(sessionId: string, sessionName: string) {
-      if (aiSummaryWindow && !aiSummaryWindow.isDestroyed()) {
-        aiSummaryWindow.close()
-        aiSummaryWindow = null
-      }
-
-      const isDark = nativeTheme.shouldUseDarkColors
-      aiSummaryWindow = new BrowserWindow({
-        width: 1100,
-        height: 760,
-        minWidth: 900,
-        minHeight: 600,
-        ...getWindowIconOptions(ctx),
-        webPreferences: {
-          preload: join(__dirname, 'preload.js'),
-          devTools: ctx.allowDevTools,
-          contextIsolation: true,
-          nodeIntegration: false,
-          webSecurity: false
-        },
-        frame: false,
-        titleBarStyle: 'hidden',
-        titleBarOverlay: {
-          color: isDark ? '#2A2A2A' : '#F0F0F0',
-          symbolColor: isDark ? '#FFFFFF' : '#000000',
-          height: 40
-        },
-        show: false,
-        backgroundColor: isDark ? '#1A1A1A' : '#FFFFFF',
-        autoHideMenuBar: true
-      })
-
-      aiSummaryWindow.once('ready-to-show', () => aiSummaryWindow?.show())
-      const queryParams = `${getThemeQueryParams(ctx)}&sessionId=${encodeURIComponent(sessionId)}&sessionName=${encodeURIComponent(sessionName)}`
-      if (process.env.VITE_DEV_SERVER_URL) {
-        aiSummaryWindow.loadURL(`${process.env.VITE_DEV_SERVER_URL}?${queryParams}#/ai-summary-window`)
-        setupDevToolsShortcut(aiSummaryWindow, () => aiSummaryWindow)
-      } else {
-        aiSummaryWindow.loadFile(join(__dirname, '../dist/index.html'), {
-          search: queryParams,
-          hash: '/ai-summary-window'
-        })
-      }
-
-      aiSummaryWindow.on('closed', () => {
-        aiSummaryWindow = null
-      })
-      return aiSummaryWindow
     },
 
     completeWelcome() {

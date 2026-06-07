@@ -1,12 +1,11 @@
 ﻿import { lazy, Suspense, useState, useEffect, useRef } from 'react'
 import { useSearchParams, useLocation } from 'react-router-dom'
+import { Tabs, ScrollShadow, Skeleton, toast, type Key as HeroKey } from '@heroui/react'
 import { useAppStore } from '../../stores/appStore'
-import { useThemeStore, themes } from '../../stores/themeStore'
 import type { UpdateDownloadProgressPayload } from '../../types/electron'
 import type { AccountProfile } from '../../types/account'
 import { dialog } from '../../services/ipc'
 import * as configService from '../../services/config'
-import BackgroundFx from './BackgroundFx'
 import AboutTab from './tabs/AboutTab'
 import ActivationTab from './tabs/ActivationTab'
 import AppearanceTab from './tabs/AppearanceTab'
@@ -14,28 +13,30 @@ import SecurityTab from './tabs/SecurityTab'
 import type { UpdateInfo } from './types'
 import { formatFileSize } from './utils'
 import { useSettingsStore } from './settingsStore'
-import { ConfirmDialog, FloatingSaveButton, Toast } from './ui'
+import { ConfirmDialog, FloatingSaveButton } from './ui'
 import {
   Eye, EyeOff, Key, FolderSearch, FolderOpen, Search,
-  RotateCcw, Trash2, Plug, X, Check, Sun, Moon, Monitor,
+  RotateCcw, Trash2, Plug, X, Check,
   Palette, Database, ImageIcon, Download, HardDrive, Info, RefreshCw, Shield, CheckCircle, AlertCircle, Mic,
-  Zap, Layers, User, Sparkles, Lock, ShieldCheck, Minus, Plus, Smile, ChevronDown
+  Zap, Layers, User, Sparkles, Lock, ShieldCheck, Minus, Plus, Smile, ChevronDown, Brain
 } from 'lucide-react'
-import '../../pages/SettingsPage.scss'
+import '../../pages/SettingsPage.css'
 
 const AISummarySettings = lazy(() => import('../ai/AISummarySettings'))
 const DataManagementTab = lazy(() => import('./tabs/DataManagementTab'))
 const DatabaseTab = lazy(() => import('./tabs/DatabaseTab'))
 const SttTab = lazy(() => import('./tabs/SttTab'))
+const MemoryTab = lazy(() => import('./tabs/MemoryTab'))
 
-type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'data' | 'security' | 'activation' | 'about'
+type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'memory' | 'data' | 'security' | 'activation' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'database', label: '数据解密', icon: Database },
   { id: 'security', label: '安全设置', icon: Lock },
   { id: 'stt', label: '语音转文字', icon: Mic },
-  { id: 'ai', label: 'AI 摘要', icon: Sparkles },
+  { id: 'ai', label: 'AI 接入', icon: Sparkles },
+  { id: 'memory', label: '记忆', icon: Brain },
   { id: 'data', label: '数据管理', icon: HardDrive },
   // { id: 'activation', label: '激活', icon: Shield },
   { id: 'about', label: '关于', icon: Info }
@@ -84,11 +85,69 @@ const STT_ONLINE_DEFAULTS = {
   }
 } as const
 
+function SettingsTabSkeleton() {
+  return (
+    <div className="tab-content" aria-busy="true" aria-label="设置页内容占位">
+      <div className="mx-auto w-full max-w-290 space-y-6 px-2">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0 space-y-2">
+            <Skeleton className="h-6 w-36 rounded-lg" />
+            <Skeleton className="h-4 w-72 max-w-full rounded-lg" />
+          </div>
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            <Skeleton className="h-8 w-24 rounded-lg" />
+            <Skeleton className="h-8 w-24 rounded-lg" />
+            <Skeleton className="h-9 w-36 rounded-lg" />
+          </div>
+        </div>
+
+        <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_330px]">
+          <div className="space-y-5 rounded-lg border border-border bg-surface p-5">
+            <div className="flex items-start justify-between gap-4">
+              <Skeleton className="h-5 w-24 rounded-lg" />
+              <Skeleton className="size-7 rounded-lg" />
+            </div>
+            <div className="space-y-4">
+              <Skeleton className="h-10 w-full rounded-lg" />
+              <div className="grid gap-4 lg:grid-cols-2">
+                <Skeleton className="h-10 w-full rounded-lg" />
+                <Skeleton className="h-10 w-full rounded-lg" />
+              </div>
+              <Skeleton className="h-10 w-full rounded-lg" />
+              <Skeleton className="h-10 w-full rounded-lg" />
+            </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <Skeleton className="h-9 w-24 rounded-lg" />
+              <Skeleton className="h-9 w-24 rounded-lg" />
+              <Skeleton className="h-9 w-32 rounded-lg" />
+            </div>
+          </div>
+
+          <div className="space-y-5">
+            <div className="space-y-4 rounded-lg border border-border bg-surface p-5">
+              <Skeleton className="h-5 w-28 rounded-lg" />
+              <div className="space-y-3">
+                <Skeleton className="h-4 w-full rounded-lg" />
+                <Skeleton className="h-4 w-5/6 rounded-lg" />
+                <Skeleton className="h-4 w-2/3 rounded-lg" />
+              </div>
+            </div>
+            <div className="space-y-4 rounded-lg border border-border bg-surface p-5">
+              <Skeleton className="h-5 w-24 rounded-lg" />
+              <Skeleton className="h-16 w-full rounded-lg" />
+              <Skeleton className="h-9 w-full rounded-lg" />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function SettingsLayout() {
   const [searchParams] = useSearchParams()
   const location = useLocation()
   const { setDbConnected, setLoading, setMyWxid: setCurrentWxid, userInfo } = useAppStore()
-  const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
   const hydrateSettings = useSettingsStore(s => s.hydrate)
   const commitSettings = useSettingsStore(s => s.commit)
   const storeHasUnsavedChanges = useSettingsStore(s => s.hasUnsavedChanges)
@@ -138,13 +197,12 @@ function SettingsLayout() {
   const [appVersion, setAppVersion] = useState('')
   const [updateInfo, setUpdateInfo] = useState<UpdateInfo | null>(null)
   const [keyStatus, setKeyStatus] = useState('')
-  const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null)
   const [showDecryptKey, setShowDecryptKey] = useState(false)
   const [showXorKey, setShowXorKey] = useState(false)
   const [closeToTray, setCloseToTray] = useState(true)
   const [showAesKey, setShowAesKey] = useState(false)
   const [showClearDialog, setShowClearDialog] = useState<{
-    type: 'images' | 'emojis' | 'databases' | 'all' | 'currentAccount' | 'allAccounts'
+    type: 'images' | 'emojis' | 'aiData' | 'all' | 'currentAccount' | 'allAccounts'
     title: string
     message: string
   } | null>(null)
@@ -152,6 +210,7 @@ function SettingsLayout() {
     images: number
     emojis: number
     databases: number
+    aiData: number
     logs: number
     total: number
   } | null>(null)
@@ -167,7 +226,7 @@ function SettingsLayout() {
   const [sttOnlineTimeoutMs, setSttOnlineTimeoutMs] = useState(60000)
   const [sttOnlineMaxConcurrency, setSttOnlineMaxConcurrency] = useState(2)
   const [showSttOnlineLanguageDropdown, setShowSttOnlineLanguageDropdown] = useState(false)
-  const [quoteStyle, setQuoteStyle] = useState<'default' | 'wechat'>('default')
+  const [quoteStyle, setQuoteStyle] = useState<'default' | 'wechat' | 'card'>('default')
   const [skipIntegrityCheck, setSkipIntegrityCheck] = useState(false)
   const [exportDefaultDateRange, setExportDefaultDateRange] = useState<number>(0)
   const [autoUpdateDatabase, setAutoUpdateDatabase] = useState(true)
@@ -180,14 +239,6 @@ function SettingsLayout() {
   const [aiProvider, setAiProviderState] = useState('deepseek')
   const [aiApiKey, setAiApiKeyState] = useState('')
   const [aiModel, setAiModelState] = useState('')
-  const [aiDefaultTimeRange, setAiDefaultTimeRangeState] = useState<number>(7)
-  const [aiSummaryDetail, setAiSummaryDetailState] = useState<'simple' | 'normal' | 'detailed'>('normal')
-  const [aiSystemPromptPreset, setAiSystemPromptPresetState] = useState<'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'>('default')
-  const [aiCustomSystemPrompt, setAiCustomSystemPromptState] = useState<string>('')
-  const [aiEnableThinking, setAiEnableThinkingState] = useState<boolean>(true)
-  const [aiMessageLimit, setAiMessageLimitState] = useState<number>(3000)
-  const [aiAgentDecisionMaxTokens, setAiAgentDecisionMaxTokensState] = useState<number>(2048)
-  const [aiAgentAnswerMaxTokens, setAiAgentAnswerMaxTokensState] = useState<number>(8192)
 
   // 日志相关状态
   const [logFiles, setLogFiles] = useState<Array<{ name: string; size: number; mtime: Date }>>([])
@@ -374,30 +425,16 @@ function SettingsLayout() {
       const savedAiProvider = await configService.getAiProvider()
       const savedAiApiKey = await configService.getAiApiKey()
       const savedAiModel = await configService.getAiModel()
-      const savedAiDefaultTimeRange = await configService.getAiDefaultTimeRange()
-      const savedAiSummaryDetail = await configService.getAiSummaryDetail()
-      const savedAiSystemPromptPreset = await configService.getAiSystemPromptPreset()
-      const savedAiCustomSystemPrompt = await configService.getAiCustomSystemPrompt()
-      const savedAiEnableThinking = await configService.getAiEnableThinking()
-      const savedAiMessageLimit = await configService.getAiMessageLimit()
-      const savedAiAgentDecisionMaxTokens = await configService.getAiAgentDecisionMaxTokens()
-      const savedAiAgentAnswerMaxTokens = await configService.getAiAgentAnswerMaxTokens()
 
       setAiProviderState(savedAiProvider)
       setAiApiKeyState(savedAiApiKey)
       setAiModelState(savedAiModel)
-      setAiDefaultTimeRangeState(savedAiDefaultTimeRange)
-      setAiSummaryDetailState(savedAiSummaryDetail)
-      setAiSystemPromptPresetState(savedAiSystemPromptPreset)
-      setAiCustomSystemPromptState(savedAiCustomSystemPrompt)
-      setAiEnableThinkingState(savedAiEnableThinking)
-      setAiMessageLimitState(savedAiMessageLimit)
-      setAiAgentDecisionMaxTokensState(savedAiAgentDecisionMaxTokens)
-      setAiAgentAnswerMaxTokensState(savedAiAgentAnswerMaxTokens)
 
       // 加载关闭行为配置
       const savedCloseToTray = await configService.getCloseToTray()
       setCloseToTray(savedCloseToTray)
+
+      const savedHardwareAccelerationEnabled = await configService.getHardwareAccelerationEnabled()
 
       // 保存初始配置用于比较
       const loadedConfig = {
@@ -428,15 +465,8 @@ function SettingsLayout() {
         aiProvider: savedAiProvider,
         aiApiKey: savedAiApiKey,
         aiModel: savedAiModel,
-        aiDefaultTimeRange: savedAiDefaultTimeRange,
-        aiSummaryDetail: savedAiSummaryDetail,
-        aiSystemPromptPreset: savedAiSystemPromptPreset,
-        aiCustomSystemPrompt: savedAiCustomSystemPrompt,
-        aiEnableThinking: savedAiEnableThinking,
-        aiMessageLimit: savedAiMessageLimit,
-        aiAgentDecisionMaxTokens: savedAiAgentDecisionMaxTokens,
-        aiAgentAnswerMaxTokens: savedAiAgentAnswerMaxTokens,
         closeToTray: savedCloseToTray,
+        hardwareAccelerationEnabled: savedHardwareAccelerationEnabled,
         editingAccountId: (editingAccount || activeAccount)?.id || ''
       }
       hydrateSettings(loadedConfig)
@@ -636,8 +666,8 @@ function SettingsLayout() {
   }
 
   const showMessage = (text: string, success: boolean) => {
-    setMessage({ text, success })
-    setTimeout(() => setMessage(null), 3000)
+    if (success) toast.success(text, { timeout: 3000 })
+    else toast.danger(text, { timeout: 3000 })
   }
 
   const handleClearImages = () => {
@@ -652,7 +682,7 @@ function SettingsLayout() {
     setShowClearDialog({
       type: 'all',
       title: '清除所有',
-      message: '此操作将删除所有缓存数据（包括解密后的图片、表情包、数据库文件），清除后无法恢复。确定要继续吗？'
+      message: '此操作将删除所有缓存数据（包括解密后的图片、表情包、日志和历史 AI 功能数据库），清除后无法恢复。确定要继续吗？'
     })
   }
 
@@ -664,11 +694,11 @@ function SettingsLayout() {
     })
   }
 
-  const handleClearDatabases = () => {
+  const handleClearAIData = () => {
     setShowClearDialog({
-      type: 'databases',
-      title: '清除数据库',
-      message: '此操作将删除所有解密后的数据库缓存文件，清除后需要重新解密数据库才能使用聊天记录。确定要继续吗？'
+      type: 'aiData',
+      title: '清除 AI 数据库',
+      message: '此操作将删除历史 AI 摘要、AI 记忆、语义索引等功能产生的本地数据库，不会删除 AI 接入配置、API Key、模型和服务地址。确定要继续吗？'
     })
   }
 
@@ -700,8 +730,8 @@ function SettingsLayout() {
         case 'emojis':
           result = await window.electronAPI.cache.clearEmojis()
           break
-        case 'databases':
-          result = await window.electronAPI.cache.clearDatabases()
+        case 'aiData':
+          result = await window.electronAPI.cache.clearAIData()
           break
           case 'all':
             result = await window.electronAPI.cache.clearAll()
@@ -1275,14 +1305,6 @@ function SettingsLayout() {
       await configService.setAiProvider(storeConfig.aiProvider)
       await configService.setAiApiKey(storeConfig.aiApiKey)
       await configService.setAiModel(storeConfig.aiModel)
-      await configService.setAiDefaultTimeRange(storeConfig.aiDefaultTimeRange)
-      await configService.setAiSummaryDetail(storeConfig.aiSummaryDetail)
-      await configService.setAiSystemPromptPreset(storeConfig.aiSystemPromptPreset)
-      await configService.setAiCustomSystemPrompt(storeConfig.aiCustomSystemPrompt)
-      await configService.setAiEnableThinking(storeConfig.aiEnableThinking)
-      await configService.setAiMessageLimit(storeConfig.aiMessageLimit)
-      await configService.setAiAgentDecisionMaxTokens(storeConfig.aiAgentDecisionMaxTokens)
-      await configService.setAiAgentAnswerMaxTokens(storeConfig.aiAgentAnswerMaxTokens)
 
       await configService.setSttLanguages(storeConfig.sttLanguages)
       await configService.setSttModelType(storeConfig.sttModelType)
@@ -1297,6 +1319,7 @@ function SettingsLayout() {
 
       // 保存关闭行为配置
       await configService.setCloseToTray(storeConfig.closeToTray)
+      await configService.setHardwareAccelerationEnabled(storeConfig.hardwareAccelerationEnabled)
 
       // 如果数据库配置完整，尝试设置已连接状态（不进行耗时测试，仅标记）
       if (storeConfig.decryptKey && storeConfig.dbPath && storeConfig.wxid && storeConfig.decryptKey.length === 64 && isAccountVerified) {
@@ -1334,11 +1357,6 @@ function SettingsLayout() {
 
   return (
     <div className="settings-page">
-      {/* 动态粒子背景 */}
-      <BackgroundFx />
-
-      <Toast message={message} />
-
       {/* 清除确认对话框 */}
       {showClearDialog && (
         <ConfirmDialog
@@ -1376,35 +1394,49 @@ function SettingsLayout() {
         />
       )}
 
-      <div className="settings-tabs">
-        {tabs.map(tab => (
-          <button key={tab.id} className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`} onClick={() => setActiveTab(tab.id)}>
-            <tab.icon size={16} />
-            <span>{tab.label}</span>
-          </button>
-        ))}
-      </div>
+      <Tabs
+        selectedKey={activeTab}
+        onSelectionChange={(key: HeroKey) => setActiveTab(String(key) as SettingsTab)}
+        className="settings-tabs"
+      >
+        <Tabs.ListContainer>
+          <Tabs.List aria-label="设置分类">
+            {tabs.map(tab => (
+              <Tabs.Tab key={tab.id} id={tab.id}>
+                <tab.icon size={16} />
+                {tab.label}
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            ))}
+          </Tabs.List>
+        </Tabs.ListContainer>
+      </Tabs>
 
-      <div className="settings-body">
+      <ScrollShadow className="settings-body" hideScrollBar size={64}>
         {activeTab === 'appearance' && <AppearanceTab />}
         {activeTab === 'database' && (
-          <Suspense fallback={<div className="tab-content">加载中...</div>}>
-            <DatabaseTab showMessage={showMessage} reloadConfig={loadConfig} onSave={handleSaveConfig} />
+          <Suspense fallback={<SettingsTabSkeleton />}>
+            <DatabaseTab showMessage={showMessage} />
           </Suspense>
         )}
         {activeTab === 'security' && <SecurityTab isMac={isMac} showMessage={showMessage} />}
         {activeTab === 'stt' && (
-          <Suspense fallback={<div className="tab-content">加载中...</div>}>
+          <Suspense fallback={<SettingsTabSkeleton />}>
             <SttTab active={activeTab === 'stt'} showMessage={showMessage} />
           </Suspense>
         )}
         {activeTab === 'ai' && (
-          <Suspense fallback={<div className="tab-content">加载中...</div>}>
+          <Suspense fallback={<SettingsTabSkeleton />}>
             <AISummarySettings showMessage={showMessage} />
           </Suspense>
         )}
+        {activeTab === 'memory' && (
+          <Suspense fallback={<SettingsTabSkeleton />}>
+            <MemoryTab showMessage={showMessage} />
+          </Suspense>
+        )}
         {activeTab === 'data' && (
-          <Suspense fallback={<div className="tab-content">加载中...</div>}>
+          <Suspense fallback={<SettingsTabSkeleton />}>
             <DataManagementTab
               showMessage={showMessage}
               reloadConfig={loadConfig}
@@ -1425,7 +1457,7 @@ function SettingsLayout() {
             onCheckUpdate={handleCheckUpdate}
           />
         )}
-      </div>
+      </ScrollShadow>
 
       <FloatingSaveButton
         hasChanges={storeHasUnsavedChanges}

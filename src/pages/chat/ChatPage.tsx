@@ -1,28 +1,21 @@
-import { useState, useEffect, useRef, useCallback, useMemo, useLayoutEffect } from 'react'
+﻿import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { MessageSquare } from 'lucide-react'
 import { useChatStore, MAX_ACTIVE_MESSAGES } from '../../stores/chatStore'
 import { useUpdateStatusStore } from '../../stores/updateStatusStore'
 import ChatBackground from '../../components/ChatBackground'
 import { parseDateValue } from '../../components/AppDatePicker'
-import { getImageXorKey, getImageAesKey, getQuoteStyle } from '../../services/config'
+import TitleBar from '../../components/TitleBar'
+import { getImageXorKey, getImageAesKey, getQuoteStyle, type QuoteStyleConfig } from '../../services/config'
 import type { ChatSession, Message } from '../../types/models'
-import type {
-  SessionMemoryBuildProgressEvent,
-  SessionMemoryBuildState,
-  SessionVectorIndexProgressEvent,
-  SessionVectorIndexState
-} from '../../types/ai'
 import { BatchDecryptModal } from './components/BatchDecryptModal'
 import { BatchTranscribeModal } from './components/BatchTranscribeModal'
 import { ChatHeader } from './components/ChatHeader'
-import { MessageList } from './components/MessageList'
-import { SessionAiAgentPanel } from './components/SessionAiAgentPanel'
+import { MessageListVirtual } from './components/MessageListVirtual'
 import { SessionSidebar } from './components/SessionSidebar'
 import { SharePosterModal } from './components/SharePosterModal'
 import { ContextMenuPortal } from './components/portals/ContextMenuPortal'
 import { EnlargeViewModal } from './components/portals/EnlargeViewModal'
 import { MessageInfoModal } from './components/portals/MessageInfoModal'
-import { TopToastPortal } from './components/portals/TopToastPortal'
 import { setLastIncrementalUpdateTime } from './components/messageBubble/mediaState'
 import { useContextMenuState } from './hooks/useContextMenuState'
 import { useSidebarResize } from './hooks/useSidebarResize'
@@ -36,21 +29,45 @@ interface ChatPageProps {
   // 保留接口以备将来扩展
 }
 
-type ScrollAnchor = {
-  scrollHeight: number
-  scrollTop: number
-}
-
 function getMessageCacheKey(message: Message): string {
   return `${message.serverId}-${message.localId}-${message.createTime}-${message.sortSeq}`
 }
 
+// 历史分页大小：初次进会话用较大值铺满屏幕；滚动"加载更多"用较小值，
+// 减小单次 prepend 的渲染阻塞（一次性 mount 50 条约卡 180ms，25 条约减半）。
+const INITIAL_PAGE_SIZE = 50
+const HISTORY_PAGE_SIZE = 25
+
 function ChatPage(_props: ChatPageProps) {
-  const [quoteStyle, setQuoteStyle] = useState<'default' | 'wechat'>('default')
+  const [quoteStyle, setQuoteStyle] = useState<QuoteStyleConfig>('default')
+
+  const refreshQuoteStyle = useCallback(() => {
+    getQuoteStyle()
+      .then(setQuoteStyle)
+      .catch(console.error)
+  }, [])
 
   useEffect(() => {
-    getQuoteStyle().then(setQuoteStyle).catch(console.error)
-  }, [])
+    refreshQuoteStyle()
+
+    const removeConfigListener = window.electronAPI.config.onChanged((payload) => {
+      if (payload.key === 'quoteStyle') refreshQuoteStyle()
+    })
+
+    const handleFocus = () => refreshQuoteStyle()
+    const handleVisibilityChange = () => {
+      if (!document.hidden) refreshQuoteStyle()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+
+    return () => {
+      removeConfigListener()
+      window.removeEventListener('focus', handleFocus)
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+    }
+  }, [refreshQuoteStyle])
 
   const {
     isConnected,
@@ -90,14 +107,15 @@ function ChatPage(_props: ChatPageProps) {
   const messagesRef = useRef<Message[]>([])
   const isLoadingMoreRef = useRef(false)
   const scrollToBottomAfterRenderRef = useRef(false)
-  const pendingPrependAnchorRef = useRef<ScrollAnchor | null>(null)
+  // 虚拟列表滚动信号：ChatPage 表达"该置底/置顶"的意图，递增令 MessageListVirtual 用 scrollToIndex 落点
+  const [vlistBottomSignal, setVlistBottomSignal] = useState(0)
+  const [vlistTopSignal, setVlistTopSignal] = useState(0)
   const currentSessionIdRef = useRef<string | null>(null)
   const messageLoadSeqRef = useRef(0)
   const lastUpdateTimeRef = useRef<number>(0)
   const updateTimerRef = useRef<NodeJS.Timeout | null>(null)
   const updateStatusTimerRef = useRef<NodeJS.Timeout | null>(null)
   const wcdbChangeTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const vectorProgressRenderRef = useRef<{ lastAt: number; percent: number }>({ lastAt: 0, percent: -1 })
   const isUserOperatingRef = useRef<boolean>(false) // 标记用户是否正在操作
   const [currentOffset, setCurrentOffset] = useState(0)
   const [isDateJumpMode, setIsDateJumpMode] = useState(false)
@@ -120,22 +138,6 @@ function ChatPage(_props: ChatPageProps) {
   const [myAvatarUrl, setMyAvatarUrl] = useState<string | undefined>(undefined)
   // showScrollToBottom 由 useThrottledScroll hook 管理
   const { sidebarWidth, isResizing, handleResizeStart } = useSidebarResize(260)
-  const [showDetailPanel, setShowDetailPanel] = useState(false)
-  const [isDetailClosing, setIsDetailClosing] = useState(false)
-  const closeDetailPanel = useCallback(() => {
-    setIsDetailClosing(true)
-    setTimeout(() => {
-      setShowDetailPanel(false)
-      setIsDetailClosing(false)
-    }, 220)
-  }, [])
-  const toggleDetailPanel = useCallback(() => {
-    if (showDetailPanel) {
-      closeDetailPanel()
-    } else {
-      setShowDetailPanel(true)
-    }
-  }, [showDetailPanel, closeDetailPanel])
   const [hasImageKey, setHasImageKey] = useState<boolean | null>(null)
   const {
     contextMenu,
@@ -148,7 +150,7 @@ function ChatPage(_props: ChatPageProps) {
   const [selectMode, setSelectMode] = useState(false)
   const [showPoster, setShowPoster] = useState(false)
   const [showEnlargeView, setShowEnlargeView] = useState<{ message: Message; content: string } | null>(null)
-  const { topToast, showTopToast } = useTopToast()
+  const { showTopToast } = useTopToast()
   const [showMessageInfo, setShowMessageInfo] = useState<Message | null>(null) // 消息信息弹窗
   const [selectedDate, setSelectedDate] = useState<string>('') // 选中的日期 (YYYY-MM-DD)
   const [isJumpingToDate, setIsJumpingToDate] = useState(false) // 正在跳转
@@ -173,404 +175,10 @@ function ChatPage(_props: ChatPageProps) {
   const [batchImageMessages, setBatchImageMessages] = useState<BatchImageMessage[] | null>(null)
   const [batchImageDates, setBatchImageDates] = useState<string[]>([])
   const [batchImageSelectedDates, setBatchImageSelectedDates] = useState<Set<string>>(new Set())
-  const [vectorIndexState, setVectorIndexState] = useState<SessionVectorIndexState | null>(null)
-  const [vectorIndexProgress, setVectorIndexProgress] = useState<SessionVectorIndexProgressEvent | null>(null)
-  const [isPreparingVectorIndex, setIsPreparingVectorIndex] = useState(false)
-  const [memoryBuildState, setMemoryBuildState] = useState<SessionMemoryBuildState | null>(null)
-  const [memoryBuildProgress, setMemoryBuildProgress] = useState<SessionMemoryBuildProgressEvent | null>(null)
-  const [isPreparingMemoryBuild, setIsPreparingMemoryBuild] = useState(false)
-
-  const refreshVectorIndexState = useCallback(async (sessionId: string) => {
-    try {
-      const result = await window.electronAPI.ai.getSessionVectorIndexState(sessionId)
-      if (currentSessionIdRef.current !== sessionId) return
-      if (result.success && result.result) {
-        setVectorIndexState(result.result)
-        setIsPreparingVectorIndex(result.result.isVectorRunning)
-      }
-    } catch (error) {
-      console.error('获取会话向量索引状态失败:', error)
-    }
-  }, [])
-
-  const refreshMemoryBuildState = useCallback(async (sessionId: string) => {
-    try {
-      const result = await window.electronAPI.ai.getSessionMemoryBuildState(sessionId)
-      if (currentSessionIdRef.current !== sessionId) return
-      if (result.success && result.result) {
-        setMemoryBuildState(result.result)
-        setIsPreparingMemoryBuild(result.result.isRunning)
-      }
-    } catch (error) {
-      console.error('获取会话记忆状态失败:', error)
-    }
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    setVectorIndexState(null)
-    setVectorIndexProgress(null)
-    setIsPreparingVectorIndex(false)
-    vectorProgressRenderRef.current = { lastAt: 0, percent: -1 }
-
-    if (!currentSessionId) return
-
-    window.electronAPI.ai.getSessionVectorIndexState(currentSessionId).then((result) => {
-      if (cancelled) return
-      if (result.success && result.result) {
-        setVectorIndexState(result.result)
-        setIsPreparingVectorIndex(result.result.isVectorRunning)
-      }
-    }).catch((error) => {
-      if (!cancelled) console.error('加载会话向量索引状态失败:', error)
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [currentSessionId])
-
-  useEffect(() => {
-    let cancelled = false
-    setMemoryBuildState(null)
-    setMemoryBuildProgress(null)
-    setIsPreparingMemoryBuild(false)
-
-    if (!currentSessionId) return
-
-    window.electronAPI.ai.getSessionMemoryBuildState(currentSessionId).then((result) => {
-      if (cancelled) return
-      if (result.success && result.result) {
-        setMemoryBuildState(result.result)
-        setIsPreparingMemoryBuild(result.result.isRunning)
-      }
-    }).catch((error) => {
-      if (!cancelled) console.error('加载会话记忆状态失败:', error)
-    })
-
-    return () => {
-      cancelled = true
-    }
-  }, [currentSessionId])
-
-  useEffect(() => {
-    return window.electronAPI.ai.onSessionVectorIndexProgress((event) => {
-      const activeSessionId = currentSessionIdRef.current
-      if (!event || !activeSessionId || event.sessionId !== activeSessionId) return
-
-      const isTerminal = event.status !== 'running'
-      const nextPercent = event.totalCount > 0
-        ? Math.min(100, Math.max(0, Math.round((event.processedCount / event.totalCount) * 100)))
-        : 0
-      const now = Date.now()
-      if (!isTerminal && nextPercent === vectorProgressRenderRef.current.percent && now - vectorProgressRenderRef.current.lastAt < 500) {
-        return
-      }
-      vectorProgressRenderRef.current = {
-        lastAt: now,
-        percent: nextPercent
-      }
-
-      setVectorIndexProgress(event)
-      setIsPreparingVectorIndex(event.status === 'running')
-      setVectorIndexState((prev) => ({
-        sessionId: event.sessionId,
-        indexedCount: event.totalCount || prev?.indexedCount || 0,
-        vectorizedCount: event.processedCount,
-        pendingCount: Math.max(0, (event.totalCount || prev?.indexedCount || 0) - event.processedCount),
-        isVectorComplete: event.status === 'completed',
-        isVectorRunning: event.status === 'running',
-        vectorModel: event.vectorModel || prev?.vectorModel || '',
-        vectorModelName: event.vectorModelName || prev?.vectorModelName,
-        vectorDim: event.vectorDim ?? prev?.vectorDim ?? 0,
-        vectorIndexVersion: event.vectorIndexVersion || prev?.vectorIndexVersion || '',
-        vectorStoreName: event.vectorStoreName || prev?.vectorStoreName || '',
-        vectorModelDtype: event.vectorModelDtype || prev?.vectorModelDtype,
-        vectorModelSizeLabel: event.vectorModelSizeLabel || prev?.vectorModelSizeLabel,
-        embeddingMode: event.embeddingMode || prev?.embeddingMode,
-        vectorProviderName: event.vectorProviderName || prev?.vectorProviderName,
-        vectorProviderAvailable: prev?.vectorProviderAvailable,
-        vectorProviderError: prev?.vectorProviderError
-      }))
-
-      if (event.status === 'completed') {
-        showTopToast('向量索引已就绪', true)
-        void refreshVectorIndexState(event.sessionId)
-      } else if (event.status === 'cancelled') {
-        showTopToast('已取消向量化', true)
-        void refreshVectorIndexState(event.sessionId)
-      } else if (event.status === 'failed') {
-        showTopToast(event.message || '向量化失败', false)
-        void refreshVectorIndexState(event.sessionId)
-      }
-    })
-  }, [refreshVectorIndexState, showTopToast])
-
-  useEffect(() => {
-    return window.electronAPI.ai.onSessionMemoryBuildProgress((event) => {
-      const activeSessionId = currentSessionIdRef.current
-      if (!event || !activeSessionId || event.sessionId !== activeSessionId) return
-
-      setMemoryBuildProgress(event)
-      setIsPreparingMemoryBuild(event.status === 'running')
-      setMemoryBuildState((prev) => ({
-        sessionId: event.sessionId,
-        messageCount: event.messageCount,
-        blockCount: event.blockCount,
-        factCount: event.factCount,
-        totalCount: event.totalCount || prev?.totalCount || 0,
-        processedCount: event.processedCount,
-        isRunning: event.status === 'running',
-        updatedAt: Date.now(),
-        completedAt: event.status === 'completed' ? Date.now() : prev?.completedAt,
-        lastError: event.status === 'failed' ? event.message : prev?.lastError
-      }))
-
-      if (event.status === 'completed') {
-        setMemoryBuildProgress(null)
-      } else if (event.status === 'failed') {
-        showTopToast(event.message || '会话记忆构建失败', false)
-        void refreshMemoryBuildState(event.sessionId)
-      }
-    })
-  }, [refreshMemoryBuildState, showTopToast])
-
-  const vectorIndexTotal = vectorIndexProgress?.totalCount || vectorIndexState?.indexedCount || 0
-  const vectorIndexDone = vectorIndexProgress?.processedCount ?? vectorIndexState?.vectorizedCount ?? 0
-  const vectorIndexPercent = vectorIndexTotal > 0
-    ? Math.min(100, Math.max(0, Math.round((vectorIndexDone / vectorIndexTotal) * 100)))
-    : vectorIndexState?.isVectorComplete ? 100 : 0
-  const hasPendingVectorMessages = Boolean(vectorIndexState && !vectorIndexState.isVectorComplete && vectorIndexState.pendingCount > 0)
-  const vectorIndexBadgeLabel = isPreparingVectorIndex
-    ? `${vectorIndexPercent}%`
-    : hasPendingVectorMessages
-      ? vectorIndexState && vectorIndexState.pendingCount > 99 ? '99+' : String(vectorIndexState?.pendingCount || 0)
-      : ''
-  const isVectorProviderUnavailable = vectorIndexState?.vectorProviderAvailable === false
-  const vectorIndexMetaTitle = vectorIndexState
-    ? [
-        `模型：${vectorIndexState.vectorModelName || vectorIndexState.vectorModel || '未知'}`,
-        `维度：${vectorIndexState.vectorDim || '未知'}`,
-        vectorIndexState.embeddingMode ? `模式：${vectorIndexState.embeddingMode === 'online' ? '在线' : '本地'}` : '',
-        vectorIndexState.vectorProviderName ? `厂商：${vectorIndexState.vectorProviderName}` : '',
-        `索引版本：${vectorIndexState.vectorIndexVersion || '未知'}`,
-        `后端：${vectorIndexState.vectorStoreName || '未知'}`,
-        vectorIndexState.vectorModelDtype ? `精度：${vectorIndexState.vectorModelDtype}` : '',
-        vectorIndexState.vectorModelSizeLabel ? `大小：${vectorIndexState.vectorModelSizeLabel}` : ''
-      ].filter(Boolean).join('；')
-    : ''
-  const vectorButtonStatusTitle = isVectorProviderUnavailable
-    ? `语义向量不可用：${vectorIndexState?.vectorProviderError || 'sqlite-vec 未加载'}`
-    : isPreparingVectorIndex
-      ? `取消向量化：${vectorIndexProgress?.message || `${vectorIndexDone}/${vectorIndexTotal}`}`
-      : vectorIndexState?.isVectorComplete
-        ? `增量检查向量索引：已完成 ${vectorIndexState.vectorizedCount}/${vectorIndexState.indexedCount}`
-        : hasPendingVectorMessages
-          ? `增量向量化：待处理 ${vectorIndexState?.pendingCount || 0} 条`
-          : '增量向量化当前聊天'
-  const vectorButtonTitle = vectorIndexMetaTitle
-    ? `${vectorButtonStatusTitle}\n${vectorIndexMetaTitle}`
-    : vectorButtonStatusTitle
-  const vectorIndexStageLabelMap: Record<SessionVectorIndexProgressEvent['stage'], string> = {
-    preparing: '准备',
-    downloading_model: '下载模型',
-    indexing_messages: '更新索引',
-    vectorizing_messages: '生成向量',
-    completed: '完成'
-  }
-  const vectorIndexStageLabel = vectorIndexProgress
-    ? vectorIndexStageLabelMap[vectorIndexProgress.stage] || vectorIndexProgress.stage
-    : vectorIndexState?.isVectorComplete ? '完成' : '待处理'
-  const vectorIndexHoverRows = [
-    { label: '状态', value: vectorButtonStatusTitle },
-    { label: '阶段', value: vectorIndexStageLabel },
-    { label: '进度', value: `${vectorIndexDone}/${vectorIndexTotal || 0} (${vectorIndexPercent}%)` },
-    { label: '待处理', value: `${Math.max(0, vectorIndexState?.pendingCount || 0)} 条` },
-    { label: '模型', value: vectorIndexState?.vectorModelName || vectorIndexState?.vectorModel || vectorIndexProgress?.vectorModelName || vectorIndexProgress?.vectorModel || '未知' },
-    { label: '模式', value: (vectorIndexState?.embeddingMode || vectorIndexProgress?.embeddingMode) === 'online' ? '在线' : '本地' },
-    (vectorIndexState?.vectorProviderName || vectorIndexProgress?.vectorProviderName) ? { label: '厂商', value: vectorIndexState?.vectorProviderName || vectorIndexProgress?.vectorProviderName || '' } : null,
-    { label: '维度', value: String(vectorIndexState?.vectorDim || vectorIndexProgress?.vectorDim || '未知') },
-    { label: '后端', value: vectorIndexState?.vectorStoreName || vectorIndexProgress?.vectorStoreName || '未知' },
-    vectorIndexProgress?.message ? { label: '消息', value: vectorIndexProgress.message } : null,
-    vectorIndexState?.vectorProviderError ? { label: '错误', value: vectorIndexState.vectorProviderError } : null
-  ].filter((item): item is { label: string; value: string } => Boolean(item && item.value))
-
-  const memoryBuildTotal = memoryBuildProgress?.totalCount || memoryBuildState?.totalCount || 0
-  const memoryBuildDone = memoryBuildProgress?.processedCount ?? memoryBuildState?.processedCount ?? 0
-  const memoryBuildPercent = memoryBuildTotal > 0
-    ? Math.min(100, Math.max(0, Math.round((memoryBuildDone / memoryBuildTotal) * 100)))
-    : memoryBuildState && memoryBuildState.totalCount > 0 ? 100 : 0
-  const memoryBuildCount = (memoryBuildState?.messageCount || 0) + (memoryBuildState?.blockCount || 0) + (memoryBuildState?.factCount || 0)
-  const memoryBuildBadgeLabel = isPreparingMemoryBuild
-    ? `${memoryBuildPercent}%`
-    : memoryBuildCount > 0
-      ? memoryBuildCount > 99 ? '99+' : String(memoryBuildCount)
-      : ''
-  const memoryButtonTitle = isPreparingMemoryBuild
-    ? `正在构建会话记忆：${memoryBuildProgress?.message || `${memoryBuildDone}/${memoryBuildTotal}`}`
-    : memoryBuildCount > 0
-      ? `重建会话记忆：消息 ${memoryBuildState?.messageCount || 0}，片段 ${memoryBuildState?.blockCount || 0}，事实 ${memoryBuildState?.factCount || 0}`
-      : '构建当前聊天三层记忆'
-
-  const handleVectorIndexClick = useCallback(async () => {
-    if (!currentSessionId) return
-
-    if (isPreparingVectorIndex) {
-      const result = await window.electronAPI.ai.cancelSessionVectorIndex(currentSessionId)
-      if (result.success && result.result) {
-        const nextState = result.result
-        setVectorIndexState(nextState)
-        setIsPreparingVectorIndex(nextState.isVectorRunning)
-        if (!nextState.isVectorRunning) {
-          setVectorIndexProgress(null)
-        } else {
-          setVectorIndexProgress((prev) => prev ? {
-            ...prev,
-            message: '正在取消向量化'
-          } : {
-            sessionId: currentSessionId,
-            stage: 'vectorizing_messages',
-            status: 'running',
-            processedCount: nextState.vectorizedCount,
-            totalCount: nextState.indexedCount,
-            message: '正在取消向量化',
-            vectorModel: nextState.vectorModel
-          })
-        }
-      }
-      showTopToast(
-        result.success
-          ? result.result?.isVectorRunning ? '正在取消向量化' : '已取消向量化'
-          : (result.error || '取消向量化失败'),
-        result.success
-      )
-      return
-    }
-
-    setIsPreparingVectorIndex(true)
-    setVectorIndexProgress({
-      sessionId: currentSessionId,
-      stage: 'preparing',
-      status: 'running',
-      processedCount: vectorIndexState?.vectorizedCount || 0,
-      totalCount: vectorIndexState?.indexedCount || 0,
-      message: '正在增量检查向量索引',
-      vectorModel: vectorIndexState?.vectorModel || '',
-      vectorModelName: vectorIndexState?.vectorModelName,
-      vectorDim: vectorIndexState?.vectorDim,
-      vectorIndexVersion: vectorIndexState?.vectorIndexVersion,
-      vectorStoreName: vectorIndexState?.vectorStoreName,
-      vectorModelDtype: vectorIndexState?.vectorModelDtype,
-      vectorModelSizeLabel: vectorIndexState?.vectorModelSizeLabel
-    })
-
-    try {
-      const result = await window.electronAPI.ai.prepareSessionVectorIndex({ sessionId: currentSessionId })
-      if (currentSessionIdRef.current !== currentSessionId) return
-      if (result.success && result.result) {
-        setVectorIndexState(result.result)
-        setIsPreparingVectorIndex(result.result.isVectorRunning)
-        if (result.result.isVectorRunning) {
-          setVectorIndexProgress((prev) => prev || {
-            sessionId: currentSessionId,
-            stage: 'preparing',
-            status: 'running',
-            processedCount: result.result?.vectorizedCount || 0,
-            totalCount: result.result?.indexedCount || 0,
-            message: '已转入后台向量化',
-            vectorModel: result.result?.vectorModel || '',
-            vectorModelName: result.result?.vectorModelName,
-            vectorDim: result.result?.vectorDim,
-            vectorIndexVersion: result.result?.vectorIndexVersion,
-            vectorStoreName: result.result?.vectorStoreName,
-            vectorModelDtype: result.result?.vectorModelDtype,
-            vectorModelSizeLabel: result.result?.vectorModelSizeLabel
-          })
-        } else {
-          setVectorIndexProgress(null)
-          showTopToast(result.result.isVectorComplete ? '向量索引已就绪' : '向量索引已更新', true)
-        }
-      } else {
-        setIsPreparingVectorIndex(false)
-        showTopToast(result.error || '向量化失败', false)
-      }
-    } catch (error) {
-      if (currentSessionIdRef.current !== currentSessionId) return
-      setIsPreparingVectorIndex(false)
-      showTopToast(`向量化失败: ${String(error)}`, false)
-    }
-  }, [
-    currentSessionId,
-    isPreparingVectorIndex,
-    showTopToast,
-    vectorIndexState?.indexedCount,
-    vectorIndexState?.vectorizedCount,
-    vectorIndexState?.vectorModel
-  ])
-
-  const handleMemoryBuildClick = useCallback(async () => {
-    if (!currentSessionId || isPreparingMemoryBuild) return
-
-    setIsPreparingMemoryBuild(true)
-    setMemoryBuildProgress({
-      sessionId: currentSessionId,
-      stage: 'preparing',
-      status: 'running',
-      processedCount: memoryBuildState?.processedCount || 0,
-      totalCount: memoryBuildState?.totalCount || 0,
-      message: '正在准备会话记忆构建',
-      messageCount: memoryBuildState?.messageCount || 0,
-      blockCount: memoryBuildState?.blockCount || 0,
-      factCount: memoryBuildState?.factCount || 0
-    })
-
-    try {
-      const result = await window.electronAPI.ai.prepareSessionMemory({ sessionId: currentSessionId })
-      if (currentSessionIdRef.current !== currentSessionId) return
-      if (result.success && result.result) {
-        setMemoryBuildState(result.result)
-        setIsPreparingMemoryBuild(result.result.isRunning)
-        setMemoryBuildProgress(null)
-        showTopToast(`会话记忆已构建：${result.result.totalCount} 条`, true)
-      } else {
-        setIsPreparingMemoryBuild(false)
-        showTopToast(result.error || '会话记忆构建失败', false)
-      }
-    } catch (error) {
-      if (currentSessionIdRef.current !== currentSessionId) return
-      setIsPreparingMemoryBuild(false)
-      showTopToast(`会话记忆构建失败: ${String(error)}`, false)
-    }
-  }, [
-    currentSessionId,
-    isPreparingMemoryBuild,
-    memoryBuildState?.blockCount,
-    memoryBuildState?.factCount,
-    memoryBuildState?.messageCount,
-    memoryBuildState?.processedCount,
-    memoryBuildState?.totalCount,
-    showTopToast
-  ])
 
   useEffect(() => {
     isLoadingMoreRef.current = isLoadingMore
   }, [isLoadingMore])
-
-  const captureScrollAnchor = useCallback((): ScrollAnchor | null => {
-    const listEl = messageListRef.current
-    if (!listEl) return null
-    return { scrollHeight: listEl.scrollHeight, scrollTop: listEl.scrollTop }
-  }, [])
-
-  const restoreScrollAnchor = useCallback((anchor: ScrollAnchor | null) => {
-    if (!anchor) return
-    const listEl = messageListRef.current
-    if (!listEl) return
-    const delta = listEl.scrollHeight - anchor.scrollHeight
-    if (delta !== 0) {
-      listEl.scrollTop = anchor.scrollTop + delta
-    }
-  }, [])
 
   const saveCurrentSessionMessageCache = useCallback((sessionId: string | null = currentSessionIdRef.current) => {
     if (!sessionId || isDateJumpModeRef.current) return
@@ -586,25 +194,6 @@ function ChatPage(_props: ChatPageProps) {
       scrollHeight: listEl?.scrollHeight
     })
   }, [saveSessionMessageCache])
-
-  const restoreCachedSessionScroll = useCallback((scrollTop?: number, scrollHeight?: number) => {
-    requestAnimationFrame(() => {
-      const listEl = messageListRef.current
-      if (!listEl || typeof scrollTop !== 'number') return
-      if (typeof scrollHeight === 'number') {
-        listEl.scrollTop = Math.max(0, scrollTop + listEl.scrollHeight - scrollHeight)
-      } else {
-        listEl.scrollTop = Math.max(0, scrollTop)
-      }
-    })
-  }, [])
-
-  useLayoutEffect(() => {
-    const anchor = pendingPrependAnchorRef.current
-    if (!anchor) return
-    pendingPrependAnchorRef.current = null
-    restoreScrollAnchor(anchor)
-  }, [messages.length, restoreScrollAnchor])
 
   const enterSelectMode = useCallback((localId: number) => {
     setSelectMode(true)
@@ -808,7 +397,6 @@ function ChatPage(_props: ChatPageProps) {
   // 加载消息
   const loadMessages = async (sessionId: string, offset = 0) => {
     const loadSeq = ++messageLoadSeqRef.current
-    const anchor = offset > 0 ? captureScrollAnchor() : null
     if (offset === 0) {
       setLoadingMessages(true)
       setMessages([])
@@ -841,16 +429,17 @@ function ChatPage(_props: ChatPageProps) {
       }
 
       const oldestLoadedMessage = messagesRef.current[0]
-      const useCursorPagination = offset > 0 && oldestLoadedMessage !== undefined && typeof oldestLoadedMessage.sortSeq === 'number'
+      const oldestSortSeq = Number(oldestLoadedMessage?.sortSeq || 0)
+      const useCursorPagination = offset > 0 && oldestLoadedMessage !== undefined && Number.isFinite(oldestSortSeq) && oldestSortSeq > 0
       const result = useCursorPagination
         ? await window.electronAPI.chat.getMessagesBefore(
           sessionId,
-          oldestLoadedMessage.sortSeq,
-          50,
+          oldestSortSeq,
+          HISTORY_PAGE_SIZE,
           typeof oldestLoadedMessage.createTime === 'number' ? oldestLoadedMessage.createTime : undefined,
           typeof oldestLoadedMessage.localId === 'number' ? oldestLoadedMessage.localId : undefined
         )
-        : await window.electronAPI.chat.getMessages(sessionId, offset, 50)
+        : await window.electronAPI.chat.getMessages(sessionId, offset, INITIAL_PAGE_SIZE)
 
       if (currentSessionIdRef.current !== sessionId || loadSeq !== messageLoadSeqRef.current) {
         return
@@ -867,7 +456,6 @@ function ChatPage(_props: ChatPageProps) {
           if (msgs.length === 0) {
             setHasMoreMessages(false)
           } else {
-            pendingPrependAnchorRef.current = anchor
             appendMessages(msgs, true)
             setHasMoreMessages(hasMore)
             setCurrentOffset(newOffset)
@@ -992,6 +580,7 @@ function ChatPage(_props: ChatPageProps) {
         .sort((a, b) => a.createTime - b.createTime || a.localId - b.localId)
 
       if (uniqueNewMessages.length === 0) return
+      if (isDateJumpModeRef.current) return
 
       appendMessages(uniqueNewMessages, false)
       const nextOffset = currentOffsetRef.current + uniqueNewMessages.length
@@ -1009,11 +598,7 @@ function ChatPage(_props: ChatPageProps) {
       })
 
       if (isNearBottom) {
-        requestAnimationFrame(() => {
-          if (messageListRef.current) {
-            messageListRef.current.scrollTo({ top: messageListRef.current.scrollHeight, behavior: 'smooth' })
-          }
-        })
+        setVlistBottomSignal(s => s + 1)
       }
     } catch (e) {
       console.error('[ChatPage] 缓存会话增量同步失败:', e)
@@ -1030,6 +615,10 @@ function ChatPage(_props: ChatPageProps) {
 
   // 选择会话
   const handleSelectSession = (session: ChatSession) => {
+    if (session.isFoldGroup || session.isOfficialFolder) {
+      return
+    }
+
     if (session.username === currentSessionId) {
       // 如果是当前会话，重新加载消息（用于刷新）
       clearSessionMessageCache(session.username)
@@ -1047,6 +636,7 @@ function ChatPage(_props: ChatPageProps) {
     if (cached) {
       const loadSeq = ++messageLoadSeqRef.current
       setCurrentOffset(cached.currentOffset)
+      setHasMoreMessages(cached.hasMoreMessages)
       setIsDateJumpMode(false)
       setDateJumpCursorSortSeq(null)
       setDateJumpCursorCreateTime(null)
@@ -1055,7 +645,7 @@ function ChatPage(_props: ChatPageProps) {
       setDateJumpCursorCreateTimeEnd(null)
       setDateJumpCursorLocalIdEnd(null)
       setHasMoreMessagesAfter(false)
-      restoreCachedSessionScroll(cached.scrollTop, cached.scrollHeight)
+      // 重进会话由 MessageListVirtual 初始置底接管（virtua），不做裸 DOM 滚动恢复
       void syncCachedSessionMessages(session.username, loadSeq)
       return
     }
@@ -1090,15 +680,13 @@ function ChatPage(_props: ChatPageProps) {
   const loadMoreMessagesInDateJumpMode = useCallback(async () => {
     if (!currentSessionId || dateJumpCursorSortSeq === null || isLoadingMoreRef.current || !hasMoreMessages) return
 
-    const anchor = captureScrollAnchor()
-
     isLoadingMoreRef.current = true
     setLoadingMore(true)
     try {
       const result = await window.electronAPI.chat.getMessagesBefore(
         currentSessionId,
         dateJumpCursorSortSeq,
-        50,
+        HISTORY_PAGE_SIZE,
         dateJumpCursorCreateTime ?? undefined,
         dateJumpCursorLocalId ?? undefined
       )
@@ -1120,7 +708,6 @@ function ChatPage(_props: ChatPageProps) {
         const oldestCreateTime = uniqueOlderMessages[0]?.createTime
         const oldestLocalId = uniqueOlderMessages[0]?.localId
 
-        pendingPrependAnchorRef.current = anchor
         appendMessages(uniqueOlderMessages, true)
         if (typeof oldestSortSeq !== 'number' || oldestSortSeq >= dateJumpCursorSortSeq) {
           setHasMoreMessages(false)
@@ -1159,8 +746,6 @@ function ChatPage(_props: ChatPageProps) {
     dateJumpCursorLocalId,
     hasMoreMessages,
     appendMessages,
-    captureScrollAnchor,
-    restoreScrollAnchor,
     setHasMoreMessages,
     setLoadingMore
   ])
@@ -1169,20 +754,13 @@ function ChatPage(_props: ChatPageProps) {
   const loadMoreMessagesAfterInDateJumpMode = useCallback(async () => {
     if (!currentSessionId || dateJumpCursorSortSeqEnd === null || isLoadingMoreRef.current || !hasMoreMessagesAfter) return
 
-    const listEl = messageListRef.current
-    if (!listEl) return
-
-    // 记录当前滚动位置和高度
-    const oldScrollHeight = listEl.scrollHeight
-    const oldScrollTop = listEl.scrollTop
-
     isLoadingMoreRef.current = true
     setLoadingMore(true)
     try {
       const result = await window.electronAPI.chat.getMessagesAfter(
         currentSessionId,
         dateJumpCursorSortSeqEnd,
-        50,
+        HISTORY_PAGE_SIZE,
         dateJumpCursorCreateTimeEnd ?? undefined,
         dateJumpCursorLocalIdEnd ?? undefined
       )
@@ -1218,11 +796,7 @@ function ChatPage(_props: ChatPageProps) {
           setHasMoreMessagesAfter(result.hasMore ?? false)
         }
 
-        // 保持滚动位置（向下加载时保持在原位置）
-        requestAnimationFrame(() => {
-          const newScrollHeight = listEl.scrollHeight
-          listEl.scrollTop = oldScrollTop + (newScrollHeight - oldScrollHeight)
-        })
+        // 追加在末尾不移动视口，由 virtua 处理，无需手动保持滚动位置
       } else {
         setHasMoreMessagesAfter(false)
       }
@@ -1246,16 +820,9 @@ function ChatPage(_props: ChatPageProps) {
     { hasMoreMessages, hasMoreMessagesAfter, currentOffset, isDateJumpMode, loadMessages, loadMoreMessagesInDateJumpMode, loadMoreMessagesAfterInDateJumpMode }
   )
 
-  // 滚动到底部
-  const scrollToBottom = useCallback((smooth: boolean | React.MouseEvent = true) => {
-    if (messageListRef.current) {
-      const isSmooth = typeof smooth === 'boolean' ? smooth : true;
-      if (isSmooth) {
-        messageListRef.current.scrollTo({ top: messageListRef.current.scrollHeight, behavior: 'smooth' })
-      } else {
-        messageListRef.current.scrollTop = messageListRef.current.scrollHeight
-      }
-    }
+  // 滚动到底部：走置底信号，由 MessageListVirtual 用 scrollToIndex 落点（不碰裸 DOM）
+  const scrollToBottom = useCallback((_smooth: boolean | React.MouseEvent = true) => {
+    setVlistBottomSignal(s => s + 1)
   }, [])
 
   // WeFlow 风格实时更新：wcdb 变化事件只做触发器，实际数据通过会话/消息接口增量读取
@@ -1300,7 +867,8 @@ function ChatPage(_props: ChatPageProps) {
         }
 
         const currentId = currentSessionIdRef.current
-        if (!currentId || (!shouldRefreshMessages && !shouldRefreshSessions)) return
+        // 仅在消息表变更时拉取当前会话增量；纯会话变更只刷新会话列表，避免多余的 getNewMessages
+        if (!currentId || !shouldRefreshMessages) return
 
         const currentMessages = useChatStore.getState().messages || []
         const lastMsg = currentMessages[currentMessages.length - 1]
@@ -1323,6 +891,7 @@ function ChatPage(_props: ChatPageProps) {
           .sort((a, b) => a.createTime - b.createTime || a.localId - b.localId)
 
         if (uniqueNewMessages.length === 0) return
+        if (isDateJumpModeRef.current) return
         appendMessages(uniqueNewMessages, false)
         incrementSyncVersion()
         if (isNearBottom) {
@@ -1354,15 +923,12 @@ function ChatPage(_props: ChatPageProps) {
     }
   }, [appendMessages, incrementSyncVersion, scrollToBottom, setSessions])
 
-  // Scroll to bottom after initial message render
+  // 初始/刷新置底：由 MessageListVirtual 用 scrollToIndex 置底。把"该置底"意图转成置底信号
+  // （覆盖"同会话刷新"——sid 不变、会话级 guard 不触发的情况）。
   useEffect(() => {
     if (scrollToBottomAfterRenderRef.current) {
       scrollToBottomAfterRenderRef.current = false
-      requestAnimationFrame(() => {
-        if (messageListRef.current) {
-          messageListRef.current.scrollTop = messageListRef.current.scrollHeight
-        }
-      })
+      setVlistBottomSignal(s => s + 1)
     }
   }, [messages])
 
@@ -1400,12 +966,8 @@ function ChatPage(_props: ChatPageProps) {
         setDateJumpCursorLocalIdEnd(lastMsg?.localId ?? null)
         setHasMoreMessagesAfter(true)
 
-        // 滚动到顶部显示目标日期的消息
-        requestAnimationFrame(() => {
-          if (messageListRef.current) {
-            messageListRef.current.scrollTop = 0
-          }
-        })
+        // 滚动到顶部显示目标日期的消息（置顶信号，由 MessageListVirtual 用 scrollToIndex(0)）
+        setVlistTopSignal(s => s + 1)
       } else {
         // 没有找到消息，可能日期太新
         console.log('未找到该日期或之后的消息')
@@ -1826,6 +1388,7 @@ function ChatPage(_props: ChatPageProps) {
       // 2. 检查当前会话是否有新消息
       const currentSession = newSessions.find(s => s.username === currentId)
       if (!currentSession) return // 当前会话可能被删除了？
+      if (currentSession.isFoldGroup || currentSession.isOfficialFolder) return
 
       // 简单判断：如果当前会话的 lastTimestamp 变了，或者有新消息
       // 这里我们采取积极策略：只要有更新事件，就尝试拉取最新消息
@@ -1869,6 +1432,7 @@ function ChatPage(_props: ChatPageProps) {
             uniqueNewMessages.sort((a, b) => a.createTime - b.createTime || a.localId - b.localId)
 
             console.log(`[ChatPage] 自动增长发现 ${uniqueNewMessages.length} 条新消息`)
+            if (isDateJumpModeRef.current) return
             appendMessages(uniqueNewMessages, false)
 
             // 滚动处理：如果用户在底部附近，则自动平滑滚动
@@ -1949,113 +1513,96 @@ function ChatPage(_props: ChatPageProps) {
       <div className="resize-handle" onMouseDown={handleResizeStart} />
 
       {/* 右侧消息区域 */}
-      <div className="message-area">
-        {currentSession ? (
-          <>
-            <ChatHeader
-              currentSession={currentSession}
-              currentSessionId={currentSessionId}
-              isRefreshingMessages={isRefreshingMessages}
-              isLoadingMessages={isLoadingMessages}
-              isUpdating={isUpdating}
-              onRefreshMessages={handleRefreshMessages}
-              isPreparingVectorIndex={isPreparingVectorIndex}
-              vectorIndexState={vectorIndexState}
-              hasPendingVectorMessages={hasPendingVectorMessages}
-              isVectorProviderUnavailable={isVectorProviderUnavailable}
-              vectorIndexBadgeLabel={vectorIndexBadgeLabel}
-              vectorIndexPercent={vectorIndexPercent}
-              vectorIndexHoverRows={vectorIndexHoverRows}
-              onVectorIndexClick={handleVectorIndexClick}
-              isPreparingMemoryBuild={isPreparingMemoryBuild}
-              memoryBuildCount={memoryBuildCount}
-              memoryBuildBadgeLabel={memoryBuildBadgeLabel}
-              memoryButtonTitle={memoryButtonTitle}
-              onMemoryBuildClick={handleMemoryBuildClick}
-              selectedDate={selectedDate}
-              onSelectedDateChange={setSelectedDate}
-              onJumpToDate={handleJumpToDate}
-              isJumpingToDate={isJumpingToDate}
-              isBatchTranscribing={isBatchTranscribing}
-              batchTranscribeProgress={batchTranscribeProgress}
-              onBatchTranscribe={handleBatchTranscribe}
-              isBatchDecrypting={isBatchDecrypting}
-              batchDecryptProgress={batchDecryptProgress}
-              onBatchDecrypt={handleBatchDecrypt}
-              showDetailPanel={showDetailPanel}
-              onToggleDetailPanel={toggleDetailPanel}
-            />
+      <div className="message-shell">
+        <TitleBar className="message-titlebar" rightContent={<></>} showTitle={false} />
 
-            <div className="message-content-wrapper">
-              <MessageList
+        <div className="message-area">
+          {currentSession ? (
+            <>
+              <ChatHeader
                 currentSession={currentSession}
+                currentSessionId={currentSessionId}
+                isRefreshingMessages={isRefreshingMessages}
                 isLoadingMessages={isLoadingMessages}
-                messages={messages}
-                hasMoreMessages={hasMoreMessages}
-                isLoadingMore={isLoadingMore}
-                messageListRef={messageListRef}
-                onScroll={handleScroll}
-                myAvatarUrl={myAvatarUrl}
-                hasImageKey={hasImageKey}
-                quoteStyle={quoteStyle}
-                selectedMessages={selectedMessages}
-                selectMode={selectMode}
-                onToggleSelect={toggleSelectMessage}
-                setContextMenu={setContextMenu}
-                showScrollToBottom={showScrollToBottom}
-                scrollToBottom={scrollToBottom}
+                isUpdating={isUpdating}
+                onRefreshMessages={handleRefreshMessages}
+                selectedDate={selectedDate}
+                onSelectedDateChange={setSelectedDate}
+                onJumpToDate={handleJumpToDate}
+                isJumpingToDate={isJumpingToDate}
+                isBatchTranscribing={isBatchTranscribing}
+                batchTranscribeProgress={batchTranscribeProgress}
+                onBatchTranscribe={handleBatchTranscribe}
+                isBatchDecrypting={isBatchDecrypting}
+                batchDecryptProgress={batchDecryptProgress}
+                onBatchDecrypt={handleBatchDecrypt}
               />
 
-              {showDetailPanel && (
-                <SessionAiAgentPanel
-                  isClosing={isDetailClosing}
-                  session={currentSession}
-                  onClose={closeDetailPanel}
+              <div className="message-content-wrapper">
+                <MessageListVirtual
+                  currentSession={currentSession}
+                  isLoadingMessages={isLoadingMessages}
+                  messages={messages}
+                  hasMoreMessages={hasMoreMessages}
+                  isLoadingMore={isLoadingMore}
+                  messageListRef={messageListRef}
+                  onScroll={handleScroll}
+                  myAvatarUrl={myAvatarUrl}
+                  hasImageKey={hasImageKey}
+                  quoteStyle={quoteStyle}
+                  selectedMessages={selectedMessages}
+                  selectMode={selectMode}
+                  onToggleSelect={toggleSelectMessage}
+                  setContextMenu={setContextMenu}
+                  showScrollToBottom={showScrollToBottom}
+                  scrollToBottom={scrollToBottom}
+                  bottomSignal={vlistBottomSignal}
+                  topSignal={vlistTopSignal}
                 />
-              )}
-            </div>
+              </div>
 
-            {selectMode && (
-              <div className="select-action-bar">
-                <span className="select-action-bar__count">已选 {selectedMessages.size} 条</span>
-                <div className="select-action-bar__btns">
-                  <button
-                    type="button"
-                    className="select-action-bar__btn"
-                    onClick={exitSelectMode}
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    className="select-action-bar__btn select-action-bar__btn--primary"
-                    disabled={selectedMessages.size === 0}
-                    onClick={() => setShowPoster(true)}
-                  >
-                    生成海报
-                  </button>
+              {selectMode && (
+                <div className="select-action-bar">
+                  <span className="select-action-bar__count">已选 {selectedMessages.size} 条</span>
+                  <div className="select-action-bar__btns">
+                    <button
+                      type="button"
+                      className="select-action-bar__btn"
+                      onClick={exitSelectMode}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="select-action-bar__btn select-action-bar__btn--primary"
+                      disabled={selectedMessages.size === 0}
+                      onClick={() => setShowPoster(true)}
+                    >
+                      生成海报
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="message-header empty-header">
+                <div className="header-info">
+                  <h3>聊天</h3>
                 </div>
               </div>
-            )}
-          </>
-        ) : (
-          <>
-            <div className="message-header empty-header">
-              <div className="header-info">
-                <h3>聊天</h3>
-              </div>
-            </div>
-            <div className="message-content-wrapper">
-              <div className="message-list">
-                <ChatBackground />
-                <div className="empty-chat">
-                  <MessageSquare />
-                  <p>选择一个会话开始查看聊天记录</p>
+              <div className="message-content-wrapper">
+                <div className="message-list">
+                  <ChatBackground />
+                  <div className="empty-chat">
+                    <MessageSquare />
+                    <p>选择一个会话开始查看聊天记录</p>
+                  </div>
                 </div>
               </div>
-            </div>
-          </>
-        )}
+            </>
+          )}
+        </div>
       </div>
 
       <ContextMenuPortal
@@ -2080,8 +1627,6 @@ function ChatPage(_props: ChatPageProps) {
         view={showEnlargeView}
         onClose={() => setShowEnlargeView(null)}
       />
-
-      <TopToastPortal toast={topToast} />
 
       <BatchTranscribeModal
         showConfirm={showBatchConfirm}

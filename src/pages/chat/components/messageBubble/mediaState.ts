@@ -21,11 +21,47 @@ export const globalVoiceManager = {
 }
 
 export const emojiDataUrlCache = new LRUCache<string, string>(200)
-export const imageDataUrlCache = new LRUCache<string, string>(50)
+export const imageDataUrlCache = new LRUCache<string, string>(200)
+
+// 图片更新/缓存解析事件的共享分发器。
+// 之前每个 ImageBubble 各自调用 image.onUpdateAvailable/onCacheResolved，
+// 数百条气泡 = 数百个 IPC 监听（触发 MaxListenersExceededWarning），
+// 且 preload 退订用 removeAllListeners 会误删其他气泡的监听。
+// 这里只在全局注册一次 IPC 监听，气泡仅向 Set 登记/注销回调（廉价）。
+type ImageUpdatePayload = { cacheKey: string; imageMd5?: string; imageDatName?: string }
+type ImageCacheResolvedPayload = ImageUpdatePayload & { localPath: string }
+
+const imageUpdateSubscribers = new Set<(payload: ImageUpdatePayload) => void>()
+const imageCacheResolvedSubscribers = new Set<(payload: ImageCacheResolvedPayload) => void>()
+let imageEventsBound = false
+
+function ensureImageEventsBound() {
+  if (imageEventsBound) return
+  imageEventsBound = true
+  // 单一 IPC 监听，整个 app 生命周期内存在，不退订（避免 removeAllListeners 误删）
+  window.electronAPI.image.onUpdateAvailable((payload) => {
+    imageUpdateSubscribers.forEach((cb) => { try { cb(payload) } catch { /* ignore */ } })
+  })
+  window.electronAPI.image.onCacheResolved((payload) => {
+    imageCacheResolvedSubscribers.forEach((cb) => { try { cb(payload) } catch { /* ignore */ } })
+  })
+}
+
+export function subscribeImageUpdate(callback: (payload: ImageUpdatePayload) => void): () => void {
+  ensureImageEventsBound()
+  imageUpdateSubscribers.add(callback)
+  return () => { imageUpdateSubscribers.delete(callback) }
+}
+
+export function subscribeImageCacheResolved(callback: (payload: ImageCacheResolvedPayload) => void): () => void {
+  ensureImageEventsBound()
+  imageCacheResolvedSubscribers.add(callback)
+  return () => { imageCacheResolvedSubscribers.delete(callback) }
+}
 
 const imageDecryptQueue: Array<() => Promise<void>> = []
 let isProcessingQueue = false
-const MAX_CONCURRENT_DECRYPTS = 3
+const MAX_CONCURRENT_DECRYPTS = 1
 
 async function processDecryptQueue() {
   if (isProcessingQueue) return
@@ -68,7 +104,7 @@ export type CachedVideoInfo = {
   diagnostics?: VideoLookupDiagnostics
 }
 
-export const videoInfoCache = new Map<string, CachedVideoInfo>()
+export const videoInfoCache = new LRUCache<string, CachedVideoInfo>(200)
 
 export let lastIncrementalUpdateTime = 0
 

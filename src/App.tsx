@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import Box from '@mui/material/Box'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { Toast, toast } from '@heroui/react'
+
 import TitleBar from './components/TitleBar'
 import Sidebar from './components/Sidebar'
 import BottomDock from './components/BottomDock'
@@ -9,15 +10,12 @@ import DecryptProgressOverlay from './components/DecryptProgressOverlay'
 import WelcomePage from './pages/WelcomePage'
 import HomePage from './pages/HomePage'
 import ChatPage from './pages/ChatPage'
-import AnalyticsPage from './pages/AnalyticsPage'
-import AnnualReportPage from './pages/AnnualReportPage'
-import AnnualReportWindow from './pages/AnnualReportWindow'
 import AgreementPage from './pages/AgreementPage'
-import GroupAnalyticsPage from './pages/GroupAnalyticsPage'
 import DataManagementPage from './pages/DataManagementPage'
 import SettingsPage from './pages/SettingsPage'
 import OpenApiPage from './pages/OpenApiPage'
 import McpPage from './pages/McpPage'
+import AgentPage from './pages/agent/AgentPage'
 import ExportPage from './pages/ExportPage'
 import TranscriptionAssistantPage from './pages/TranscriptionAssistantPage'
 import ActivationPage from './pages/ActivationPage'
@@ -25,9 +23,7 @@ import ImageWindow from './pages/ImageWindow'
 import VideoWindow from './pages/VideoWindow'
 import BrowserWindowPage from './pages/BrowserWindowPage'
 import SplashPage from './pages/SplashPage'
-import AISummaryWindow from './pages/AISummaryWindow'
 import ChatHistoryPage from './pages/ChatHistoryPage'
-import AgentPage from './features/aiagent/AiAgentPage'
 import MomentsWindow from './pages/MomentsWindow'
 import { useAppStore } from './stores/appStore'
 import { useThemeStore } from './stores/themeStore'
@@ -38,9 +34,9 @@ import * as configService from './services/config'
 import { initTldList } from './utils/linkify'
 import LockScreen from './pages/LockScreen'
 import { useAuthStore } from './stores/authStore'
-import { X, Shield, Loader2 } from 'lucide-react'
+import { Shield, Loader2 } from 'lucide-react'
 import { applyWindowChromeToDocument, syncWindowControlsOverlayToDocument } from './utils/windowChrome'
-import './App.scss'
+import './App.css'
 
 type AppUpdateInfo = {
   hasUpdate: boolean
@@ -80,7 +76,7 @@ function App() {
   const navigate = useNavigate()
   const location = useLocation()
   const { setDbConnected } = useAppStore()
-  const { currentTheme, themeMode, navLayout, isLoaded, loadTheme } = useThemeStore()
+  const { themeMode, navLayout, isLoaded, loadTheme } = useThemeStore()
   const { status: activationStatus, checkStatus: checkActivationStatus, initialized: activationInitialized } = useActivationStore()
   const { isLocked, init: initAuth } = useAuthStore()
 
@@ -95,6 +91,8 @@ function App() {
   // 更新提示状态
   const [updateInfo, setUpdateInfo] = useState<AppUpdateInfo | null>(null)
   const [downloadProgress, setDownloadProgress] = useState<UpdateDownloadProgressPayload | null>(null)
+  const updateToastIdRef = useRef<string | null>(null)
+  const suppressUpdateToastCloseRef = useRef(false)
 
   const formatSpeed = (bytesPerSecond: number) => {
     if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '计算中'
@@ -167,10 +165,12 @@ function App() {
   // 应用主题
   useEffect(() => {
     if (!isLoaded) return
-    document.documentElement.setAttribute('data-theme', currentTheme)
 
-    const applyMode = (mode: string) => {
+    const applyMode = (mode: 'light' | 'dark') => {
+      document.documentElement.setAttribute('data-theme', mode)
       document.documentElement.setAttribute('data-mode', mode)
+      document.documentElement.classList.toggle('light', mode === 'light')
+      document.documentElement.classList.toggle('dark', mode === 'dark')
       window.electronAPI.window.setTitleBarOverlay({ symbolColor: mode === 'dark' ? '#ffffff' : '#1a1a1a' })
     }
 
@@ -183,7 +183,7 @@ function App() {
     } else {
       applyMode(themeMode)
     }
-  }, [currentTheme, themeMode, isLoaded])
+  }, [themeMode, isLoaded])
 
   // 检查是否需要显示协议
   useEffect(() => {
@@ -303,13 +303,16 @@ function App() {
     }
   }, [])
 
-  const dismissUpdate = () => {
-    if (updateInfo?.forceUpdate || isUpdateDownloading) return
-    setUpdateInfo(null)
-  }
+  const closeUpdateToast = useCallback(() => {
+    if (!updateToastIdRef.current) return
+    suppressUpdateToastCloseRef.current = true
+    toast.close(updateToastIdRef.current)
+    updateToastIdRef.current = null
+  }, [])
 
-  const handleStartUpdate = () => {
+  const handleStartUpdate = useCallback(() => {
     if (isUpdateDownloading) return
+    closeUpdateToast()
     setUpdateInfo((current) => current ? {
       ...current,
       diagnostics: {
@@ -326,21 +329,48 @@ function App() {
       }
     } : current)
     window.electronAPI.app.downloadAndInstall()
-  }
+  }, [closeUpdateToast, isUpdateDownloading])
+
+  useEffect(() => {
+    if (!updateInfo || updateInfo.forceUpdate || isUpdateDownloading) {
+      closeUpdateToast()
+      return
+    }
+
+    if (updateToastIdRef.current) return
+
+    updateToastIdRef.current = toast.info('发现新版本', {
+      actionProps: {
+        children: '立即更新',
+        onPress: handleStartUpdate,
+        variant: 'secondary',
+      },
+      description: (
+        <>
+          <div>v{updateInfo.version} 已发布</div>
+          <div>更新源：{updateInfo.updateSource === 'github' ? 'GitHub Release' : '未知'}</div>
+        </>
+      ),
+      onClose: () => {
+        const suppressed = suppressUpdateToastCloseRef.current
+        suppressUpdateToastCloseRef.current = false
+        updateToastIdRef.current = null
+        if (!suppressed) setUpdateInfo(null)
+      },
+      timeout: 0,
+    })
+  }, [closeUpdateToast, handleStartUpdate, isUpdateDownloading, updateInfo])
 
   // 检查是否是独立聊天窗口
   const isChatWindow = location.pathname === '/chat-window'
-  const isGroupAnalyticsWindow = location.pathname === '/group-analytics-window'
   const isMomentsWindow = location.pathname === '/moments-window'
-  const isAnnualReportWindow = location.pathname === '/annual-report-window'
   const isAgreementWindow = location.pathname === '/agreement-window'
-  const isAISummaryWindow = location.pathname === '/ai-summary-window'
   const isWelcomeWindow = location.pathname === '/welcome-window'
 
   // 启动时自动检查配置并连接数据库
   useEffect(() => {
     // 独立窗口不需要自动连接主数据库
-    if (isChatWindow || isGroupAnalyticsWindow || isMomentsWindow || isAnnualReportWindow || isAgreementWindow || isAISummaryWindow || isWelcomeWindow || location.pathname === '/image-viewer-window') return
+    if (isChatWindow || isMomentsWindow || isAgreementWindow || isWelcomeWindow || location.pathname === '/image-viewer-window') return
 
     const autoConnect = async () => {
       try {
@@ -408,7 +438,7 @@ function App() {
     }
 
     autoConnect()
-  }, [isChatWindow, isGroupAnalyticsWindow, isMomentsWindow, isAnnualReportWindow, isAgreementWindow, isAISummaryWindow, isWelcomeWindow, location.pathname, navigate, setDbConnected])
+  }, [isChatWindow, isMomentsWindow, isAgreementWindow, isWelcomeWindow, location.pathname, navigate, setDbConnected])
 
   // 独立聊天窗口 - 只显示聊天页面，无侧边栏
   if (isChatWindow) {
@@ -419,42 +449,20 @@ function App() {
     )
   }
 
-  // 独立群聊分析窗口
-  if (isGroupAnalyticsWindow) {
-    return (
-      <div className="chat-window-container">
-        <GroupAnalyticsPage />
-      </div>
-    )
-  }
-
   // 独立朋友圈窗口
   if (isMomentsWindow) {
     return (
-      <div className="chat-window-container">
+      <div className="standalone-window">
         <MomentsWindow />
       </div>
     )
   }
 
-  // 独立年度报告窗口
-  if (isAnnualReportWindow) {
-    return (
-      <div className="chat-window-container">
-        <AnnualReportWindow />
-      </div>
-    )
-  }
-
-  // 独立 AI 摘要窗口
-  if (isAISummaryWindow) {
-    return <AISummaryWindow />
-  }
-
   // 独立聊天记录窗口
   if (location.pathname.startsWith('/chat-history/')) {
     return (
-      <div className="chat-window-container">
+      <div className="standalone-window">
+        <TitleBar variant="standalone" />
         <ChatHistoryPage />
       </div>
     )
@@ -482,7 +490,12 @@ function App() {
 
   // 独立浏览器窗口
   if (location.pathname === '/browser-window') {
-    return <BrowserWindowPage />
+    return (
+      <div className="standalone-window">
+        <TitleBar variant="standalone" />
+        <BrowserWindowPage />
+      </div>
+    )
   }
 
   // 启动屏
@@ -507,7 +520,7 @@ function App() {
                 <h3>一、用户协议</h3>
 
                 <h4>1. 软件性质与用途说明</h4>
-                <p>1.1 本软件是一款技术研究工具，用于读取和分析用户本地设备上已存在的微信数据文件，主要功能包括但不限于：本地数据文件解析、聊天记录查看、数据统计分析、年度报告生成及数据导出。</p>
+                <p>1.1 本软件是一款技术研究工具，用于读取和查看用户本地设备上已存在的微信数据文件，主要功能包括但不限于：本地数据文件解析、聊天记录查看及数据导出。</p>
                 <p>1.2 本软件仅供用户个人学习、研究和技术交流之目的使用，不得用于任何商业用途。</p>
                 <p>1.3 本软件仅作为数据查看工具，不具备也不提供任何主动获取、拦截、窃取数据的能力，所有操作均基于用户本地设备上已存在的文件。</p>
 
@@ -540,11 +553,10 @@ function App() {
                 <p>7.1 本协议的订立、执行、解释及争议解决均适用中华人民共和国大陆地区法律。</p>
                 <p>7.2 因本协议或本软件使用所引起的任何争议，双方应首先友好协商解决；协商不成的，任何一方均可向开发者所在地有管辖权的人民法院提起诉讼。</p>
 
-                <h3>二、AI服务说明（补充协议）</h3>
-                <p>8.1 本软件提供的AI摘要功能调用第三方大模型服务（如智谱AI、DeepSeek等），相关对话数据将发送至第三方服务器进行处理。</p>
-                <p>8.2 发送给AI的数据仅包含您选择的时间范围内的文本消息内容，不会包含图片、视频等文件数据，也不会包含此外的其他隐私信息。</p>
-                <p>8.3 AI生成的内容仅供参考，不代表本软件开发者立场。用户在使用AI功能前应自行评估数据隐私风险。</p>
-                <p>8.4 本软件不对第三方AI服务的稳定性、准确性及数据安全性承担责任。</p>
+                <h3>二、第三方服务接入说明（补充协议）</h3>
+                <p>8.1 本软件仅保留第三方 AI 服务商接入配置能力，用于保存服务地址、模型名称及 API 密钥等本地配置。</p>
+                <p>8.2 用户主动测试连接或刷新模型列表时，软件会向所选服务商发起必要的网络请求。请自行确认所填服务商的隐私与合规政策。</p>
+                <p>8.3 本软件不对第三方服务的稳定性、准确性及数据安全性承担责任。</p>
 
                 <h3>三、隐私政策</h3>
 
@@ -607,31 +619,19 @@ function App() {
   }
 
   // 主窗口 - 完整布局
-  const disableContentOverflow = ['/data-management', '/settings'].includes(location.pathname)
-  const fullPageRoutes = ['/agent', '/home']
+  const disableContentOverflow = ['/data-management', '/settings', '/open-api', '/mcp', '/agent'].includes(location.pathname)
+  const fullPageRoutes = ['/home']
   const isFullPage = fullPageRoutes.includes(location.pathname)
+  const edgeToEdgeRoutes: string[] = []
+  const isEdgeToEdge = edgeToEdgeRoutes.includes(location.pathname)
+  const isAgentPage = location.pathname === '/agent'
 
   return (
-    <div className="app-container">
-      <TitleBar />
-      {updateInfo && !updateInfo.forceUpdate && !isUpdateDownloading && (
-        <div className="update-toast">
-          <div className="update-toast-icon">🎉</div>
-          <div className="update-toast-content">
-            <div className="update-toast-title">发现新版本</div>
-            <div className="update-toast-version">v{updateInfo.version} 已发布</div>
-            <div className="update-toast-version">
-              更新源：{updateInfo.updateSource === 'github' ? 'GitHub Release' : '未知'}
-            </div>
-          </div>
-          <button className="update-toast-btn" onClick={handleStartUpdate}>
-            立即更新
-          </button>
-          <button className="update-toast-close" onClick={dismissUpdate}>
-            <X size={14} />
-          </button>
-        </div>
-      )}
+    <div className={`app-container${navLayout === 'sidebar' ? ' app-container--sidebar' : ''}`}>
+      <Toast.Provider className="ct-toast-region" placement="top" />
+      {navLayout === 'sidebar' && <Sidebar />}
+      <div className="app-shell">
+      <TitleBar showTitle={false} />
       {updateInfo?.forceUpdate && (
         <div className="force-update-overlay">
           <div className="force-update-card">
@@ -683,44 +683,32 @@ function App() {
         </div>
       )}
 
-      <Box
-        sx={{
-          flex: 1,
-          display: 'flex',
-          minHeight: 0,
-          overflow: 'hidden',
-        }}
-      >
-        {navLayout === 'sidebar' && <Sidebar />}
-        <Box
-          component="main"
-          sx={{
-            flex: 1,
-            minWidth: 0,
-            overflow: (disableContentOverflow || isFullPage) ? 'hidden' : 'auto',
-            px: isFullPage ? 0 : 3,
-            pt: isFullPage ? 0 : 3,
-            pb: 0,
-          }}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        <main
+          className={`flex-1 min-w-0 ${(disableContentOverflow || isFullPage || isEdgeToEdge) ? 'overflow-hidden' : 'overflow-auto'} ${navLayout === 'sidebar' && !isEdgeToEdge ? 'bg-(--bg-primary) rounded-xl mr-3 mb-3' : ''}`}
+          style={{ paddingLeft: (isFullPage || isEdgeToEdge || isAgentPage) ? 0 : 24, paddingRight: (isFullPage || isEdgeToEdge || isAgentPage) ? 0 : 24, paddingTop: (isFullPage || isEdgeToEdge || isAgentPage) ? 0 : 24 }}
         >
           <RouteGuard>
             <Routes>
               <Route path="/" element={<WelcomePage />} />
               <Route path="/home" element={<HomePage />} />
-              <Route path="/analytics" element={<AnalyticsPage />} />
-              <Route path="/annual-report" element={<AnnualReportPage />} />
+              <Route path="/analytics" element={<Navigate to="/home" replace />} />
+              <Route path="/annual-report" element={<Navigate to="/home" replace />} />
+              <Route path="/group-analytics-window" element={<Navigate to="/home" replace />} />
+              <Route path="/annual-report-window" element={<Navigate to="/home" replace />} />
               <Route path="/data-management" element={<DataManagementPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/open-api" element={<OpenApiPage />} />
               <Route path="/mcp" element={<McpPage />} />
+              <Route path="/agent" element={<AgentPage />} />
               <Route path="/export" element={<ExportPage />} />
               <Route path="/transcription-assistant" element={<TranscriptionAssistantPage />} />
-              <Route path="/agent" element={<AgentPage />} />
               <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
             </Routes>
           </RouteGuard>
-        </Box>
-      </Box>
+        </main>
+      </div>
+      </div>
       {navLayout === 'dock' && <BottomDock />}
       <DecryptProgressOverlay />
       {progressPercent !== null && (

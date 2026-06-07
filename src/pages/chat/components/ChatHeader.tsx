@@ -1,13 +1,85 @@
-import { Aperture, BadgeCheck, Bot, BrainCircuit, Image as ImageIcon, Loader2, Mic, Origami, Radar, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
-import AppDatePicker from '../../../components/AppDatePicker'
+import { Aperture, Image as ImageIcon, Info, Loader2, Mic, RefreshCw, Sparkles } from 'lucide-react'
+import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { Button, Drawer, Tooltip } from '@heroui/react'
+import { DateJumpPicker } from './DateJumpPicker'
 import type { ChatSession } from '../../../types/models'
-import type { SessionVectorIndexState } from '../../../types/ai'
+import type { EmbeddingBuildProgress, EmbeddingVectorStoreInfo } from '../../../types/electron'
 import { isGroupChat } from '../utils/messageGuards'
 import { SessionAvatar } from './SessionSidebar'
 
 type Progress = {
   current: number
   total: number
+}
+
+type SessionDetail = {
+  wxid: string
+  displayName: string
+  remark?: string
+  nickName?: string
+  alias?: string
+  avatarUrl?: string
+  messageCount: number
+  firstMessageTime?: number
+  latestMessageTime?: number
+  messageTables: { dbName: string; tableName: string; count: number }[]
+}
+
+function formatVectorProgress(progress: EmbeddingBuildProgress | null): string {
+  if (!progress) return '准备语义索引…'
+  if (progress.total > 0) return `${progress.message} ${progress.current}/${progress.total} 段`
+  return progress.message
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`
+}
+
+function formatUpdatedAt(ms: number | null): string {
+  if (!ms) return '无'
+  return new Date(ms).toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function formatSessionTimestamp(timestamp: number): string {
+  if (!timestamp) return '无'
+  return new Date(timestamp * 1000).toLocaleString('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+function getSessionTypeLabel(session: ChatSession): string {
+  if (session.isFoldGroup) return '折叠的聊天'
+  if (session.isOfficialFolder) return '公众号聚合'
+  if (session.isOfficialAccount || session.username.startsWith('gh_')) return '公众号'
+  if (isGroupChat(session.username)) return '群聊'
+  if (session.isWeCom) return '企业微信'
+  return '私聊'
+}
+
+function DetailRow({ label, value, monospace = false }: { label: string; value: ReactNode; monospace?: boolean }) {
+  return (
+    <div className="chat-detail-row">
+      <span className="chat-detail-row__label">{label}</span>
+      <span className={`chat-detail-row__value${monospace ? ' is-monospace' : ''}`}>{value}</span>
+    </div>
+  )
 }
 
 interface ChatHeaderProps {
@@ -17,19 +89,6 @@ interface ChatHeaderProps {
   isLoadingMessages: boolean
   isUpdating: boolean
   onRefreshMessages: () => void | Promise<void>
-  isPreparingVectorIndex: boolean
-  vectorIndexState: SessionVectorIndexState | null
-  hasPendingVectorMessages: boolean
-  isVectorProviderUnavailable: boolean
-  vectorIndexBadgeLabel: string
-  vectorIndexPercent: number
-  vectorIndexHoverRows: Array<{ label: string; value: string }>
-  onVectorIndexClick: () => void | Promise<void>
-  isPreparingMemoryBuild: boolean
-  memoryBuildCount: number
-  memoryBuildBadgeLabel: string
-  memoryButtonTitle: string
-  onMemoryBuildClick: () => void | Promise<void>
   selectedDate: string
   onSelectedDateChange: (value: string) => void
   onJumpToDate: (dateValue?: string) => void | Promise<void>
@@ -40,8 +99,6 @@ interface ChatHeaderProps {
   isBatchDecrypting: boolean
   batchDecryptProgress: Progress
   onBatchDecrypt: () => void | Promise<void>
-  showDetailPanel: boolean
-  onToggleDetailPanel: () => void
 }
 
 export function ChatHeader({
@@ -51,19 +108,6 @@ export function ChatHeader({
   isLoadingMessages,
   isUpdating,
   onRefreshMessages,
-  isPreparingVectorIndex,
-  vectorIndexState,
-  hasPendingVectorMessages,
-  isVectorProviderUnavailable,
-  vectorIndexBadgeLabel,
-  vectorIndexPercent,
-  vectorIndexHoverRows,
-  onVectorIndexClick,
-  isPreparingMemoryBuild,
-  memoryBuildCount,
-  memoryBuildBadgeLabel,
-  memoryButtonTitle,
-  onMemoryBuildClick,
   selectedDate,
   onSelectedDateChange,
   onJumpToDate,
@@ -73,12 +117,254 @@ export function ChatHeader({
   onBatchTranscribe,
   isBatchDecrypting,
   batchDecryptProgress,
-  onBatchDecrypt,
-  showDetailPanel,
-  onToggleDetailPanel
+  onBatchDecrypt
 }: ChatHeaderProps) {
+  // 向量化（语义索引）状态：null=未知/未启用嵌入，count=已建片段数
+  const [vecBuilding, setVecBuilding] = useState(false)
+  const [vecStatus, setVecStatus] = useState<{ enabled: boolean; count: number } | null>(null)
+  const [vecError, setVecError] = useState<string | null>(null)
+  const [vecProgress, setVecProgress] = useState<EmbeddingBuildProgress | null>(null)
+  const [vecStore, setVecStore] = useState<EmbeddingVectorStoreInfo | null>(null)
+  const [isDetailOpen, setIsDetailOpen] = useState(false)
+  const [contactNickName, setContactNickName] = useState('')
+  const [sessionDetail, setSessionDetail] = useState<SessionDetail | null>(null)
+  const [sessionDetailLoading, setSessionDetailLoading] = useState(false)
+  const headerRef = useRef<HTMLDivElement>(null)
+  const [detailDrawerHost, setDetailDrawerHost] = useState<HTMLElement | null>(null)
+
+  const getDetailDrawerHost = useCallback(() => {
+    const messageShell = headerRef.current?.closest('.message-shell') as HTMLElement | null
+    const messageArea = headerRef.current?.closest('.message-area') as HTMLElement | null
+    return (messageShell ?? messageArea)?.querySelector('.message-content-wrapper') as HTMLElement | null
+  }, [])
+
+  useEffect(() => {
+    setDetailDrawerHost(getDetailDrawerHost())
+  }, [getDetailDrawerHost])
+
+  useEffect(() => {
+    let cancelled = false
+    setContactNickName('')
+    setSessionDetail(null)
+    setSessionDetailLoading(true)
+
+    void window.electronAPI.chat.getSessionDetail(currentSession.username)
+      .then((result) => {
+        if (cancelled) return
+        if (result.success && result.detail) {
+          setSessionDetail(result.detail)
+          setContactNickName(result.detail.nickName?.trim() || currentSession.username)
+        } else {
+          setContactNickName(currentSession.username)
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setContactNickName(currentSession.username)
+      })
+      .finally(() => {
+        if (!cancelled) setSessionDetailLoading(false)
+      })
+
+    return () => { cancelled = true }
+  }, [currentSession.username])
+
+  const syncDetailDrawerBounds = useCallback(() => {
+    const host = detailDrawerHost ?? getDetailDrawerHost()
+    if (!host) return
+
+    const rect = host.getBoundingClientRect()
+    const rootStyle = document.documentElement.style
+    rootStyle.setProperty('--chat-detail-drawer-left', `${rect.left}px`)
+    rootStyle.setProperty('--chat-detail-drawer-top', `${rect.top}px`)
+    rootStyle.setProperty('--chat-detail-drawer-width', `${rect.width}px`)
+    rootStyle.setProperty('--chat-detail-drawer-height', `${rect.height}px`)
+  }, [detailDrawerHost])
+
+  useEffect(() => {
+    if (!isDetailOpen) return
+
+    const host = detailDrawerHost ?? getDetailDrawerHost()
+    if (!host) return
+
+    syncDetailDrawerBounds()
+    window.addEventListener('resize', syncDetailDrawerBounds)
+    const observer = new ResizeObserver(syncDetailDrawerBounds)
+    observer.observe(host)
+
+    return () => {
+      window.removeEventListener('resize', syncDetailDrawerBounds)
+      observer.disconnect()
+    }
+  }, [detailDrawerHost, getDetailDrawerHost, isDetailOpen, syncDetailDrawerBounds])
+
+  useEffect(() => {
+    let cancelled = false
+    setVecError(null)
+    setVecProgress(null)
+    setVecStore(null)
+    if (!currentSessionId) {
+      setVecStatus(null)
+      return
+    }
+    void window.electronAPI.embedding.sessionStatus(currentSessionId).then((res) => {
+      if (!cancelled && res.success) {
+        setVecStatus({ enabled: !!res.enabled, count: res.count ?? 0 })
+        setVecStore(res.store ?? null)
+      }
+    })
+    return () => { cancelled = true }
+  }, [currentSessionId])
+
+  useEffect(() => {
+    return window.electronAPI.embedding.onBuildProgress((progress) => {
+      if (!currentSessionId || progress.sessionId !== currentSessionId) return
+      setVecProgress(progress)
+      if (progress.stage === 'done') {
+        setVecStatus({ enabled: true, count: progress.indexed })
+      }
+    })
+  }, [currentSessionId])
+
+  const handleVectorize = async () => {
+    if (!currentSessionId || vecBuilding) return
+    setVecBuilding(true)
+    setVecError(null)
+    setVecProgress({
+      sessionId: currentSessionId,
+      stage: 'loading',
+      current: 0,
+      total: 0,
+      indexed: vecStatus?.count ?? 0,
+      message: '准备语义索引'
+    })
+    try {
+      const res = await window.electronAPI.embedding.buildSession(currentSessionId)
+      if (res.success) {
+        setVecStatus({ enabled: true, count: res.indexed ?? 0 })
+        const status = await window.electronAPI.embedding.sessionStatus(currentSessionId)
+        if (status.success) setVecStore(status.store ?? null)
+      } else setVecError(res.error || '向量化失败')
+    } catch (e) {
+      setVecError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setVecBuilding(false)
+    }
+  }
+
+  const vecDisabled = !currentSessionId || vecBuilding || (vecStatus !== null && !vecStatus.enabled)
+  const vecTooltip = vecBuilding
+    ? formatVectorProgress(vecProgress)
+    : vecError
+      ? `向量化失败：${vecError}`
+      : vecStatus && !vecStatus.enabled
+        ? '未启用嵌入模型（设置 → 嵌入）'
+        : vecStatus && vecStatus.count > 0
+          ? `已向量化 ${vecStatus.count} 段 · 点击更新`
+          : '为此会话建立语义索引'
+  const vectorEvidenceRows = vecStore
+    ? [
+        `片段：${vecStore.count} 段`,
+        `维度：${vecStore.dimensions.length > 0 ? vecStore.dimensions.join(', ') : '无'}`,
+        `文件：${vecStore.exists ? formatBytes(vecStore.sizeBytes) : '未创建'}`,
+        `更新：${formatUpdatedAt(vecStore.updatedAtMs)}`,
+        vecStore.dbPath,
+      ]
+    : []
+  const sessionDisplayName = contactNickName || currentSession.username
+  const lastActivity = currentSession.lastTimestamp || currentSession.sortTimestamp
+  const summary = currentSession.summary?.split('\n')[0]?.trim() || '暂无消息'
+  const messageTables = sessionDetail?.messageTables ?? []
+  const detailDrawer = (
+    <Drawer.Backdrop
+      className="chat-detail-backdrop"
+      isOpen={isDetailOpen}
+      onOpenChange={setIsDetailOpen}
+      variant="transparent"
+    >
+      <Drawer.Content className="chat-detail-content" placement="right">
+        <Drawer.Dialog className="chat-detail-drawer" aria-label="会话详情">
+          <Drawer.CloseTrigger />
+          <Drawer.Header>
+            <Drawer.Heading>会话详情</Drawer.Heading>
+          </Drawer.Header>
+          <Drawer.Body>
+            <div className="chat-detail-profile">
+              <SessionAvatar session={currentSession} size={64} />
+              <div className="chat-detail-profile__text">
+                <div className="chat-detail-profile__name">{sessionDisplayName}</div>
+                <div className="chat-detail-profile__meta">{getSessionTypeLabel(currentSession)}</div>
+              </div>
+            </div>
+
+            <section className="chat-detail-section">
+              <h4>基础信息</h4>
+              <DetailRow label="昵称" value={sessionDisplayName} />
+              <DetailRow label="会话 ID" value={sessionDetail?.wxid || currentSession.username} monospace />
+              <DetailRow label="类型" value={getSessionTypeLabel(currentSession)} />
+              {currentSession.isWeCom && (
+                <DetailRow label="企业" value={currentSession.weComCorp || '企业微信'} />
+              )}
+              <DetailRow label="置顶" value={currentSession.isPinned ? '是' : '否'} />
+              <DetailRow label="未读" value={currentSession.unreadCount > 0 ? currentSession.unreadCount : '无'} />
+              <DetailRow label="最近活跃" value={formatSessionTimestamp(lastActivity)} />
+            </section>
+
+            <section className="chat-detail-section">
+              <h4>消息统计</h4>
+              <DetailRow label="总数" value={sessionDetailLoading ? '加载中...' : (sessionDetail?.messageCount ?? 0)} />
+              <DetailRow label="最早消息" value={formatSessionTimestamp(sessionDetail?.firstMessageTime || 0)} />
+              <DetailRow label="最新消息" value={formatSessionTimestamp(sessionDetail?.latestMessageTime || 0)} />
+            </section>
+
+            <section className="chat-detail-section">
+              <h4>最近消息</h4>
+              <div className="chat-detail-summary">{summary}</div>
+            </section>
+
+            <section className="chat-detail-section">
+              <h4>消息所在数据库</h4>
+              {sessionDetailLoading ? (
+                <div className="chat-detail-empty">正在加载...</div>
+              ) : messageTables.length > 0 ? (
+                <div className="chat-detail-table-list">
+                  {messageTables.map((item) => (
+                    <div className="chat-detail-table-item" key={`${item.dbName}:${item.tableName}`}>
+                      <div className="chat-detail-table-item__main">
+                        <span className="chat-detail-table-item__db">{item.dbName}</span>
+                        <span className="chat-detail-table-item__table">{item.tableName}</span>
+                      </div>
+                      <span className="chat-detail-table-item__count">{item.count}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="chat-detail-empty">未找到消息表</div>
+              )}
+            </section>
+
+            <section className="chat-detail-section">
+              <h4>语义索引</h4>
+              <DetailRow
+                label="状态"
+                value={vecBuilding ? formatVectorProgress(vecProgress) : vecTooltip}
+              />
+              {vectorEvidenceRows.map((row, index) => (
+                <DetailRow
+                  key={`${index}:${row}`}
+                  label={index === 0 ? '片段' : index === 1 ? '维度' : index === 2 ? '文件' : index === 3 ? '更新' : '路径'}
+                  value={row.replace(/^(片段|维度|文件|更新)：/, '')}
+                  monospace={index === 4}
+                />
+              ))}
+            </section>
+          </Drawer.Body>
+        </Drawer.Dialog>
+      </Drawer.Content>
+    </Drawer.Backdrop>
+  )
+
   return (
-    <div className="message-header">
+    <div ref={headerRef} className="message-header">
       <SessionAvatar session={currentSession} size={40} />
       <div className="header-info">
         <h3>
@@ -92,142 +378,136 @@ export function ChatHeader({
         {isGroupChat(currentSession.username) && (
           <div className="header-subtitle">群聊</div>
         )}
+        {vecBuilding && (
+          <div className="header-subtitle">{formatVectorProgress(vecProgress)}</div>
+        )}
       </div>
       <div className="header-actions">
-        <button
-          className="icon-btn refresh-messages-btn"
-          onClick={onRefreshMessages}
-          disabled={isRefreshingMessages || isLoadingMessages}
-          data-tooltip="刷新消息"
-        >
-          <RefreshCw size={18} className={isRefreshingMessages || isUpdating ? 'spin' : ''} />
-        </button>
-        <div className="vector-index-action-wrapper">
-          <button
-            className={`icon-btn vector-index-btn ${isPreparingVectorIndex ? 'running active' : ''} ${vectorIndexState?.isVectorComplete ? 'complete' : ''} ${hasPendingVectorMessages ? 'pending' : ''}`}
-            onClick={onVectorIndexClick}
-            disabled={!currentSessionId || (isVectorProviderUnavailable && !isPreparingVectorIndex)}
-            aria-label={isPreparingVectorIndex ? '取消向量化' : '增量向量化当前聊天'}
-          >
-            {isVectorProviderUnavailable && !isPreparingVectorIndex ? (
-              <TriangleAlert size={18} />
-            ) : isPreparingVectorIndex ? (
-              <Radar size={18} className="vector-index-radar" />
-            ) : vectorIndexState?.isVectorComplete ? (
-              <BadgeCheck size={18} />
-            ) : (
-              <BrainCircuit size={18} />
-            )}
-            {vectorIndexBadgeLabel && (
-              <span className="vector-index-badge">{vectorIndexBadgeLabel}</span>
-            )}
-          </button>
-          <div className="vector-index-hover-panel" role="tooltip">
-            <div className="vector-hover-header">
-              <span>语义向量索引</span>
-              <strong>{vectorIndexPercent}%</strong>
-            </div>
-            <div className="vector-hover-progress">
-              <span style={{ width: `${vectorIndexPercent}%` }} />
-            </div>
-            <div className="vector-hover-rows">
-              {vectorIndexHoverRows.map((row) => (
-                <div key={row.label} className={row.label === '错误' ? 'error' : ''}>
-                  <span>{row.label}</span>
-                  <strong>{row.value}</strong>
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="刷新消息"
+              onPress={onRefreshMessages}
+              isDisabled={isRefreshingMessages || isLoadingMessages}
+            >
+              <RefreshCw size={18} className={isRefreshingMessages || isUpdating ? 'animate-spin' : ''} />
+            </Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content>刷新消息</Tooltip.Content>
+        </Tooltip>
+
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="向量化（语义索引）"
+              onPress={handleVectorize}
+              isDisabled={vecDisabled}
+            >
+              {vecBuilding
+                ? <Loader2 size={18} className="animate-spin" />
+                : <Sparkles size={18} className={vecStatus && vecStatus.count > 0 ? 'text-primary' : ''} />}
+            </Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content className="max-w-96">
+            <div className="space-y-1">
+              <div>{vecTooltip}</div>
+              {vectorEvidenceRows.length > 0 && (
+                <div className="space-y-0.5 text-xs text-muted-foreground">
+                  {vectorEvidenceRows.map((row, index) => (
+                    <div className={index === vectorEvidenceRows.length - 1 ? 'max-w-88 truncate font-mono' : ''} key={`${index}:${row}`}>
+                      {row}
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
-          </div>
-        </div>
-        <button
-          className={`icon-btn memory-build-btn ${isPreparingMemoryBuild ? 'running active' : ''} ${memoryBuildCount > 0 ? 'complete' : ''}`}
-          onClick={onMemoryBuildClick}
-          disabled={!currentSessionId || isPreparingMemoryBuild}
-          data-tooltip={memoryButtonTitle}
-          aria-label="构建当前聊天三层记忆"
-        >
-          {isPreparingMemoryBuild ? (
-            <Radar size={18} className="vector-index-radar" />
-          ) : (
-            <Origami size={18} />
-          )}
-          {memoryBuildBadgeLabel && (
-            <span className="vector-index-badge">{memoryBuildBadgeLabel}</span>
-          )}
-        </button>
+          </Tooltip.Content>
+        </Tooltip>
+
         {!isGroupChat(currentSession.username) && (
-          <button
-            className="icon-btn moments-btn"
-            onClick={() => window.electronAPI.window.openMomentsWindow(currentSession.username)}
-            data-tooltip="查看朋友圈"
-          >
-            <Aperture size={18} />
-          </button>
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="查看朋友圈"
+                onPress={() => window.electronAPI.window.openMomentsWindow(currentSession.username)}
+              >
+                <Aperture size={18} />
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content>查看朋友圈</Tooltip.Content>
+          </Tooltip>
         )}
-        <button
-          className="icon-btn ai-summary-btn"
-          onClick={() => {
-            window.electronAPI.window.openAISummaryWindow(
-              currentSession.username,
-              currentSession.displayName || currentSession.username
-            )
-          }}
-          data-tooltip="AI 摘要"
-        >
-          <Sparkles size={18} />
-        </button>
-        <AppDatePicker
-          mode="single"
-          className="date-picker-wrapper"
-          triggerClassName="icon-btn date-jump-btn"
-          triggerVariant="icon"
-          align="right"
+
+        <DateJumpPicker
           value={selectedDate}
           onChange={onSelectedDateChange}
-          onCommit={onJumpToDate}
-          placeholder="跳转到日期"
-          confirmLabel="跳转"
-          ariaLabel="跳转到日期"
+          onJump={onJumpToDate}
           disabled={!currentSessionId || isJumpingToDate}
           loading={isJumpingToDate}
-          showClear={false}
         />
-        <button
-          className="icon-btn batch-transcribe-btn"
-          style={{ position: 'relative', zIndex: 10 }}
-          onClick={onBatchTranscribe}
-          disabled={isBatchTranscribing || !currentSessionId}
-          data-tooltip={isBatchTranscribing ? `批量转写中 (${batchTranscribeProgress.current}/${batchTranscribeProgress.total})` : '批量语音转文字'}
-        >
-          {isBatchTranscribing ? (
-            <Loader2 size={18} className="spin" />
-          ) : (
-            <Mic size={18} />
-          )}
-        </button>
-        <button
-          className="icon-btn batch-decrypt-btn"
-          style={{ position: 'relative', zIndex: 10 }}
-          onClick={onBatchDecrypt}
-          disabled={isBatchDecrypting || !currentSessionId}
-          data-tooltip={isBatchDecrypting ? `批量解密中 (${batchDecryptProgress.current}/${batchDecryptProgress.total})` : '批量解密图片'}
-        >
-          {isBatchDecrypting ? (
-            <Loader2 size={18} className="spin" />
-          ) : (
-            <ImageIcon size={18} />
-          )}
-        </button>
-        <button
-          className={`icon-btn detail-btn ${showDetailPanel ? 'active' : ''}`}
-          onClick={onToggleDetailPanel}
-          data-tooltip="AI 助手"
-          aria-label="打开 AI 助手"
-        >
-          <Bot size={18} />
-        </button>
+
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="批量语音转文字"
+              onPress={onBatchTranscribe}
+              isDisabled={isBatchTranscribing || !currentSessionId}
+            >
+              {isBatchTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+            </Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content>
+            {isBatchTranscribing ? `批量转写中 (${batchTranscribeProgress.current}/${batchTranscribeProgress.total})` : '批量语音转文字'}
+          </Tooltip.Content>
+        </Tooltip>
+
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="批量解密图片"
+              onPress={onBatchDecrypt}
+              isDisabled={isBatchDecrypting || !currentSessionId}
+            >
+              {isBatchDecrypting ? <Loader2 size={18} className="animate-spin" /> : <ImageIcon size={18} />}
+            </Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content>
+            {isBatchDecrypting ? `批量解密中 (${batchDecryptProgress.current}/${batchDecryptProgress.total})` : '批量解密图片'}
+          </Tooltip.Content>
+        </Tooltip>
+
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="会话详情"
+              onPress={() => setIsDetailOpen(true)}
+            >
+              <Info size={18} />
+            </Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content>会话详情</Tooltip.Content>
+        </Tooltip>
       </div>
+
+      {detailDrawerHost ? detailDrawer : null}
     </div>
   )
 }

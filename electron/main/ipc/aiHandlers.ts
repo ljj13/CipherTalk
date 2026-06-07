@@ -1,16 +1,562 @@
 import { ipcMain } from 'electron'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
-import { chatService } from '../../services/chatService'
-import { cancelSessionVectorIndexJob, getSessionVectorIndexStateForUi, startSessionVectorIndexJob } from '../workers/sessionVectorIndexJobs'
-import { getSessionMemoryBuildStateForUi, startSessionMemoryBuildJob } from '../workers/sessionMemoryBuildJobs'
+import type { UIMessage } from 'ai'
 import type { MainProcessContext } from '../context'
+import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope } from '../../services/agent/types'
 
-/**
- * AI IPC。
- * 摘要流、QA 流、向量索引和记忆构建都保留原事件名；Worker 生命周期交给 workers 模块管理。
- */
+/** 进行中的 agent 运行：runId → AbortController，用于取消。 */
+const agentAborters = new Map<string, AbortController>()
+
+function textFromUiMessage(message: UIMessage): string {
+  const anyMessage = message as any
+  if (typeof anyMessage.content === 'string') return anyMessage.content
+  if (!Array.isArray(anyMessage.parts)) return ''
+  return anyMessage.parts
+    .map((part: any) => {
+      if (!part || typeof part !== 'object') return ''
+      if (part.type === 'text') return String(part.text || '')
+      if (typeof part.text === 'string') return part.text
+      return ''
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+function lastUserTextFromUiMessages(messages: UIMessage[] = []): string {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    if (messages[i]?.role === 'user') return textFromUiMessage(messages[i])
+  }
+  return ''
+}
+
+function scopeToLogData(scope?: AgentScope): Record<string, unknown> {
+  if (!scope || scope.kind === 'global') return { scopeKind: 'global' }
+  return {
+    scopeKind: 'session',
+    sessionId: scope.sessionId,
+    hasDisplayName: Boolean(scope.displayName),
+  }
+}
+
+function hostFromUrl(url: string): string | null {
+  if (!url) return null
+  try {
+    return new URL(url).host || null
+  } catch {
+    return null
+  }
+}
+
+function providerToLogData(providerConfig: AgentProviderConfig): Record<string, unknown> {
+  return {
+    provider: providerConfig.name,
+    protocol: providerConfig.providerKind,
+    model: providerConfig.model,
+    baseURLHost: hostFromUrl(providerConfig.baseURL),
+    hasBaseURL: Boolean(providerConfig.baseURL),
+    hasApiKey: Boolean(providerConfig.apiKey),
+    hasProxy: Boolean(providerConfig.proxyUrl),
+    reasoningEffort: providerConfig.reasoningEffort || null,
+  }
+}
+
+function errorToLogData(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return { name: error.name, message: error.message, stack: error.stack }
+  }
+  return { message: String(error) }
+}
+
 export function registerAiHandlers(ctx: MainProcessContext): void {
+  // ========= AI Agent（跑在独立 utilityProcess 子进程，主进程仅做 broker）=========
+  ipcMain.handle('agent:run', async (event, payload: {
+    runId: string
+    messages: UIMessage[]
+    scope?: AgentScope
+    modelConfig?: AgentProviderConfigOverride | null
+    conversationId?: number | null
+  }) => {
+    const sender = event.sender
+    const { runId } = payload
+    const send = (chunk: unknown) => { if (!sender.isDestroyed()) sender.send('agent:chunk', { runId, chunk }) }
+    const sendProgress = (progress: unknown) => { if (!sender.isDestroyed()) sender.send('agent:progress', { runId, progress }) }
+    const aborter = new AbortController()
+    const logger = ctx.getLogService()
+    const startedAt = Date.now()
+    const scope = payload.scope ?? { kind: 'global' as const }
+    const initialLastUserText = lastUserTextFromUiMessages(payload.messages || [])
+    const baseRunData = {
+      runId,
+      conversationId: payload.conversationId ?? null,
+      messageCount: payload.messages?.length ?? 0,
+      lastUserTextLength: initialLastUserText.length,
+      ...scopeToLogData(scope),
+    }
+    let stage = 'start'
+    let chunkCount = 0
+    let progressCount = 0
+    let lastActivityAt = startedAt
+    let lastActivityKind = 'start'
+    let idleWarningCount = 0
+    let watchdog: NodeJS.Timeout | null = null
+    agentAborters.set(runId, aborter)
+    logger?.warn('AIAgent', 'AI Agent 请求开始', baseRunData)
+    try {
+      stage = 'import_services'
+      const { agentProcessService } = await import('../../services/agent/agentProcessService')
+      agentProcessService.setLogger(logger)
+      const { resolveProviderConfig } = await import('../../services/agent/resolveProviderConfig')
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      const { convertToModelMessages } = await import('ai')
+      stage = 'refresh_proxy'
+      await refreshResolvedProxyUrl() // 主进程探测系统代理并持久化，供子进程 agent/嵌入读取
+      stage = 'resolve_provider'
+      const providerConfig = resolveProviderConfig(payload.modelConfig)
+      stage = 'convert_messages'
+      const messages = await convertToModelMessages(payload.messages)
+      const lastUserText = lastUserTextFromUiMessages(payload.messages)
+      stage = 'load_context_services'
+      const { mcpClientService } = await import('../../services/mcpClientService')
+      const { buildReadOnlyMcpToolDescriptors } = await import('../../services/agent/mcpToolPolicy')
+      const { skillManagerService } = await import('../../services/skillManagerService')
+      const { rerankCandidates } = await import('../../services/ai/rerankService')
+      const { agentResourceVectorService } = await import('../../services/agent/agentResourceVectorService')
+      const readOnlyMcpTools = buildReadOnlyMcpToolDescriptors(mcpClientService.getConnectedToolSchemas())
+      let mcpCandidates = readOnlyMcpTools
+      stage = 'select_mcp_candidates'
+      if (agentResourceVectorService.isReady()) {
+        try {
+          const vectorMcpTools = await agentResourceVectorService.searchMcpTools(lastUserText, readOnlyMcpTools, 24)
+          if (vectorMcpTools.length > 0) mcpCandidates = vectorMcpTools
+        } catch (error) {
+          console.warn('[agent:run] MCP vector candidate selection failed, fallback to all read-only tools:', error)
+          logger?.warn('AIAgent', 'MCP 工具向量候选选择失败，回退到全部只读工具', {
+            ...baseRunData,
+            ...errorToLogData(error),
+          })
+        }
+      }
+      stage = 'rerank_mcp_tools'
+      const mcpTools = (await rerankCandidates(
+        lastUserText,
+        mcpCandidates.map((tool) => ({
+          item: tool,
+          text: [
+            `MCP ${tool.serverName}/${tool.toolName}`,
+            tool.name,
+            tool.description || '',
+            tool.inputSchema ? JSON.stringify(tool.inputSchema).slice(0, 1000) : '',
+          ].filter(Boolean).join('\n'),
+        })),
+        { topN: 8 },
+      )).items
+      stage = 'select_skills'
+      const skills = await skillManagerService.selectSkillsForAgent(lastUserText)
+      if (mcpTools.length > 0 || skills.length > 0) {
+        console.info('[agent:run] injected context', {
+          mcpTools: mcpTools.map((tool) => `${tool.serverName}/${tool.toolName}`),
+          skills: skills.map((skill) => skill.name),
+        })
+      }
+      logger?.warn('AIAgent', 'AI Agent 配置与上下文准备完成', {
+        ...baseRunData,
+        elapsedMs: Date.now() - startedAt,
+        provider: providerToLogData(providerConfig),
+        modelMessageCount: messages.length,
+        readOnlyMcpToolCount: readOnlyMcpTools.length,
+        mcpCandidateCount: mcpCandidates.length,
+        selectedMcpToolCount: mcpTools.length,
+        selectedMcpTools: mcpTools.map((tool) => `${tool.serverName}/${tool.toolName}`),
+        selectedSkillCount: skills.length,
+        selectedSkills: skills.map((skill) => skill.name),
+      })
+      stage = 'run_agent_process'
+      watchdog = setInterval(() => {
+        const idleMs = Date.now() - lastActivityAt
+        if (idleMs < 10000) return
+        if (idleWarningCount >= 6) return
+        idleWarningCount += 1
+        logger?.warn('AIAgent', 'AI Agent 运行中暂无新输出', {
+          ...baseRunData,
+          stage,
+          elapsedMs: Date.now() - startedAt,
+          idleMs,
+          chunkCount,
+          progressCount,
+          lastActivityKind,
+        })
+      }, 15000)
+      logger?.warn('AIAgent', 'AI Agent 已交给 utility process 运行', {
+        ...baseRunData,
+        elapsedMs: Date.now() - startedAt,
+      })
+      await agentProcessService.run(
+        { messages, providerConfig, scope, mcpTools, skills },
+        (chunk) => {
+          chunkCount += 1
+          lastActivityAt = Date.now()
+          lastActivityKind = 'chunk'
+          idleWarningCount = 0
+          send(chunk)
+        },
+        (progress) => {
+          progressCount += 1
+          lastActivityAt = Date.now()
+          lastActivityKind = 'progress'
+          idleWarningCount = 0
+          sendProgress(progress)
+        },
+        aborter.signal,
+      )
+      stage = 'done'
+      send('[DONE]')
+      logger?.warn('AIAgent', 'AI Agent 请求完成', {
+        ...baseRunData,
+        elapsedMs: Date.now() - startedAt,
+        chunkCount,
+        progressCount,
+      })
+      return { success: true }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      logger?.error('AIAgent', 'AI Agent 请求失败', {
+        ...baseRunData,
+        stage,
+        elapsedMs: Date.now() - startedAt,
+        chunkCount,
+        progressCount,
+        ...errorToLogData(e),
+      })
+      sendProgress({ stage: 'error', title: 'AI 助手运行失败', detail: message, at: Date.now() })
+      send({ type: 'error', errorText: message })
+      send('[DONE]')
+      return { success: false, error: message }
+    } finally {
+      if (watchdog) clearInterval(watchdog)
+      agentAborters.delete(runId)
+    }
+  })
+
+  ipcMain.handle('agent:listConversations', async (_event, scope?: AgentScope) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversations: agentConversationStore.list({ scope }) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:loadConversation', async (_event, id: number) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      const conversation = agentConversationStore.load(Number(id))
+      return conversation
+        ? { success: true, conversation }
+        : { success: false, error: 'AI 对话不存在' }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:createConversation', async (_event, payload: {
+    scope?: AgentScope
+    title?: string
+    modelProvider?: string
+    modelId?: string
+  }) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversation: agentConversationStore.create(payload || {}) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:deleteConversation', async (_event, id: number) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      agentConversationStore.remove(Number(id))
+      return { success: true }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:renameConversation', async (_event, id: number, title: string) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversation: agentConversationStore.rename(Number(id), title) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:saveConversationMessages', async (_event, payload: {
+    id: number
+    messages: UIMessage[]
+    scope?: AgentScope
+    modelProvider?: string
+    modelId?: string
+  }) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      if (payload.scope || payload.modelProvider !== undefined || payload.modelId !== undefined) {
+        agentConversationStore.updateMeta(Number(payload.id), {
+          scope: payload.scope,
+          modelProvider: payload.modelProvider,
+          modelId: payload.modelId,
+        })
+      }
+      const conversation = agentConversationStore.replaceMessages(Number(payload.id), payload.messages || [])
+      return { success: true, conversation }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:getLastConversation', async (_event, scope?: AgentScope) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return { success: true, conversation: agentConversationStore.getLast(scope) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:abort', (_e, runId: string) => {
+    ctx.getLogService()?.warn('AIAgent', '收到 AI Agent 取消请求', { runId })
+    agentAborters.get(runId)?.abort()
+    return { success: true }
+  })
+
+  // ========= 嵌入模型（语义/向量检索）=========
+  ipcMain.handle('embedding:getConfig', async () => {
+    try {
+      const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      return { success: true, config: getEmbeddingConfig() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('embedding:setConfig', async (_e, patch: Record<string, unknown>) => {
+    try {
+      const { saveEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      return { success: true, config: saveEmbeddingConfig(patch as any) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('embedding:test', async (_e, cfg: any) => {
+    try {
+      const { testEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      await refreshResolvedProxyUrl() // 测试也走代理，保证"测试通过=实际可用"
+      return await testEmbeddingConfig(cfg)
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // 某会话的向量化状态：是否启用嵌入 + 已建片段数
+  ipcMain.handle('embedding:sessionStatus', async (_e, sessionId: string) => {
+    try {
+      const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      const { messageVectorService } = await import('../../services/search/messageVectorService')
+      const cfg = getEmbeddingConfig()
+      const store = messageVectorService.getSessionVectorStoreInfo(sessionId)
+      return { success: true, enabled: messageVectorService.isReady(cfg), count: store.count, store }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // 主动为某会话构建向量（懒构建的手动触发；增量，已建则只补新增）
+  ipcMain.handle('embedding:buildSession', async (event, sessionId: string) => {
+    try {
+      const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      const { messageVectorService } = await import('../../services/search/messageVectorService')
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      const sender = event.sender
+      const cfg = getEmbeddingConfig()
+      if (!messageVectorService.isReady(cfg)) {
+        return { success: false, error: '未启用或未配置嵌入模型（请先在设置 → 嵌入中配置并启用）' }
+      }
+      await refreshResolvedProxyUrl()
+      const indexed = await messageVectorService.ensureSessionVectors(sessionId, cfg, undefined, (progress) => {
+        if (!sender.isDestroyed()) sender.send('embedding:buildProgress', progress)
+      })
+      return { success: true, indexed }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('embedding:agentResourceStatus', async (_e, kind: 'skill' | 'mcp_tool') => {
+    try {
+      const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      const { agentResourceVectorService } = await import('../../services/agent/agentResourceVectorService')
+      const cfg = getEmbeddingConfig()
+      if (kind === 'skill') {
+        const { skillManagerService } = await import('../../services/skillManagerService')
+        return { success: true, status: agentResourceVectorService.getSkillStatus(skillManagerService.getSkillResourceDocuments(), cfg) }
+      }
+      const { mcpClientService } = await import('../../services/mcpClientService')
+      const { buildReadOnlyMcpToolDescriptors } = await import('../../services/agent/mcpToolPolicy')
+      const tools = buildReadOnlyMcpToolDescriptors(mcpClientService.getConnectedToolSchemas())
+      return { success: true, status: agentResourceVectorService.getMcpStatus(tools, cfg) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('embedding:buildAgentResources', async (event, kind: 'skill' | 'mcp_tool') => {
+    try {
+      const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      const { agentResourceVectorService } = await import('../../services/agent/agentResourceVectorService')
+      const cfg = getEmbeddingConfig()
+      if (!agentResourceVectorService.isReady(cfg)) {
+        return { success: false, error: '未启用或未配置嵌入模型（请先在设置 → 嵌入中配置并启用）' }
+      }
+      const sender = event.sender
+      await refreshResolvedProxyUrl()
+      if (kind === 'skill') {
+        const { skillManagerService } = await import('../../services/skillManagerService')
+        const indexed = await agentResourceVectorService.buildSkills(skillManagerService.getSkillResourceDocuments(), cfg, (progress) => {
+          if (!sender.isDestroyed()) sender.send('embedding:agentResourceBuildProgress', progress)
+        })
+        return { success: true, indexed }
+      }
+      const { mcpClientService } = await import('../../services/mcpClientService')
+      const { buildReadOnlyMcpToolDescriptors } = await import('../../services/agent/mcpToolPolicy')
+      const tools = buildReadOnlyMcpToolDescriptors(mcpClientService.getConnectedToolSchemas())
+      if (tools.length === 0) return { success: false, error: '暂无可向量化的已连接只读 MCP 工具' }
+      const indexed = await agentResourceVectorService.buildMcpTools(tools, cfg, (progress) => {
+        if (!sender.isDestroyed()) sender.send('embedding:agentResourceBuildProgress', progress)
+      })
+      return { success: true, indexed }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // ========= 重排模型（RAG/Skills/MCP 候选重排）=========
+  ipcMain.handle('rerank:getConfig', async () => {
+    try {
+      const { getRerankConfig } = await import('../../services/ai/rerankService')
+      return { success: true, config: getRerankConfig() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('rerank:setConfig', async (_e, patch: Record<string, unknown>) => {
+    try {
+      const { saveRerankConfig } = await import('../../services/ai/rerankService')
+      return { success: true, config: saveRerankConfig(patch as any) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('rerank:test', async (_e, cfg: any) => {
+    try {
+      const { testRerankConfig } = await import('../../services/ai/rerankService')
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      await refreshResolvedProxyUrl()
+      return await testRerankConfig(cfg)
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  // ========= AI 长期记忆管理（agent_memory.db；纯 DB，无 LLM 依赖）=========
+  ipcMain.handle('memory:list', async (_event, opts?: { sourceType?: 'profile' | 'fact'; sessionId?: string; limit?: number }) => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const items = memoryDatabase.listMemoryItems({
+        ...(opts?.sourceType ? { sourceType: opts.sourceType } : {}),
+        ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
+        limit: opts?.limit ?? 300,
+      })
+      return { success: true, items, stats: memoryDatabase.getStats() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:delete', async (_event, id: number) => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      return { success: memoryDatabase.deleteMemoryItem(Number(id)) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:update', async (_event, payload: {
+    id: number
+    sourceType?: 'profile' | 'fact'
+    content?: string
+    importance?: number
+    tags?: string[]
+  }) => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const id = Number(payload?.id)
+      if (!Number.isFinite(id)) return { success: false, error: '无效的记忆 id' }
+      const content = String(payload?.content || '').trim()
+      if (!content) return { success: false, error: '记忆内容不能为空' }
+      const item = memoryDatabase.updateMemoryItem(id, {
+        ...(payload.sourceType ? { sourceType: payload.sourceType } : {}),
+        title: content.slice(0, 40),
+        content,
+        ...(payload.importance !== undefined ? { importance: payload.importance } : {}),
+        ...(Array.isArray(payload.tags) ? { tags: payload.tags } : {}),
+      })
+      return item ? { success: true, item } : { success: false, error: '未找到该记忆' }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('memory:consolidate', async () => {
+    try {
+      const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
+      const cfg = getEmbeddingConfig()
+      // 管理界面整理：用已建向量做语义去重（不现场补嵌入）+ 超量淘汰；未配嵌入则仅超量淘汰
+      const semantic = cfg.enabled && cfg.apiKey && cfg.model ? { modelId: cfg.model } : undefined
+      return { success: true, result: memoryDatabase.consolidate(50, semantic) }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('agent:generateTitle', async (_event, payload: {
+    firstMessage: string
+    modelConfig?: AgentProviderConfigOverride | null
+  }) => {
+    try {
+      const { agentProcessService } = await import('../../services/agent/agentProcessService')
+      const { resolveProviderConfig } = await import('../../services/agent/resolveProviderConfig')
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      await refreshResolvedProxyUrl()
+      const providerConfig = resolveProviderConfig(payload.modelConfig)
+      const title = await agentProcessService.generateTitle({
+        firstMessage: payload.firstMessage,
+        providerConfig,
+      })
+      return { success: true, title }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+
   ipcMain.handle('ai:getProviders', async () => {
     try {
       const { aiService } = await import('../../services/ai/aiService')
@@ -21,23 +567,6 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     }
   })
 
-  ipcMain.handle('ai:generatePosterTheme', async (_, options: {
-    description: string
-    provider?: string
-    apiKey?: string
-    model?: string
-  }) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const css = await aiService.generatePosterTheme(options)
-      return { success: true, css }
-    } catch (e) {
-      console.error('[AI] 生成海报主题失败:', e)
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
-    }
-  })
-
-  // 代理相关
   ipcMain.handle('ai:getProxyStatus', async () => {
     try {
       const { proxyService } = await import('../../services/ai/proxyService')
@@ -81,16 +610,18 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     }
   })
 
-  ipcMain.handle('ai:testConnection', async (_, provider: string, apiKey: string, baseURL?: string) => {
+  ipcMain.handle('ai:testConnection', async (_, provider: string, apiKey: string, baseURL?: string, protocol?: 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google') => {
     try {
       const { aiService } = await import('../../services/ai/aiService')
-      return await aiService.testConnection(provider, apiKey, baseURL)
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      await refreshResolvedProxyUrl() // 测试连接也走代理，保证"测试通过=实际可用"
+      return await aiService.testConnection(provider, apiKey, baseURL, protocol)
     } catch (e) {
       return { success: false, error: String(e) }
     }
   })
 
-  ipcMain.handle('ai:listModels', async (_, options: { provider: string; apiKey?: string; baseURL?: string }) => {
+  ipcMain.handle('ai:listModels', async (_, options: { provider: string; apiKey?: string; baseURL?: string; protocol?: 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google' }) => {
     try {
       const { aiService } = await import('../../services/ai/aiService')
       return await aiService.listProviderModels(options)
@@ -102,7 +633,6 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
   ipcMain.handle('ai:estimateCost', async (_, messageCount: number, provider: string) => {
     try {
       const { aiService } = await import('../../services/ai/aiService')
-      // 简单估算：每条消息约50个字符，约33 tokens
       const estimatedTokens = messageCount * 33
       const cost = aiService.estimateCost(estimatedTokens, provider)
       return { success: true, tokens: estimatedTokens, cost }
@@ -111,111 +641,6 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     }
   })
 
-  ipcMain.handle('ai:getUsageStats', async (_, startDate?: string, endDate?: string) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const stats = aiService.getUsageStats(startDate, endDate)
-      return { success: true, stats }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getSummaryHistory', async (_, sessionId: string, limit?: number) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const history = aiService.getSummaryHistory(sessionId, limit)
-      return { success: true, history }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:listSessionQAConversations', async (_, sessionId: string, limit?: number) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      return { success: true, conversations: aiService.listSessionQAConversations(sessionId, limit) }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getSessionQAConversation', async (_, conversationId: number) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const conversation = aiService.getSessionQAConversation(conversationId)
-      return conversation
-        ? { success: true, conversation }
-        : { success: false, error: '问答会话不存在或已删除' }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:createSessionQAConversation', async (_, options: {
-    sessionId: string
-    sessionName?: string
-    linkedSummaryId?: number
-  }) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      return { success: true, conversation: aiService.createSessionQAConversation(options) }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:renameSessionQAConversation', async (_, conversationId: number, title: string) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const success = aiService.renameSessionQAConversation(conversationId, title)
-      return { success }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:deleteSessionQAConversation', async (_, conversationId: number) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const success = aiService.deleteSessionQAConversation(conversationId)
-      return { success }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:deleteSummary', async (_, id: number) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const success = aiService.deleteSummary(id)
-      return { success }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:renameSummary', async (_, id: number, customName: string) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      const success = aiService.renameSummary(id, customName)
-      return { success }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:cleanExpiredCache', async () => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      aiService.cleanExpiredCache()
-      return { success: true }
-    } catch (e) {
-      return { success: false, error: String(e) }
-    }
-  })
-
-  // 读取 AI 服务使用指南
   ipcMain.handle('ai:readGuide', async (_, guideName: string) => {
     try {
       const guidePath = join(__dirname, '../electron/services/ai', guideName)
@@ -228,544 +653,4 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       return { success: false, error: String(e) }
     }
   })
-
-  ipcMain.handle('ai:generateSummary', async (event, sessionId: string, timeRange: number, options: {
-    provider: string
-    apiKey: string
-    model: string
-    detail: 'simple' | 'normal' | 'detailed'
-    systemPromptPreset?: 'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'
-    customSystemPrompt?: string
-    customRequirement?: string
-    sessionName?: string
-    enableThinking?: boolean
-  }) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-
-      // 初始化服务
-      aiService.init()
-
-      // 计算时间范围
-      const endTime = Math.floor(Date.now() / 1000)
-      const startTime = timeRange > 0 ? endTime - (timeRange * 24 * 60 * 60) : undefined
-
-      // 获取指定时间范围内的消息，超出上限时优先保留范围内最新消息。
-      const messageLimit = ctx.getConfigService()?.get('aiMessageLimit') || 3000
-      const messagesResult = await chatService.getMessagesByTimeRangeForSummary(sessionId, {
-        startTime,
-        endTime,
-        limit: messageLimit
-      })
-      if (!messagesResult.success || !messagesResult.messages) {
-        return { success: false, error: '获取消息失败' }
-      }
-
-      const summaryMessages = messagesResult.messages
-      if (summaryMessages.length === 0) {
-        return { success: false, error: '该时间范围内没有消息' }
-      }
-
-      const actualTimeRangeStart = startTime ?? summaryMessages[0].createTime
-      const inputMessageScopeNote = messagesResult.hasMore
-        ? `当前时间范围内消息较多，本次仅分析其中最新 ${summaryMessages.length} 条消息。请明确基于这批最新消息归纳重点，避免误判为已覆盖完整时间范围。`
-        : undefined
-
-      // 获取消息中所有发送者的联系人信息
-      const contacts = new Map()
-      const senderSet = new Set<string>()
-
-      // 添加会话对象
-      senderSet.add(sessionId)
-
-      // 添加所有消息发送者
-      summaryMessages.forEach((msg: any) => {
-        if (msg.senderUsername) {
-          senderSet.add(msg.senderUsername)
-        }
-      })
-
-      // 添加自己
-      const myWxid = ctx.getConfigService()?.get('myWxid')
-      if (myWxid) {
-        senderSet.add(myWxid)
-      }
-
-      // 批量获取联系人信息
-      for (const username of Array.from(senderSet)) {
-        // 如果是自己，优先尝试获取详细用户信息
-        if (username === myWxid) {
-          const selfInfo = await chatService.getMyUserInfo()
-          if (selfInfo.success && selfInfo.userInfo) {
-            contacts.set(username, {
-              username: selfInfo.userInfo.wxid,
-              remark: '',
-              nickName: selfInfo.userInfo.nickName,
-              alias: selfInfo.userInfo.alias
-            })
-            continue // 已获取到，跳过后续常规查找
-          }
-        }
-
-        // 常规查找
-        const contact = await chatService.getContact(username)
-        if (contact) {
-          contacts.set(username, contact)
-        }
-      }
-
-      // 生成摘要（流式输出）
-      const result = await aiService.generateSummary(
-        summaryMessages,
-        contacts,
-        {
-          sessionId,
-          timeRangeDays: timeRange,
-          timeRangeStart: actualTimeRangeStart,
-          timeRangeEnd: endTime,
-          inputMessageScopeNote,
-          provider: options.provider,
-          apiKey: options.apiKey,
-          model: options.model,
-          detail: options.detail,
-          systemPromptPreset: options.systemPromptPreset,
-          customSystemPrompt: options.customSystemPrompt,
-          customRequirement: options.customRequirement,
-          sessionName: options.sessionName,
-          enableThinking: options.enableThinking
-        },
-        (chunk: string) => {
-          // 发送流式数据到渲染进程
-          event.sender.send('ai:summaryChunk', chunk)
-        }
-      )
-
-      if (process.env.NODE_ENV === 'development') {
-        console.log('[AI] 摘要生成完成，结果:', {
-          sessionId: result.sessionId,
-          messageCount: result.messageCount,
-          hasMore: Boolean(messagesResult.hasMore),
-          summaryLength: result.summaryText?.length || 0
-        })
-      }
-
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 生成摘要失败:', e)
-      ctx.getLogService()?.error('AI', '生成摘要失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:askSessionQuestion', async (event, options: {
-    sessionId: string
-    sessionName?: string
-    question: string
-    summaryText?: string
-    structuredAnalysis?: any
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>
-    provider: string
-    apiKey: string
-    model: string
-    enableThinking?: boolean
-  }) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-
-      aiService.init()
-
-      const result = await aiService.answerSessionQuestion(
-        {
-          sessionId: options.sessionId,
-          sessionName: options.sessionName,
-          question: options.question,
-          summaryText: options.summaryText,
-          structuredAnalysis: options.structuredAnalysis,
-          history: options.history,
-          provider: options.provider,
-          apiKey: options.apiKey,
-          model: options.model,
-          enableThinking: options.enableThinking
-        },
-        (streamEvent) => {
-          if (streamEvent.type === 'content_delta') {
-            event.sender.send('ai:sessionQaChunk', streamEvent.text)
-          }
-        },
-        (progress) => {
-          event.sender.send('ai:sessionQaProgress', progress)
-        }
-      )
-
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 单会话问答失败:', e)
-      ctx.getLogService()?.error('AI', '单会话问答失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:startSessionQuestion', async (event, options: {
-    requestId?: string
-    conversationId?: number
-    sessionId: string
-    sessionName?: string
-    question: string
-    summaryText?: string
-    structuredAnalysis?: any
-    history?: Array<{ role: 'user' | 'assistant'; content: string }>
-    provider: string
-    apiKey: string
-    model: string
-    enableThinking?: boolean
-  }) => {
-    try {
-      const { sessionQAJobService } = await import('../../services/ai/sessionQAJobService')
-      return sessionQAJobService.start(options, event.sender)
-    } catch (e) {
-      console.error('[AI] 启动单会话问答任务失败:', e)
-      ctx.getLogService()?.error('AI', '启动单会话问答任务失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:cancelSessionQuestion', async (_, requestId: string) => {
-    try {
-      const { sessionQAJobService } = await import('../../services/ai/sessionQAJobService')
-      return await sessionQAJobService.cancel(requestId)
-    } catch (e) {
-      console.error('[AI] 取消单会话问答任务失败:', e)
-      ctx.getLogService()?.error('AI', '取消单会话问答任务失败', { error: String(e) })
-      return { success: false, requestId, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getSessionVectorIndexState', async (_, sessionId: string) => {
-    try {
-      return {
-        success: true,
-        result: await getSessionVectorIndexStateForUi(sessionId)
-      }
-    } catch (e) {
-      console.error('[AI] 获取会话向量索引状态失败:', e)
-      ctx.getLogService()?.error('AI', '获取会话向量索引状态失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:prepareSessionVectorIndex', async (event, options: { sessionId: string }) => {
-    try {
-      const result = await startSessionVectorIndexJob(options.sessionId, event.sender)
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 准备会话向量索引失败:', e)
-      ctx.getLogService()?.error('AI', '准备会话向量索引失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:cancelSessionVectorIndex', async (_, sessionId: string) => {
-    try {
-      return await cancelSessionVectorIndexJob(sessionId)
-    } catch (e) {
-      console.error('[AI] 取消会话向量索引失败:', e)
-      ctx.getLogService()?.error('AI', '取消会话向量索引失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getSessionMemoryBuildState', async (_, sessionId: string) => {
-    try {
-      return {
-        success: true,
-        result: await getSessionMemoryBuildStateForUi(sessionId)
-      }
-    } catch (e) {
-      console.error('[AI] 获取会话记忆构建状态失败:', e)
-      ctx.getLogService()?.error('AI', '获取会话记忆构建状态失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:prepareSessionMemory', async (event, options: { sessionId: string }) => {
-    try {
-      const sessionId = String(options?.sessionId || '').trim()
-      if (!sessionId) {
-        return { success: false, error: 'sessionId 不能为空' }
-      }
-
-      const result = await startSessionMemoryBuildJob(sessionId, event.sender)
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 构建会话记忆失败:', e)
-      ctx.getLogService()?.error('AI', '构建会话记忆失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getSessionProfileMemoryState', async (_, sessionId: string) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      aiService.init()
-      return {
-        success: true,
-        result: aiService.getSessionProfileMemoryState(String(sessionId || '').trim())
-      }
-    } catch (e) {
-      console.error('[AI] 获取会话画像记忆状态失败:', e)
-      ctx.getLogService()?.error('AI', '获取会话画像记忆状态失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:buildSessionProfileMemory', async (_, options: {
-    sessionId: string
-    sessionName?: string
-    provider: string
-    apiKey: string
-    model: string
-  }) => {
-    try {
-      const { aiService } = await import('../../services/ai/aiService')
-      aiService.init()
-      const result = await aiService.buildSessionProfileMemory({
-        sessionId: options.sessionId,
-        sessionName: options.sessionName,
-        provider: options.provider,
-        apiKey: options.apiKey,
-        model: options.model
-      })
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 构建会话画像记忆失败:', e)
-      ctx.getLogService()?.error('AI', '构建会话画像记忆失败', { error: String(e) })
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getEmbeddingModelProfiles', async () => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      const { embeddingRuntimeService } = await import('../../services/search/embeddingRuntimeService')
-      return {
-        success: true,
-        result: localEmbeddingModelService.listProfiles(),
-        currentProfileId: localEmbeddingModelService.getCurrentProfileId(),
-        embeddingMode: embeddingRuntimeService.getMode()
-      }
-    } catch (e) {
-      console.error('[AI] 获取语义模型列表失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:setEmbeddingMode', async (_, mode: string) => {
-    try {
-      const { embeddingRuntimeService } = await import('../../services/search/embeddingRuntimeService')
-      const result = embeddingRuntimeService.setMode(mode)
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 设置语义向量模式失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:setEmbeddingModelProfile', async (_, profileId: string) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      const result = localEmbeddingModelService.setCurrentProfileId(profileId)
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 设置语义模型失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:setEmbeddingVectorDim', async (_, profileId: string, dim: number) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      const result = localEmbeddingModelService.setVectorDim(profileId, dim)
-      return {
-        success: true,
-        result,
-        vectorModelId: localEmbeddingModelService.getVectorModelId(profileId)
-      }
-    } catch (e) {
-      console.error('[AI] 设置语义向量维度失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getEmbeddingDeviceStatus', async () => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      const { embeddingRuntimeService } = await import('../../services/search/embeddingRuntimeService')
-      return {
-        success: true,
-        result: localEmbeddingModelService.getDeviceStatus(),
-        embeddingMode: embeddingRuntimeService.getMode()
-      }
-    } catch (e) {
-      console.error('[AI] 获取语义向量计算模式失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:setEmbeddingDevice', async (_, device: string) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      const result = localEmbeddingModelService.setCurrentDevice(device)
-      return {
-        success: true,
-        result,
-        status: localEmbeddingModelService.getDeviceStatus()
-      }
-    } catch (e) {
-      console.error('[AI] 设置语义向量计算模式失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getEmbeddingModelStatus', async (_, profileId?: string) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      return {
-        success: true,
-        result: await localEmbeddingModelService.getModelStatus(profileId)
-      }
-    } catch (e) {
-      console.error('[AI] 获取语义模型状态失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:downloadEmbeddingModel', async (event, profileId?: string) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      const result = await localEmbeddingModelService.downloadModel(profileId, (progress) => {
-        event.sender.send('ai:embeddingModelDownloadProgress', progress)
-      })
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 下载语义模型失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:cancelEmbeddingModelDownload', async (_, profileId?: string) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      return localEmbeddingModelService.cancelDownloadModel(profileId)
-    } catch (e) {
-      console.error('[AI] 暂停语义模型下载失败:', e)
-      return { success: false, cancelled: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:clearEmbeddingModel', async (_, profileId?: string) => {
-    try {
-      const { localEmbeddingModelService } = await import('../../services/search/embeddingModelService')
-      return {
-        success: true,
-        result: await localEmbeddingModelService.clearModel(profileId)
-      }
-    } catch (e) {
-      console.error('[AI] 清理语义模型失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:getOnlineEmbeddingProviders', async () => {
-    try {
-      const { onlineEmbeddingService } = await import('../../services/search/onlineEmbeddingService')
-      return {
-        success: true,
-        result: onlineEmbeddingService.listProviders()
-      }
-    } catch (e) {
-      console.error('[AI] 获取在线向量厂商失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:listOnlineEmbeddingConfigs', async () => {
-    try {
-      const { onlineEmbeddingService } = await import('../../services/search/onlineEmbeddingService')
-      return {
-        success: true,
-        result: onlineEmbeddingService.listConfigs(),
-        currentConfigId: onlineEmbeddingService.getCurrentConfigId()
-      }
-    } catch (e) {
-      console.error('[AI] 获取在线向量配置失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:saveOnlineEmbeddingConfig', async (_, payload: any) => {
-    try {
-      const { onlineEmbeddingService } = await import('../../services/search/onlineEmbeddingService')
-      return {
-        success: true,
-        result: await onlineEmbeddingService.saveConfig(payload)
-      }
-    } catch (e) {
-      console.error('[AI] 保存在线向量配置失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:deleteOnlineEmbeddingConfig', async (_, configId: string) => {
-    try {
-      const { onlineEmbeddingService } = await import('../../services/search/onlineEmbeddingService')
-      return {
-        success: true,
-        result: onlineEmbeddingService.deleteConfig(configId)
-      }
-    } catch (e) {
-      console.error('[AI] 删除在线向量配置失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:setCurrentOnlineEmbeddingConfig', async (_, configId: string) => {
-    try {
-      const { onlineEmbeddingService } = await import('../../services/search/onlineEmbeddingService')
-      const result = onlineEmbeddingService.setCurrentConfig(configId)
-      if (!result) {
-        return { success: false, error: '在线向量配置不存在' }
-      }
-      return { success: true, result }
-    } catch (e) {
-      console.error('[AI] 切换在线向量配置失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:testOnlineEmbeddingConfig', async (_, payload: any) => {
-    try {
-      const { onlineEmbeddingService } = await import('../../services/search/onlineEmbeddingService')
-      return {
-        success: true,
-        result: await onlineEmbeddingService.testConfig(payload)
-      }
-    } catch (e) {
-      console.error('[AI] 测试在线向量配置失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
-  ipcMain.handle('ai:clearSemanticVectorIndex', async (_, vectorModel?: string) => {
-    try {
-      const { chatSearchIndexService } = await import('../../services/search/chatSearchIndexService')
-      return {
-        success: true,
-        result: chatSearchIndexService.clearSemanticVectorIndex(vectorModel)
-      }
-    } catch (e) {
-      console.error('[AI] 清理语义向量索引失败:', e)
-      return { success: false, error: String(e) }
-    }
-  })
-
 }

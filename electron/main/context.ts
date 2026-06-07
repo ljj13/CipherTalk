@@ -27,8 +27,6 @@ export interface WindowManager {
   setDockIcon(): void
   openChatWindow(): BrowserWindow
   openMomentsWindow(filterUsername?: string): BrowserWindow
-  openGroupAnalyticsWindow(): BrowserWindow
-  openAnnualReportWindow(year: number): BrowserWindow
   openAgreementWindow(): BrowserWindow
   openWelcomeWindow(mode?: 'default' | 'add-account'): BrowserWindow
   openPurchaseWindow(): BrowserWindow
@@ -39,7 +37,6 @@ export interface WindowManager {
   ): BrowserWindow
   openVideoPlayerWindow(videoPath: string, videoWidth?: number, videoHeight?: number): BrowserWindow
   openBrowserWindow(url: string, title?: string): BrowserWindow
-  openAISummaryWindow(sessionId: string, sessionName: string): BrowserWindow
   openChatHistoryWindow(sessionId: string, messageId: number): BrowserWindow
   completeWelcome(): boolean
   isChatWindowOpen(): boolean

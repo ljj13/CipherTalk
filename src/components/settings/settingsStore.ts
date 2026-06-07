@@ -35,20 +35,13 @@ export interface SettingsConfig {
   aiProvider: string
   aiApiKey: string
   aiModel: string
-  aiDefaultTimeRange: number
-  aiSummaryDetail: 'simple' | 'normal' | 'detailed'
-  aiSystemPromptPreset: 'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'
-  aiCustomSystemPrompt: string
-  aiEnableThinking: boolean
-  aiMessageLimit: number
-  aiAgentDecisionMaxTokens: number
-  aiAgentAnswerMaxTokens: number
 
   // —— appearance / misc 切片 ——
-  quoteStyle: 'default' | 'wechat'
+  quoteStyle: 'default' | 'wechat' | 'card'
   exportPath: string
   exportDefaultDateRange: number
   closeToTray: boolean
+  hardwareAccelerationEnabled: boolean
 }
 
 export const DEFAULT_SETTINGS_CONFIG: SettingsConfig = {
@@ -79,19 +72,12 @@ export const DEFAULT_SETTINGS_CONFIG: SettingsConfig = {
   aiProvider: 'deepseek',
   aiApiKey: '',
   aiModel: '',
-  aiDefaultTimeRange: 7,
-  aiSummaryDetail: 'normal',
-  aiSystemPromptPreset: 'default',
-  aiCustomSystemPrompt: '',
-  aiEnableThinking: true,
-  aiMessageLimit: 3000,
-  aiAgentDecisionMaxTokens: 2048,
-  aiAgentAnswerMaxTokens: 8192,
 
   quoteStyle: 'default',
   exportPath: '',
   exportDefaultDateRange: 0,
-  closeToTray: true
+  closeToTray: true,
+  hardwareAccelerationEnabled: true
 }
 
 const CONFIG_KEYS = Object.keys(DEFAULT_SETTINGS_CONFIG) as (keyof SettingsConfig)[]

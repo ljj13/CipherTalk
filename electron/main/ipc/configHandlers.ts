@@ -1,17 +1,11 @@
 import { ipcMain } from 'electron'
 import type { MainProcessContext } from '../context'
-import { analyticsService } from '../../services/analyticsService'
-import { annualReportService } from '../../services/annualReportService'
 import { chatService } from '../../services/chatService'
-import { groupAnalyticsService } from '../../services/groupAnalyticsService'
 import { clearMessageDbScannerCache } from '../../services/messageDbScanner'
 
 function clearStatsCaches(): void {
   clearMessageDbScannerCache()
   chatService.close()
-  analyticsService.close()
-  annualReportService.close()
-  groupAnalyticsService.close()
 }
 
 export function registerConfigHandlers(ctx: MainProcessContext): void {
@@ -21,6 +15,7 @@ export function registerConfigHandlers(ctx: MainProcessContext): void {
 
   ipcMain.handle('config:set', async (_, key: string, value: any) => {
     const result = ctx.getConfigService()?.set(key as any, value)
+    ctx.broadcastToWindows('config:changed', { key, value })
     if (['myWxid', 'dbPath', 'decryptKey'].includes(key)) clearStatsCaches()
     return result
   })

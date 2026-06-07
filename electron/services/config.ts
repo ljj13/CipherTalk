@@ -42,7 +42,6 @@ interface ConfigSchema {
   cachePath: string
   lastOpenedDb: string
   lastSession: string
-  lastAgentConversationId: number
 
   // 导出相关
   exportPath: string
@@ -55,6 +54,12 @@ interface ConfigSchema {
   releaseAnnouncementBody: string
   releaseAnnouncementNotes: string
   releaseAnnouncementSeenVersion: string
+  homeBackgroundSource: 'preset' | 'custom'
+  homeBackgroundPreset: 'beijing' | 'beijing2'
+  homeBackgroundCustomType: 'image' | 'video' | ''
+  homeBackgroundCustomPath: string
+  homeBackgroundCustomUrl: string
+  homeBackgroundBlur: number
 
   // 协议相关
   agreementVersion: number
@@ -95,12 +100,18 @@ interface ConfigSchema {
   // 窗口关闭行为
   closeToTray: boolean
 
+  // 性能相关
+  hardwareAccelerationEnabled: boolean
+
   // AI 相关
   aiCurrentProvider: string  // 当前选中的提供商
+  aiActiveConfigPresetId: string
   aiProviderConfigs: {  // 每个提供商的独立配置
     [providerId: string]: {
       apiKey: string
       model: string
+      baseURL?: string
+      protocol?: 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google'
     }
   }
   aiProviderModelCache: {
@@ -109,34 +120,28 @@ interface ConfigSchema {
       updatedAt: number
     }
   }
-  aiDefaultTimeRange: number
-  aiSummaryDetail: 'simple' | 'normal' | 'detailed'
-  aiSystemPromptPreset: 'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'
-  aiCustomSystemPrompt: string
-  aiEnableCache: boolean
-  aiEnableThinking: boolean  // 是否显示思考过程
-  aiMessageLimit: number     // 摘要提取的消息条数限制
-  agentReadLimit: number     // Agent 内置工具单次读取消息条数上限（500-2000）
-  aiAgentDecisionMaxTokens: number // 会话问答 Agent 每轮决策输出 token 上限
-  aiAgentAnswerMaxTokens: number   // 会话问答最终回答输出 token 上限
-  aiEmbeddingMode: 'local' | 'online'
-  aiEmbeddingModelProfile: string
-  aiEmbeddingVectorDims: Record<string, number>
-  aiEmbeddingDevice: 'cpu' | 'dml'
-  aiOnlineEmbeddingConfigs: Array<{
-    id: string
-    name: string
-    providerId: string
-    baseURL: string
+  // 嵌入模型（语义/向量检索，独立于聊天模型）
+  embeddingConfig: {
+    enabled: boolean
+    provider: string  // 选中的服务商 id（catalog），仅 UI 用于展示/自动填地址
+    protocol: 'openai-compatible' | 'openai'
     apiKey: string
+    baseURL: string
     model: string
-    dim: number
-    createdAt: number
-    updatedAt: number
-  }>
-  aiCurrentOnlineEmbeddingConfigId: string
-  aiRerankEnabled: boolean
-  aiRerankerModelProfile: string
+    dimension: number  // 0 = 未探测；测试连接成功后回填模型实际维度
+  }
+  // 重排模型（RAG/Skills/MCP 候选重排，独立于聊天模型与嵌入模型）
+  rerankConfig: {
+    enabled: boolean
+    provider: string
+    protocol: 'openai-compatible'
+    apiKey: string
+    baseURL: string
+    model: string
+    timeoutMs: number
+  }
+  // 主进程探测到的系统代理 URL（写入后供 AI 子进程/嵌入跨进程读取；子进程无 session API 探测不了）
+  aiResolvedProxyUrl: string
   mcpEnabled: boolean
   mcpExposeMediaPaths: boolean
   mcpProxyPort: number
@@ -156,7 +161,6 @@ const defaults: ConfigSchema = {
   cachePath: '',
   lastOpenedDb: '',
   lastSession: '',
-  lastAgentConversationId: 0,
   exportPath: '',
   theme: 'cloud-dancer',
   themeMode: 'light',
@@ -165,6 +169,12 @@ const defaults: ConfigSchema = {
   releaseAnnouncementBody: '',
   releaseAnnouncementNotes: '',
   releaseAnnouncementSeenVersion: '',
+  homeBackgroundSource: 'preset',
+  homeBackgroundPreset: 'beijing',
+  homeBackgroundCustomType: '',
+  homeBackgroundCustomPath: '',
+  homeBackgroundCustomUrl: '',
+  homeBackgroundBlur: 0,
   sttLanguages: ['zh'],
   sttModelType: 'int8',
   sttMode: 'cpu',  // 默认使用 CPU 模式
@@ -189,28 +199,31 @@ const defaults: ConfigSchema = {
   httpApiToken: '',
   httpApiListenMode: 'localhost',
   closeToTray: true,  // 默认最小化到托盘
+  hardwareAccelerationEnabled: true,
   // AI 默认配置
   aiCurrentProvider: 'deepseek',
+  aiActiveConfigPresetId: '',
   aiProviderConfigs: {},  // 空对象，用户配置后填充
   aiProviderModelCache: {},
-  aiDefaultTimeRange: 7, // 默认7天
-  aiSummaryDetail: 'normal',
-  aiSystemPromptPreset: 'default',
-  aiCustomSystemPrompt: '',
-  aiEnableCache: true,
-  aiEnableThinking: true,  // 默认显示思考过程
-  aiMessageLimit: 3000,    // 默认3000条，用户可调至5000
-  agentReadLimit: 500,     // 默认500条
-  aiAgentDecisionMaxTokens: 2048,
-  aiAgentAnswerMaxTokens: 8192,
-  aiEmbeddingMode: 'local',
-  aiEmbeddingModelProfile: 'bge-large-zh-v1.5-int8',
-  aiEmbeddingVectorDims: {},
-  aiEmbeddingDevice: 'cpu',
-  aiOnlineEmbeddingConfigs: [],
-  aiCurrentOnlineEmbeddingConfigId: '',
-  aiRerankEnabled: true,
-  aiRerankerModelProfile: 'qwen3-reranker-0.6b-onnx-q8',
+  embeddingConfig: {
+    enabled: false,
+    provider: '',
+    protocol: 'openai-compatible',
+    apiKey: '',
+    baseURL: 'https://api.siliconflow.cn/v1',
+    model: 'BAAI/bge-m3',
+    dimension: 0,
+  },
+  rerankConfig: {
+    enabled: false,
+    provider: '',
+    protocol: 'openai-compatible',
+    apiKey: '',
+    baseURL: 'https://api.siliconflow.cn/v1',
+    model: 'BAAI/bge-reranker-v2-m3',
+    timeoutMs: 15000,
+  },
+  aiResolvedProxyUrl: '',
   mcpEnabled: false,
   mcpExposeMediaPaths: true,
   mcpProxyPort: 5032,
@@ -779,7 +792,7 @@ export class ConfigService {
     this.set('aiCurrentProvider', provider)
   }
 
-  getAIProviderConfig(providerId: string): { apiKey: string; model: string; baseURL?: string } | null {
+  getAIProviderConfig(providerId: string): { apiKey: string; model: string; baseURL?: string; protocol?: 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google' } | null {
     const configs = this.get('aiProviderConfigs') as any
     const providerConfig = configs?.[providerId]
     if (!providerConfig) return null
@@ -792,22 +805,14 @@ export class ConfigService {
     return providerConfig
   }
 
-  setAIProviderConfig(providerId: string, config: { apiKey: string; model: string; baseURL?: string }): void {
+  setAIProviderConfig(providerId: string, config: { apiKey: string; model: string; baseURL?: string; protocol?: 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google' }): void {
     const configs = this.get('aiProviderConfigs')
     configs[providerId] = config
     this.set('aiProviderConfigs', configs)
   }
 
-  getAllAIProviderConfigs(): { [providerId: string]: { apiKey: string; model: string; baseURL?: string } } {
+  getAllAIProviderConfigs(): { [providerId: string]: { apiKey: string; model: string; baseURL?: string; protocol?: 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google' } } {
     return this.get('aiProviderConfigs')
-  }
-
-  getAIMessageLimit(): number {
-    return this.get('aiMessageLimit')
-  }
-
-  setAIMessageLimit(limit: number): void {
-    this.set('aiMessageLimit', limit)
   }
 
   getCacheBasePath(): string {

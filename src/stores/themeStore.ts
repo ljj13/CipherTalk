@@ -1,98 +1,80 @@
 import { create } from 'zustand'
 
-export type ThemeId = 'cloud-dancer' | 'corundum-blue' | 'kiwi-green' | 'spicy-red' | 'teal-water' | 'new-year' | 'sakura-mist'
 export type ThemeMode = 'light' | 'dark' | 'system'
 export type NavLayout = 'sidebar' | 'dock'
+export type HomeBackgroundSource = 'preset' | 'custom'
+export type HomeBackgroundMediaType = 'image' | 'video' | ''
 
-export interface ThemeInfo {
-  id: ThemeId
-  name: string
-  description: string
-  primaryColor: string
-  bgColor: string
+const publicAsset = (fileName: string): string => `${import.meta.env.BASE_URL}${fileName}`
+
+export const HOME_BACKGROUND_PRESETS = [
+  { id: 'beijing', label: '默认背景', description: '原始预设视频', src: publicAsset('beijing.mp4') },
+  { id: 'beijing2', label: '备用背景', description: '新增预设视频', src: publicAsset('beijing2.mp4') }
+] as const
+export type HomeBackgroundPreset = typeof HOME_BACKGROUND_PRESETS[number]['id']
+
+export interface HomeBackgroundSettings {
+  source: HomeBackgroundSource
+  preset: HomeBackgroundPreset
+  customType: HomeBackgroundMediaType
+  customPath: string
+  customUrl: string
+  blur: number
 }
 
-export const themes: ThemeInfo[] = [
-  {
-    id: 'cloud-dancer',
-    name: '云上舞白',
-    description: 'Pantone 2026 年度色',
-    primaryColor: '#8B7355',
-    bgColor: '#F0EEE9'
-  },
-  {
-    id: 'corundum-blue',
-    name: '刚玉蓝',
-    description: 'RAL 220 40 10',
-    primaryColor: '#4A6670',
-    bgColor: '#E8EEF0'
-  },
-  {
-    id: 'kiwi-green',
-    name: '冰猕猴桃汁绿',
-    description: 'RAL 120 90 20',
-    primaryColor: '#7A9A5C',
-    bgColor: '#E8F0E4'
-  },
-  {
-    id: 'spicy-red',
-    name: '辛辣红',
-    description: 'RAL 030 40 40',
-    primaryColor: '#8B4049',
-    bgColor: '#F0E8E8'
-  },
-  {
-    id: 'teal-water',
-    name: '明水鸭色',
-    description: 'RAL 180 80 10',
-    primaryColor: '#5A8A8A',
-    bgColor: '#E4F0F0'
-  },
-  {
-    id: 'new-year',
-    name: '新年快乐',
-    description: 'Happy New Year 2026',
-    primaryColor: '#E60012',
-    bgColor: '#FFF0F0'
-  },
-  {
-    id: 'sakura-mist',
-    name: '樱雾粉',
-    description: '温柔、治愈的高级粉',
-    primaryColor: '#D86A8A',
-    bgColor: '#FFF2F7'
-  }
-]
-
 interface ThemeState {
-  currentTheme: ThemeId
   themeMode: ThemeMode
   navLayout: NavLayout
   dockAutoHide: boolean
+  homeBackground: HomeBackgroundSettings
   isLoaded: boolean
-  setTheme: (theme: ThemeId) => void
   setThemeMode: (mode: ThemeMode) => void
   setNavLayout: (layout: NavLayout) => void
   setDockAutoHide: (v: boolean) => void
+  setHomeBackgroundSource: (source: HomeBackgroundSource) => void
+  setHomeBackgroundPreset: (preset: HomeBackgroundPreset) => void
+  setHomeBackgroundCustom: (payload: {
+    type: Exclude<HomeBackgroundMediaType, ''>
+    path: string
+    url: string
+  }) => void
+  setHomeBackgroundBlur: (blur: number) => void
   toggleThemeMode: () => void
   loadTheme: () => Promise<void>
 }
 
-export const useThemeStore = create<ThemeState>()((set, get) => ({
-  currentTheme: 'new-year',
-  themeMode: 'light',
-  navLayout: 'dock',
-  dockAutoHide: true,
-  isLoaded: false,
+const DEFAULT_HOME_BACKGROUND: HomeBackgroundSettings = {
+  source: 'preset',
+  preset: 'beijing',
+  customType: '',
+  customPath: '',
+  customUrl: '',
+  blur: 0
+}
 
-  setTheme: async (theme) => {
-    set({ currentTheme: theme })
-    try {
-      await window.electronAPI.config.set('theme', theme)
-    } catch (e) {
-      console.error('保存主题失败:', e)
-    }
-  },
+export const normalizeHomeBackgroundPreset = (value: unknown): HomeBackgroundPreset => {
+  return HOME_BACKGROUND_PRESETS.some((preset) => preset.id === value)
+    ? value as HomeBackgroundPreset
+    : 'beijing'
+}
+
+export const getHomeBackgroundPresetSrc = (value: unknown): string => {
+  const preset = normalizeHomeBackgroundPreset(value)
+  return HOME_BACKGROUND_PRESETS.find((item) => item.id === preset)?.src || publicAsset('beijing.mp4')
+}
+
+const clampHomeBackgroundBlur = (value: unknown): number => {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return 0
+  return Math.max(0, Math.min(30, Math.round(n)))
+}
+
+export const useThemeStore = create<ThemeState>()((set, get) => ({
+  themeMode: 'light',
+  navLayout: 'sidebar',
+  dockAutoHide: true,
+  homeBackground: DEFAULT_HOME_BACKGROUND,
+  isLoaded: false,
 
   setThemeMode: async (mode) => {
     set({ themeMode: mode })
@@ -121,6 +103,66 @@ export const useThemeStore = create<ThemeState>()((set, get) => ({
     }
   },
 
+  setHomeBackgroundSource: async (source) => {
+    set((state) => ({
+      homeBackground: { ...state.homeBackground, source }
+    }))
+    try {
+      await window.electronAPI.config.set('homeBackgroundSource', source)
+    } catch (e) {
+      console.error('保存首页背景来源失败:', e)
+    }
+  },
+
+  setHomeBackgroundPreset: async (value) => {
+    const preset = normalizeHomeBackgroundPreset(value)
+    set((state) => ({
+      homeBackground: { ...state.homeBackground, source: 'preset', preset }
+    }))
+    try {
+      await Promise.all([
+        window.electronAPI.config.set('homeBackgroundSource', 'preset'),
+        window.electronAPI.config.set('homeBackgroundPreset', preset)
+      ])
+    } catch (e) {
+      console.error('保存首页预设背景失败:', e)
+    }
+  },
+
+  setHomeBackgroundCustom: async ({ type, path, url }) => {
+    set((state) => ({
+      homeBackground: {
+        ...state.homeBackground,
+        source: 'custom',
+        customType: type,
+        customPath: path,
+        customUrl: url
+      }
+    }))
+    try {
+      await Promise.all([
+        window.electronAPI.config.set('homeBackgroundSource', 'custom'),
+        window.electronAPI.config.set('homeBackgroundCustomType', type),
+        window.electronAPI.config.set('homeBackgroundCustomPath', path),
+        window.electronAPI.config.set('homeBackgroundCustomUrl', url)
+      ])
+    } catch (e) {
+      console.error('保存首页自定义背景失败:', e)
+    }
+  },
+
+  setHomeBackgroundBlur: async (value) => {
+    const blur = clampHomeBackgroundBlur(value)
+    set((state) => ({
+      homeBackground: { ...state.homeBackground, blur }
+    }))
+    try {
+      await window.electronAPI.config.set('homeBackgroundBlur', blur)
+    } catch (e) {
+      console.error('保存首页背景模糊度失败:', e)
+    }
+  },
+
   toggleThemeMode: () => {
     const newMode = get().themeMode === 'light' ? 'dark' : 'light'
     get().setThemeMode(newMode)
@@ -128,28 +170,42 @@ export const useThemeStore = create<ThemeState>()((set, get) => ({
 
   loadTheme: async () => {
     try {
-      const theme = await window.electronAPI.config.get('theme') as ThemeId
-      const themeMode = await window.electronAPI.config.get('themeMode') as ThemeMode
+      const themeMode = await window.electronAPI.config.get('themeMode') as ThemeMode | undefined
       let navLayout = await window.electronAPI.config.get('navLayout') as NavLayout | undefined
       const dockAutoHide = await window.electronAPI.config.get('dockAutoHide') as boolean | undefined
+      const homeBackgroundSource = await window.electronAPI.config.get('homeBackgroundSource') as HomeBackgroundSource | undefined
+      const homeBackgroundCustomType = await window.electronAPI.config.get('homeBackgroundCustomType') as HomeBackgroundMediaType | undefined
+      const homeBackgroundCustomPath = await window.electronAPI.config.get('homeBackgroundCustomPath') as string | undefined
+      const homeBackgroundCustomUrl = await window.electronAPI.config.get('homeBackgroundCustomUrl') as string | undefined
+      const homeBackgroundPreset = await window.electronAPI.config.get('homeBackgroundPreset') as HomeBackgroundPreset | undefined
+      const homeBackgroundBlur = await window.electronAPI.config.get('homeBackgroundBlur') as number | undefined
+      const nextThemeMode: ThemeMode = themeMode === 'dark' || themeMode === 'system' ? themeMode : 'light'
+      const nextHomeBackground: HomeBackgroundSettings = {
+        source: homeBackgroundSource === 'custom' ? 'custom' : 'preset',
+        preset: normalizeHomeBackgroundPreset(homeBackgroundPreset),
+        customType: homeBackgroundCustomType === 'image' || homeBackgroundCustomType === 'video' ? homeBackgroundCustomType : '',
+        customPath: typeof homeBackgroundCustomPath === 'string' ? homeBackgroundCustomPath : '',
+        customUrl: typeof homeBackgroundCustomUrl === 'string' ? homeBackgroundCustomUrl : '',
+        blur: clampHomeBackgroundBlur(homeBackgroundBlur)
+      }
 
-      // 一次性迁移：旧版本没有 navLayout 选项，统一切换到 Dock 模式
-      const migrated = await window.electronAPI.config.get('navLayoutMigratedV6') as boolean | undefined
+      // 一次性迁移：统一切换到左侧边栏布局（与窗口标题栏融为一体的微信式布局）
+      const migrated = await window.electronAPI.config.get('navLayoutMigratedV7') as boolean | undefined
       if (!migrated) {
-        navLayout = 'dock'
+        navLayout = 'sidebar'
         try {
-          await window.electronAPI.config.set('navLayout', 'dock')
-          await window.electronAPI.config.set('navLayoutMigratedV6', true)
+          await window.electronAPI.config.set('navLayout', 'sidebar')
+          await window.electronAPI.config.set('navLayoutMigratedV7', true)
         } catch (e) {
           console.error('迁移导航布局失败:', e)
         }
       }
 
       set({
-        currentTheme: theme || 'cloud-dancer',
-        themeMode: themeMode || 'light',
-        navLayout: navLayout || 'dock',
+        themeMode: nextThemeMode,
+        navLayout: navLayout || 'sidebar',
         dockAutoHide: dockAutoHide ?? true,
+        homeBackground: nextHomeBackground,
         isLoaded: true
       })
     } catch (e) {
@@ -158,8 +214,3 @@ export const useThemeStore = create<ThemeState>()((set, get) => ({
     }
   }
 }))
-
-// 获取当前主题信息
-export const getThemeInfo = (themeId: ThemeId): ThemeInfo => {
-  return themes.find(t => t.id === themeId) || themes[0]
-}

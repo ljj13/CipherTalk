@@ -59,6 +59,7 @@ type ImageLookupPayload = {
   imageDatName?: string
   createTime?: number
   force?: boolean
+  quick?: boolean
 }
 
 export class ImageDecryptService {
@@ -274,7 +275,7 @@ export class ImageDecryptService {
         payload.imageDatName,
         payload.sessionId,
         payload.createTime,
-        { allowThumbnail: !payload.force, skipResolvedCache: Boolean(payload.force) },
+        { allowThumbnail: !payload.force, skipResolvedCache: Boolean(payload.force), skipSearchFallback: Boolean(payload.quick) },
         datDiagnostics
       )
       resolveDatMs = Date.now() - resolveDatStartedAt
@@ -309,7 +310,7 @@ export class ImageDecryptService {
       if (!datPath) {
         const cacheLookupStartedAt = Date.now()
         const existing = this.findCachedOutputFast(cacheKey, payload.sessionId, payload.force, payload.createTime) ||
-          this.findCachedOutput(cacheKey, payload.sessionId, payload.force)
+          (payload.quick ? null : this.findCachedOutput(cacheKey, payload.sessionId, payload.force))
         cacheLookupMs = Date.now() - cacheLookupStartedAt
         if (existing) {
           usedCachedOutput = true
@@ -404,7 +405,7 @@ export class ImageDecryptService {
       const cacheLookupStartedAt = Date.now()
       const existing = this.findCachedOutputFast(cacheKey, payload.sessionId, payload.force, payload.createTime) ||
         this.findCachedOutputByDatPath(datPath, payload.sessionId, payload.force) ||
-        this.findCachedOutput(cacheKey, payload.sessionId, payload.force)
+        (payload.quick ? null : this.findCachedOutput(cacheKey, payload.sessionId, payload.force))
       cacheLookupMs = Date.now() - cacheLookupStartedAt
       if (existing) {
         usedCachedOutput = true
@@ -626,7 +627,7 @@ export class ImageDecryptService {
 
   private logDecryptTiming(details: {
     cacheKey: string
-    payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; force?: boolean }
+    payload: { sessionId?: string; imageMd5?: string; imageDatName?: string; force?: boolean; quick?: boolean }
     datPath: string | null
     resolveSource?: string
     resolveDatMs: number
@@ -670,6 +671,7 @@ export class ImageDecryptService {
       imageDatName: details.payload.imageDatName,
       imageMd5: details.payload.imageMd5,
       force: Boolean(details.payload.force),
+      quick: Boolean(details.payload.quick),
       status: details.status,
       datPath: details.datPath,
       resolveSource: details.resolveSource || 'unknown',

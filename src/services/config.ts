@@ -44,15 +44,19 @@ export const CONFIG_KEYS = {
   AUTH_PASSWORD_HASH: 'authPasswordHash',
   AUTH_PASSWORD_SALT: 'authPasswordSalt',
   CLOSE_TO_TRAY: 'closeToTray',
-  AI_EMBEDDING_MODE: 'aiEmbeddingMode',
-  AI_EMBEDDING_MODEL_PROFILE: 'aiEmbeddingModelProfile',
-  AI_EMBEDDING_DEVICE: 'aiEmbeddingDevice',
-  AI_ONLINE_EMBEDDING_CONFIGS: 'aiOnlineEmbeddingConfigs',
-  AI_CURRENT_ONLINE_EMBEDDING_CONFIG_ID: 'aiCurrentOnlineEmbeddingConfigId',
-  AI_PROVIDER_MODEL_CACHE: 'aiProviderModelCache'
+  HARDWARE_ACCELERATION_ENABLED: 'hardwareAccelerationEnabled',
+  AI_PROVIDER_MODEL_CACHE: 'aiProviderModelCache',
+  AI_ACTIVE_CONFIG_PRESET_ID: 'aiActiveConfigPresetId'
 } as const
 
 export type { AccountProfile, AccountProfileInput, AccountProfilePatch }
+export type AiProviderProtocol = 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google'
+export type AiProviderConfig = {
+  apiKey: string
+  model: string
+  baseURL?: string
+  protocol?: AiProviderProtocol
+}
 
 // 当前协议版本 - 更新协议内容时递增此版本号
 export const CURRENT_AGREEMENT_VERSION = 2
@@ -150,9 +154,7 @@ export async function setHttpApiListenMode(mode: 'localhost' | 'lan'): Promise<v
   await config.set(CONFIG_KEYS.HTTP_API_LISTEN_MODE, mode === 'lan' ? 'lan' : 'localhost')
 }
 
-
-
-// --- AI 摘要配置 ---
+// --- 账号与数据源配置 ---
 
 // 获取解密密钥
 export async function getDecryptKey(): Promise<string | null> {
@@ -398,13 +400,15 @@ export async function acceptCurrentAgreement(): Promise<void> {
 }
 
 // 获取引用样式
-export async function getQuoteStyle(): Promise<'default' | 'wechat'> {
+export type QuoteStyleConfig = 'default' | 'wechat' | 'card'
+
+export async function getQuoteStyle(): Promise<QuoteStyleConfig> {
   const value = await config.get(CONFIG_KEYS.QUOTE_STYLE)
-  return (value as 'default' | 'wechat') || 'default'
+  return value === 'wechat' || value === 'card' ? value : 'default'
 }
 
 // 设置引用样式
-export async function setQuoteStyle(style: 'default' | 'wechat'): Promise<void> {
+export async function setQuoteStyle(style: QuoteStyleConfig): Promise<void> {
   await config.set(CONFIG_KEYS.QUOTE_STYLE, style)
 }
 
@@ -476,8 +480,7 @@ export async function setAuthPasswordSalt(salt: string | null): Promise<void> {
   await config.set(CONFIG_KEYS.AUTH_PASSWORD_SALT, salt)
 }
 
-
-// --- AI 摘要配置 ---
+// --- AI 接入配置 ---
 
 // 获取当前选中的 AI 提供商
 export async function getAiProvider(): Promise<string> {
@@ -491,7 +494,7 @@ export async function setAiProvider(provider: string): Promise<void> {
 }
 
 // 获取指定提供商的配置
-export async function getAiProviderConfig(providerId: string): Promise<{ apiKey: string; model: string; baseURL?: string } | null> {
+export async function getAiProviderConfig(providerId: string): Promise<AiProviderConfig | null> {
   const configs = await config.get('aiProviderConfigs')
   const allConfigs = (configs as any) || {}
   const providerConfig = allConfigs[providerId]
@@ -506,7 +509,7 @@ export async function getAiProviderConfig(providerId: string): Promise<{ apiKey:
 }
 
 // 设置指定提供商的配置
-export async function setAiProviderConfig(providerId: string, providerConfig: { apiKey: string; model: string; baseURL?: string }): Promise<void> {
+export async function setAiProviderConfig(providerId: string, providerConfig: AiProviderConfig): Promise<void> {
   const configs = await config.get('aiProviderConfigs')
   const allConfigs = (configs as any) || {}
   allConfigs[providerId] = providerConfig
@@ -514,7 +517,7 @@ export async function setAiProviderConfig(providerId: string, providerConfig: { 
 }
 
 // 获取所有提供商的配置
-export async function getAllAiProviderConfigs(): Promise<{ [providerId: string]: { apiKey: string; model: string; baseURL?: string } }> {
+export async function getAllAiProviderConfigs(): Promise<{ [providerId: string]: AiProviderConfig }> {
   const value = await config.get('aiProviderConfigs')
   return (value as any) || {}
 }
@@ -533,7 +536,8 @@ export async function setAiApiKey(key: string): Promise<void> {
   await setAiProviderConfig(currentProvider, {
     apiKey: key,
     model: existingConfig?.model || '',
-    baseURL: existingConfig?.baseURL
+    baseURL: existingConfig?.baseURL,
+    protocol: existingConfig?.protocol
   })
 }
 
@@ -551,123 +555,9 @@ export async function setAiModel(model: string): Promise<void> {
   await setAiProviderConfig(currentProvider, {
     apiKey: existingConfig?.apiKey || '',
     model: model,
-    baseURL: existingConfig?.baseURL
+    baseURL: existingConfig?.baseURL,
+    protocol: existingConfig?.protocol
   })
-}
-
-// 获取 AI 默认时间范围
-export async function getAiDefaultTimeRange(): Promise<number> {
-  const value = await config.get('aiDefaultTimeRange')
-  return (value as number) || 7
-}
-
-// 设置 AI 默认时间范围
-export async function setAiDefaultTimeRange(days: number): Promise<void> {
-  await config.set('aiDefaultTimeRange', days)
-}
-
-// 获取 AI 摘要详细程度
-export async function getAiSummaryDetail(): Promise<'simple' | 'normal' | 'detailed'> {
-  const value = await config.get('aiSummaryDetail')
-  return (value as 'simple' | 'normal' | 'detailed') || 'normal'
-}
-
-// 设置 AI 摘要详细程度
-export async function setAiSummaryDetail(detail: 'simple' | 'normal' | 'detailed'): Promise<void> {
-  await config.set('aiSummaryDetail', detail)
-}
-
-// 获取系统提示词模板
-export async function getAiSystemPromptPreset(): Promise<'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'> {
-  const value = await config.get('aiSystemPromptPreset')
-  return (value as 'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom') || 'default'
-}
-
-// 设置系统提示词模板
-export async function setAiSystemPromptPreset(preset: 'default' | 'decision-focus' | 'action-focus' | 'risk-focus' | 'custom'): Promise<void> {
-  await config.set('aiSystemPromptPreset', preset)
-}
-
-// 获取自定义系统提示词
-export async function getAiCustomSystemPrompt(): Promise<string> {
-  const value = await config.get('aiCustomSystemPrompt')
-  return (value as string) || ''
-}
-
-// 设置自定义系统提示词
-export async function setAiCustomSystemPrompt(prompt: string): Promise<void> {
-  await config.set('aiCustomSystemPrompt', prompt || '')
-}
-
-// 获取是否启用思考模式
-export async function getAiEnableThinking(): Promise<boolean> {
-  const value = await config.get('aiEnableThinking')
-  return value !== undefined ? (value as boolean) : true
-}
-
-// 设置是否启用思考模式
-export async function setAiEnableThinking(enable: boolean): Promise<void> {
-  await config.set('aiEnableThinking', enable)
-}
-
-// 获取摘要提取消息条数限制
-export async function getAiMessageLimit(): Promise<number> {
-  const value = await config.get('aiMessageLimit')
-  return (value as number) || 3000
-}
-
-// 设置摘要提取消息条数限制
-export async function setAiMessageLimit(limit: number): Promise<void> {
-  await config.set('aiMessageLimit', limit)
-}
-
-// 获取会话问答 Agent 每轮决策输出 token 上限
-export async function getAiAgentDecisionMaxTokens(): Promise<number> {
-  const value = await config.get('aiAgentDecisionMaxTokens')
-  return (value as number) || 2048
-}
-
-// 设置会话问答 Agent 每轮决策输出 token 上限
-export async function setAiAgentDecisionMaxTokens(maxTokens: number): Promise<void> {
-  await config.set('aiAgentDecisionMaxTokens', maxTokens)
-}
-
-// 获取会话问答最终回答输出 token 上限
-export async function getAiAgentAnswerMaxTokens(): Promise<number> {
-  const value = await config.get('aiAgentAnswerMaxTokens')
-  return (value as number) || 8192
-}
-
-// 设置会话问答最终回答输出 token 上限
-export async function setAiAgentAnswerMaxTokens(maxTokens: number): Promise<void> {
-  await config.set('aiAgentAnswerMaxTokens', maxTokens)
-}
-
-export async function getAiEmbeddingModelProfile(): Promise<string> {
-  const value = await config.get(CONFIG_KEYS.AI_EMBEDDING_MODEL_PROFILE)
-  return (value as string) || 'bge-large-zh-v1.5-int8'
-}
-
-export async function getAiEmbeddingMode(): Promise<'local' | 'online'> {
-  const value = await config.get(CONFIG_KEYS.AI_EMBEDDING_MODE)
-  return value === 'online' ? 'online' : 'local'
-}
-
-export async function setAiEmbeddingMode(mode: 'local' | 'online'): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_EMBEDDING_MODE, mode === 'online' ? 'online' : 'local')
-}
-
-export async function setAiEmbeddingModelProfile(profileId: string): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_EMBEDDING_MODEL_PROFILE, profileId || 'bge-large-zh-v1.5-int8')
-}
-
-export async function getAiEmbeddingDevice(): Promise<'cpu' | 'dml'> {
-  const value = await config.get(CONFIG_KEYS.AI_EMBEDDING_DEVICE)
-  return value === 'dml' ? 'dml' : 'cpu'
-}
-
-export async function setAiEmbeddingDevice(device: 'cpu' | 'dml'): Promise<void> {
-  await config.set(CONFIG_KEYS.AI_EMBEDDING_DEVICE, device === 'dml' ? 'dml' : 'cpu')
 }
 
 // --- MCP 配置 ---
@@ -740,6 +630,7 @@ export interface AiConfigPreset {
   apiKey: string
   model: string
   baseURL?: string
+  protocol?: AiProviderProtocol
 }
 
 // 获取所有配置预设
@@ -781,6 +672,15 @@ export async function loadAiConfigPreset(id: string): Promise<AiConfigPreset | n
   return presets.find(p => p.id === id) || null
 }
 
+export async function getActiveAiConfigPresetId(): Promise<string> {
+  const value = await config.get(CONFIG_KEYS.AI_ACTIVE_CONFIG_PRESET_ID)
+  return typeof value === 'string' ? value : ''
+}
+
+export async function setActiveAiConfigPresetId(id: string): Promise<void> {
+  await config.set(CONFIG_KEYS.AI_ACTIVE_CONFIG_PRESET_ID, id)
+}
+
 // --- 窗口关闭行为配置 ---
 
 // 获取关闭按钮行为（true: 最小化到托盘, false: 退出应用）
@@ -792,4 +692,15 @@ export async function getCloseToTray(): Promise<boolean> {
 // 设置关闭按钮行为
 export async function setCloseToTray(closeToTray: boolean): Promise<void> {
   await config.set(CONFIG_KEYS.CLOSE_TO_TRAY, closeToTray)
+}
+
+// --- 性能配置 ---
+
+export async function getHardwareAccelerationEnabled(): Promise<boolean> {
+  const value = await config.get(CONFIG_KEYS.HARDWARE_ACCELERATION_ENABLED)
+  return value !== undefined ? (value as boolean) : true
+}
+
+export async function setHardwareAccelerationEnabled(enabled: boolean): Promise<void> {
+  await config.set(CONFIG_KEYS.HARDWARE_ACCELERATION_ENABLED, enabled)
 }
