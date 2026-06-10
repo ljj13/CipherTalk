@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 import { Description, Label, Radio, RadioGroup, Slider, Switch, Tabs, type Key } from '@heroui/react'
 import { ImageIcon, Moon, Monitor, PanelBottom, PanelLeft, Sun, Upload, Video } from 'lucide-react'
 import {
@@ -29,6 +29,30 @@ const normalizeImageSrc = (value?: string): string | undefined => {
 const getAvatarFallback = (name?: string, wxid?: string): string => {
   const text = (name || wxid || '我').trim()
   return text.slice(0, 2) || '我'
+}
+
+/**
+ * 背景视频预览：默认停在首帧（#t=0.1 强制画出第一帧），悬停才播放。
+ * 进外观页时不再同时拉起多个视频解码，消除进入卡顿。
+ */
+function HoverPlayVideo({ src, className, style }: { src: string; className?: string; style?: CSSProperties }) {
+  const ref = useRef<HTMLVideoElement>(null)
+  return (
+    <video
+      aria-hidden="true"
+      className={className}
+      muted
+      loop
+      playsInline
+      preload="metadata"
+      ref={ref}
+      src={src.includes('#') ? src : `${src}#t=0.1`}
+      style={style}
+      title="悬停预览"
+      onMouseEnter={() => { void ref.current?.play().catch(() => undefined) }}
+      onMouseLeave={() => { ref.current?.pause() }}
+    />
+  )
 }
 
 function AppearanceTab() {
@@ -172,16 +196,10 @@ function AppearanceTab() {
                     <Radio.Indicator />
                   </Radio.Control>
                   <Radio.Content className="home-background-preset-radio-content">
-                    <video
+                    <HoverPlayVideo
                       className="home-background-preset-video"
                       src={preset.src}
-                      autoPlay
-                      muted
-                      loop
-                      playsInline
-                      preload="metadata"
                       style={backgroundPreviewStyle}
-                      aria-hidden="true"
                     />
                     <span className="home-background-preset-overlay">{preset.label}</span>
                   </Radio.Content>
@@ -197,10 +215,10 @@ function AppearanceTab() {
                   homeBackground.customType === 'image' ? (
                     <img src={homeBackground.customUrl} alt="" decoding="async" loading="lazy" style={backgroundPreviewStyle} />
                   ) : (
-                    <video src={homeBackground.customUrl} autoPlay muted loop playsInline style={backgroundPreviewStyle} />
+                    <HoverPlayVideo src={homeBackground.customUrl} style={backgroundPreviewStyle} />
                   )
                 ) : (
-                  <video src={presetBackgroundSrc} autoPlay muted loop playsInline style={backgroundPreviewStyle} />
+                  <HoverPlayVideo src={presetBackgroundSrc} style={backgroundPreviewStyle} />
                 )}
                 <span className="home-background-preview-badge">
                   {customBackgroundReady

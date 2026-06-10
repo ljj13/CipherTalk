@@ -185,7 +185,7 @@ export default function PetsPage() {
                 <div className={petGridClass}>
                   {filteredOnline.slice(0, visibleCount).map((pet) => (
                     <div
-                      className="flex flex-col items-center gap-1.5 rounded-2xl border border-border p-3"
+                      className="ct-pet-card flex flex-col items-center gap-1.5 rounded-2xl border border-border p-3"
                       key={pet.slug}
                       title={pet.submittedBy ? `by ${pet.submittedBy}` : pet.displayName}
                     >
@@ -242,9 +242,10 @@ export default function PetsPage() {
                   return (
                     <button
                       className={cn(
-                        'group relative flex flex-col items-center gap-1.5 rounded-2xl border p-3 transition-colors',
+                        'ct-pet-card group relative flex flex-col items-center gap-1.5 rounded-2xl border p-3 transition-colors',
                         selected ? 'border-primary bg-primary/10' : 'border-border hover:bg-surface-tertiary'
                       )}
+                      data-pet-live={selected || undefined}
                       key={pet.slug}
                       onClick={() => void selectPet(selected ? '' : pet.slug)}
                       title={selected ? '点击取消展示' : pet.description || pet.displayName}

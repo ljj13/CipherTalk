@@ -247,3 +247,15 @@
     animation: none;
   }
 }
+
+/* 宠物列表卡片：离屏直接跳过渲染与动画推进（content-visibility），
+   未悬停时暂停精灵动画（停在第一帧），几十张卡同屏也不会持续重绘。
+   data-pet-live 用于让“当前选用”的卡片保持挥手动画。 */
+.ct-pet-card {
+  content-visibility: auto;
+  contain-intrinsic-size: 120px 170px;
+}
+
+.ct-pet-card:not(:hover):not([data-pet-live='true']) .ct-pet-sprite {
+  animation-play-state: paused;
+}
