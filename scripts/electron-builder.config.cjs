@@ -1,4 +1,6 @@
 const pkg = require('../package.json')
+const fs = require('fs')
+const path = require('path')
 
 const target = process.env.CIPHERTALK_BUILD_TARGET
 const base = pkg.build || {}
@@ -22,6 +24,11 @@ function getExtraResources(buildTarget) {
     {
       from: '.tmp/release-announcement.json',
       to: 'release-announcement.json'
+    },
+    {
+      from: 'public/miyuji',
+      to: 'builtin-pets/miyuji',
+      filter: ['**/*']
     }
   ]
 
@@ -37,7 +44,7 @@ function getExtraResources(buildTarget) {
   }
 
   if (buildTarget === 'win') {
-    return [
+    const winResources = [
       {
         from: 'resources/',
         to: 'resources/',
@@ -47,12 +54,17 @@ function getExtraResources(buildTarget) {
       {
         from: 'public/icon.ico',
         to: 'icon.ico'
-      },
-      {
-        from: 'public/xinnian.ico',
-        to: 'xinnian.ico'
       }
     ]
+
+    if (fs.existsSync(path.join(__dirname, '..', 'public', 'xinnian.ico'))) {
+      winResources.push({
+        from: 'public/xinnian.ico',
+        to: 'xinnian.ico'
+      })
+    }
+
+    return winResources
   }
 
   return base.extraResources || []
@@ -82,6 +94,7 @@ function getExtraFiles(buildTarget) {
 function getFiles(buildTarget) {
   const baseFiles = Array.isArray(base.files) ? [...base.files] : []
   const commonFiles = [
+    'package.json',
     '!node_modules/.vite/**/*'
   ]
 
