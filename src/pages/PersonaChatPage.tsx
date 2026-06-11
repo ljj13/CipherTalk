@@ -47,8 +47,10 @@ function parseBubble(raw: string): PersonaBubble {
   return { text, isVoice: true, seconds: Math.min(60, Math.max(1, Math.round(Array.from(text).length / 4))) }
 }
 
-/** 微信语音条的声波图标：播放中三道弧线依次闪烁。 */
-function VoiceWaves({ playing }: { playing: boolean }) {
+/** 微信语音条的声波图标：加载时旋转提示，播放时切换成动态音量柱。 */
+function VoiceWaves({ loading, playing }: { loading: boolean; playing: boolean }) {
+  if (loading) return <Loader2 className="shrink-0 animate-spin text-muted" size={16} />
+  if (playing) return <VoicePlayingBars />
   return (
     <svg
       className="shrink-0"
@@ -60,10 +62,24 @@ function VoiceWaves({ playing }: { playing: boolean }) {
       viewBox="0 0 24 24"
       width="16"
     >
-      <path className={playing ? 'animate-pulse' : ''} d="M6 9.5a4.2 4.2 0 0 1 0 5" />
-      <path className={playing ? 'animate-pulse' : ''} d="M9.5 7a8 8 0 0 1 0 10" style={playing ? { animationDelay: '0.25s' } : undefined} />
-      <path className={playing ? 'animate-pulse' : ''} d="M13 4.5a12 12 0 0 1 0 15" style={playing ? { animationDelay: '0.5s' } : undefined} />
+      <path d="M6 9.5a4.2 4.2 0 0 1 0 5" />
+      <path d="M9.5 7a8 8 0 0 1 0 10" />
+      <path d="M13 4.5a12 12 0 0 1 0 15" />
     </svg>
+  )
+}
+
+function VoicePlayingBars() {
+  return (
+    <span aria-hidden className="inline-flex h-4 shrink-0 items-end gap-0.5 text-accent">
+      {[0, 1, 2].map((item) => (
+        <span
+          key={item}
+          className="rounded-full bg-accent animate-pulse"
+          style={{ width: 3, height: `${6 + item * 3}px`, animationDelay: `${item * 120}ms` }}
+        />
+      ))}
+    </span>
   )
 }
 
@@ -123,7 +139,7 @@ export default function PersonaChatPage() {
   const busy = status === 'submitted' || status === 'streaming'
 
   // 语音消息：模型自己决定哪条用语音发（行首 [语音] 标记），这里负责微信式的"点开听"
-  const { speakingKey, speak: speakVoice, stop: stopVoice } = useTtsSpeaker()
+  const { speakingKey, speakingState, speak: speakVoice, stop: stopVoice } = useTtsSpeaker()
   /** 已听过的语音气泡 key（message.id:index）；恢复历史时全部预置为已听，新来的才有红点 */
   const [playedVoice, setPlayedVoice] = useState<Set<string>>(() => new Set())
   /** 播放失败（TTS 不可用等）兜底显示文字的气泡 */
@@ -525,19 +541,21 @@ export default function PersonaChatPage() {
                 {bubbles.map((bubble, index) => {
                   const bubbleKey = `${message.id}:${index}`
                   if (bubble.isVoice && !isMine) {
-                    const playing = speakingKey === bubbleKey
+                    const active = speakingKey === bubbleKey
+                    const loading = active && speakingState?.phase === 'loading'
+                    const playing = active && speakingState?.phase === 'playing'
                     const unplayed = !playedVoice.has(bubbleKey)
                     return (
                       <div key={bubbleKey} className="flex items-center gap-1.5">
                         <button
-                          aria-label={playing ? '停止播放语音' : `播放语音，约 ${bubble.seconds} 秒`}
-                          className="flex cursor-pointer items-center rounded-2xl rounded-tl-sm border-0 bg-surface px-3 py-2.5 text-sm text-foreground transition-colors hover:bg-surface/80"
+                          aria-label={active ? '停止播放语音' : `播放语音，约 ${bubble.seconds} 秒`}
+                          className={`flex cursor-pointer items-center rounded-2xl rounded-tl-sm border-0 bg-surface px-3 py-2.5 text-sm text-foreground transition-colors hover:bg-surface/80 ${loading ? 'animate-pulse' : ''} ${playing ? 'ring-1 ring-accent/40' : ''}`}
                           onClick={() => { void handlePlayVoice(message.id, bubbles, index) }}
                           style={{ width: Math.min(220, 88 + bubble.seconds * 3) }}
                           type="button"
                         >
-                          <VoiceWaves playing={playing} />
-                          <span className="ml-auto text-xs text-muted">{bubble.seconds}″</span>
+                          <VoiceWaves loading={loading} playing={playing} />
+                          <span className="ml-auto text-xs text-muted">{loading ? '...' : `${bubble.seconds}″`}</span>
                         </button>
                         {unplayed && <span aria-label="未播放" className="size-2 shrink-0 rounded-full bg-red-500" />}
                         {revealedVoice.has(bubbleKey) && (

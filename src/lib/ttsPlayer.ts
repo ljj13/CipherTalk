@@ -6,7 +6,14 @@
  */
 import { useEffect, useState } from 'react'
 
-type SpeakingListener = (speakingKey: string | null) => void
+export type TtsSpeakingPhase = 'loading' | 'playing'
+
+export interface TtsSpeakingState {
+  key: string
+  phase: TtsSpeakingPhase
+}
+
+type SpeakingListener = (speakingState: TtsSpeakingState | null) => void
 
 export interface SpeakResult {
   ok: boolean
@@ -23,14 +30,14 @@ export interface SpeakOptions {
 let currentAudio: HTMLAudioElement | null = null
 /** 当前播放的清理回调（停止/切换时调用，保证 awaitEnd 的 Promise 不悬挂） */
 let currentOnStop: (() => void) | null = null
-let speakingKey: string | null = null
+let speakingState: TtsSpeakingState | null = null
 /** 自增请求序号：合成是异步的，回来时如果用户已切到别的内容就丢弃 */
 let requestSeq = 0
 const listeners = new Set<SpeakingListener>()
 
-function setSpeaking(key: string | null): void {
-  speakingKey = key
-  listeners.forEach((listener) => listener(key))
+function setSpeaking(state: TtsSpeakingState | null): void {
+  speakingState = state
+  listeners.forEach((listener) => listener(state))
 }
 
 function stopAudio(): void {
@@ -49,7 +56,11 @@ function stopAudio(): void {
 }
 
 export function getSpeakingKey(): string | null {
-  return speakingKey
+  return speakingState?.key || null
+}
+
+export function getSpeakingState(): TtsSpeakingState | null {
+  return speakingState
 }
 
 /** 停止当前朗读（任何来源）。 */
@@ -72,7 +83,7 @@ function speakWithSystem(key: string, text: string, seq: number): { started: boo
     if (finished) return
     finished = true
     if (currentOnStop === clear) currentOnStop = null
-    setSpeaking(speakingKey === key ? null : speakingKey)
+    setSpeaking(speakingState?.key === key ? null : speakingState)
     resolveDone()
   }
 
@@ -94,7 +105,7 @@ export async function speakText(key: string, text: string, options: SpeakOptions
   const content = String(text || '').trim()
   if (!content) return { ok: false, error: '朗读内容为空' }
 
-  if (speakingKey === key) {
+  if (speakingState?.key === key) {
     stopSpeaking()
     return { ok: true, stopped: true }
   }
@@ -102,7 +113,7 @@ export async function speakText(key: string, text: string, options: SpeakOptions
   requestSeq += 1
   const seq = requestSeq
   stopAudio()
-  setSpeaking(key)
+  setSpeaking({ key, phase: 'loading' })
 
   let result: { success: boolean; audioBase64?: string; mimeType?: string; error?: string; errorCode?: string } | null = null
   try {
@@ -128,7 +139,7 @@ export async function speakText(key: string, text: string, options: SpeakOptions
       finished = true
       if (currentAudio === audio) currentAudio = null
       if (currentOnStop === clear) currentOnStop = null
-      setSpeaking(speakingKey === key ? null : speakingKey)
+      setSpeaking(speakingState?.key === key ? null : speakingState)
       resolveEnd?.()
     }
     audio.onended = clear
@@ -136,6 +147,7 @@ export async function speakText(key: string, text: string, options: SpeakOptions
     currentAudio = audio
     currentOnStop = clear
     try {
+      setSpeaking({ key, phase: 'playing' })
       await audio.play()
     } catch (e) {
       clear()
@@ -152,6 +164,7 @@ export async function speakText(key: string, text: string, options: SpeakOptions
   // 未配置在线 TTS：回退系统朗读；其他失败也尽量回退，保证“能读出声”
   const system = speakWithSystem(key, content, seq)
   if (system.started) {
+    if (seq === requestSeq) setSpeaking({ key, phase: 'playing' })
     if (options.awaitEnd) {
       await system.done
       if (seq !== requestSeq) return { ok: true, stopped: true }
@@ -166,14 +179,15 @@ export async function speakText(key: string, text: string, options: SpeakOptions
 /** React hook：订阅当前朗读对象 key，并提供朗读/停止方法。 */
 export function useTtsSpeaker(): {
   speakingKey: string | null
+  speakingState: TtsSpeakingState | null
   speak: (key: string, text: string, options?: SpeakOptions) => Promise<SpeakResult>
   stop: () => void
 } {
-  const [key, setKey] = useState<string | null>(getSpeakingKey())
+  const [state, setState] = useState<TtsSpeakingState | null>(getSpeakingState())
   useEffect(() => {
-    const listener: SpeakingListener = (next) => setKey(next)
+    const listener: SpeakingListener = (next) => setState(next)
     listeners.add(listener)
     return () => { listeners.delete(listener) }
   }, [])
-  return { speakingKey: key, speak: speakText, stop: stopSpeaking }
+  return { speakingKey: state?.key || null, speakingState: state, speak: speakText, stop: stopSpeaking }
 }

@@ -33,6 +33,15 @@ const FALLBACK_MAX_BUBBLES = 5
 /** 语音气泡标记：行首 [语音]/【语音】，渲染端显示成微信语音条（见 PersonaChatPage）。 */
 const VOICE_MARKER_RE = /^[\[【]\s*(?:语音|voice)\s*[\]】]/i
 
+function wantsVoiceForwardReply(text: string): boolean {
+  const normalized = text.replace(/\s+/g, '')
+  if (!normalized) return false
+  return /(?:全程|全部|都|只|一直|连续|接着|多发|几条|几段|长点|长一点).{0,10}(?:语音|声音|听)/i.test(normalized)
+    || /(?:语音|声音).{0,10}(?:夸|说|发|回|回复|聊|听)/i.test(normalized)
+    || /不想看.{0,10}(?:想听|听)/i.test(normalized)
+    || /(?:voice|audio).{0,12}(?:only|reply|message|messages|say|speak)/i.test(normalized)
+}
+
 /** 模型偶尔无视分条规则直接发大段：按句子边界兜底拆成微信式短消息（已分条/不算长的原样返回）。 */
 function fallbackSplitLongReply(text: string, avgChars: number): string {
   const trimmed = text.trim()
@@ -193,6 +202,7 @@ export function buildPersonaSystemPrompt(
   memories: string[],
   similarPairs: PersonaFewShot[] = [],
   voiceEnabled = false,
+  voiceForwardRequested = false,
 ): string {
   const { displayName, card, fewShots, stats, profile, notes } = persona
   const lines: string[] = [
@@ -272,10 +282,13 @@ export function buildPersonaSystemPrompt(
   lines.push(
     '',
     '【聊天规则】',
-    `- 微信短消息风格：单条 ${Math.max(stats.avgFriendMsgChars, 4)} 字左右；超过两句话必须拆成多条连发，每条之间用换行或「${BURST_JOINER}」分隔（会被拆成多条气泡发出），绝不要一条发一大段`,
+    `- 微信短消息风格：文字气泡单条 ${Math.max(stats.avgFriendMsgChars, 4)} 字左右；超过两句话通常拆成多条连发，每条之间用换行或「${BURST_JOINER}」分隔（会被拆成多条气泡发出），绝不要把文字一条发一大段`,
     '- 回复几条由你根据上下文定：简单的话就一条，有内容的拆成 2-4 条，像真人打字那样一句一句发',
     ...(voiceEnabled ? [
-      '- 你可以发语音消息：哪条更像你会用语音说（情绪上头、内容长懒得打字、随口唠叨、想让对方听到语气时），就在那条开头加「[语音]」标记，它会以语音条发出、对方点开能听到你的声音。语音合成会使用上面的声音表现指令；语音可以比打字长、更口语化（带"呃""然后"这种），但别每条都语音，文字语音穿插才像真人',
+      '- 你可以发语音消息：哪条更像你会用语音说（情绪上头、内容长懒得打字、随口唠叨、想让对方听到语气时），就在那条开头加「[语音]」标记，它会以语音条发出、对方点开能听到你的声音。语音合成会使用上面的声音表现指令；语音不受文字气泡长度限制，你自己按场景和这个人的习惯判断长短：有人会发几秒短语音，也会发几十秒长语音；长语音可以更口语化、带停顿和“呃”“然后”这种，但别为了凑长度废话',
+      ...(voiceForwardRequested ? [
+        '- 这轮对方明确说想听语音/全程语音/多发几条语音：你应该明显提高语音比例。可以是一条比较完整的长语音，也可以是几条短语音连续发；每条语音的长短由你根据语气、情绪和内容自然决定。想用语音发的每条都以「[语音]」开头，仍然按真人感觉决定，不要机械地把所有内容都变成同样长度的语音',
+      ] : []),
     ] : []),
     '- 上面的背景、经历、聊天片段都是你脑子里的记忆：只在话题相关时自然带一嘴，别一股脑往外倒',
     '- 禁止 markdown、列表、序号、emoji 之外的格式符号',
@@ -307,11 +320,12 @@ export async function runPersonaChat(
       const { isTtsAvailable } = await import('../../ai/ttsService')
       voiceEnabled = isTtsAvailable()
     } catch { /* TTS 不可用就纯文字 */ }
+    const voiceForwardRequested = voiceEnabled && wantsVoiceForwardReply(userText)
 
     reportAgentProgress({ stage: 'run_started', title: '正在组织语言' })
     const result = await generateText({
       model: createLanguageModel(input.providerConfig),
-      system: buildPersonaSystemPrompt(input.persona, memories, similarPairs, voiceEnabled),
+      system: buildPersonaSystemPrompt(input.persona, memories, similarPairs, voiceEnabled, voiceForwardRequested),
       messages: input.messages,
       temperature: PERSONA_TEMPERATURE,
       abortSignal: signal,
