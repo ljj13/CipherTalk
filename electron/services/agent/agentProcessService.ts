@@ -94,7 +94,7 @@ export class AgentProcessService {
     return this.call('extractPersona', input)
   }
 
-  /** 克隆好友聊天：预检索 + 单次 streamText，流式 chunk 经 onChunk 回调（复用 run 的 chunk 通道）。 */
+  /** 克隆好友聊天：预检索 + 单次 generateText，完整生成后经 onChunk 按气泡回调（复用 run 的 chunk 通道）。 */
   async personaChat(
     input: import('./persona/personaTypes').PersonaChatInput,
     onChunk: (chunk: UIMessageChunk) => void,

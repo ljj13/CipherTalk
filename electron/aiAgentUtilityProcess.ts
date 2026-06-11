@@ -1,7 +1,7 @@
 /**
  * AI Agent Utility Process —— 在 Electron 隔离子进程中跑 ToolLoopAgent。
  * 主进程通过 postMessage({ id, type, payload }) 下发请求，本进程回复 { id, result } / { id, error }，
- * 流式 UI 消息块以 { id: -1, type: 'chunk', payload: { runId, chunk } } 上行。
+ * UI 消息块以 { id: -1, type: 'chunk', payload: { runId, chunk } } 上行。
  *
  * 约定：id === 0 && type === 'ready' 为启动就绪信号。
  * 隔离收益：AI 崩溃（如 sqlite-vec 原生 fatal）只终止本子进程，主进程会重启，不拖垮 UI。

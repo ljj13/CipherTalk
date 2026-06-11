@@ -259,6 +259,41 @@ export class AgentConversationStore {
     return { success: true }
   }
 
+  removeByScope(scope: AgentScope): { success: boolean; deleted: number } {
+    const db = this.getDb()
+    const accountId = this.getAccountId()
+    const filters = ['account_id = @accountId', 'scope_kind = @scopeKind']
+    const params: Record<string, unknown> = {
+      accountId,
+      scopeKind: scope.kind,
+    }
+
+    if (scope.kind === 'session' || scope.kind === 'persona') {
+      filters.push('session_id = @sessionId')
+      params.sessionId = scope.sessionId
+    } else {
+      filters.push('session_id IS NULL')
+    }
+
+    const rows = db.prepare(`
+      SELECT id FROM agent_conversations
+      WHERE ${filters.join(' AND ')}
+    `).all(params) as Array<{ id: number }>
+    const ids = rows.map((row) => Number(row.id)).filter((id) => Number.isFinite(id) && id > 0)
+    if (ids.length === 0) return { success: true, deleted: 0 }
+
+    const tx = db.transaction((conversationIds: number[]) => {
+      const deleteMessages = db.prepare('DELETE FROM agent_messages WHERE conversation_id = ?')
+      const deleteConversation = db.prepare('DELETE FROM agent_conversations WHERE id = ?')
+      for (const conversationId of conversationIds) {
+        deleteMessages.run(conversationId)
+        deleteConversation.run(conversationId)
+      }
+    })
+    tx(ids)
+    return { success: true, deleted: ids.length }
+  }
+
   rename(id: number, title: string): AgentConversationRecord {
     const nextTitle = String(title || '新对话').trim().slice(0, 80) || '新对话'
     this.getDb().prepare(`

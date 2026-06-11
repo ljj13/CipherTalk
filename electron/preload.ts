@@ -133,6 +133,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('agent:createConversation', payload) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
     deleteConversation: (id: number) =>
       ipcRenderer.invoke('agent:deleteConversation', id) as Promise<{ success: boolean; error?: string }>,
+    deleteConversationsByScope: (scope: unknown) =>
+      ipcRenderer.invoke('agent:deleteConversationsByScope', scope) as Promise<{ success: boolean; deleted?: number; error?: string }>,
     renameConversation: (id: number, title: string) =>
       ipcRenderer.invoke('agent:renameConversation', id, title) as Promise<{ success: boolean; conversation?: unknown; error?: string }>,
     saveConversationMessages: (payload: unknown) =>

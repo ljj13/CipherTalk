@@ -397,6 +397,15 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     }
   })
 
+  ipcMain.handle('agent:deleteConversationsByScope', async (_event, scope: AgentScope) => {
+    try {
+      const { agentConversationStore } = await import('../../services/agent/conversationStore')
+      return agentConversationStore.removeByScope(scope)
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
   ipcMain.handle('agent:renameConversation', async (_event, id: number, title: string) => {
     try {
       const { agentConversationStore } = await import('../../services/agent/conversationStore')
@@ -703,7 +712,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
   })
 
   // ========= 克隆好友（数字分身画像，agent_personas.db）=========
-  // 克隆聊天：加载画像 → 子进程预检索 + 单次 streamText；chunk 经 persona:chunk 推回
+  // 克隆聊天：加载画像 → 子进程预检索 + 单次 generateText；完整结果按气泡经 persona:chunk 推回
   ipcMain.handle('persona:chat', async (event, payload: {
     runId: string
     sessionId: string

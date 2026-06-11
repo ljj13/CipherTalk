@@ -1,6 +1,6 @@
 /**
  * PersonaChatTransport —— 克隆好友聊天的 useChat 传输层。
- * 与 IpcChatTransport 同构，但走 electronAPI.persona（persona:chat → 子进程单次 streamText）。
+ * 与 IpcChatTransport 同构，但走 electronAPI.persona（persona:chat → 子进程完整生成后按气泡回推）。
  */
 import type { ChatTransport, UIMessage, UIMessageChunk } from 'ai'
 import type { AgentProgressEvent } from './ipcChatTransport'

@@ -4,7 +4,7 @@
  * 等待回复时头部只显示「对方正在输入…」，不暴露内部检索过程。
  * 历史挂 agent 会话存储（scope kind='persona'），打开恢复、每轮保存。
  */
-import { AlertCircle, Bot, Loader2, RefreshCw, Send, Square, Trash2 } from 'lucide-react'
+import { AlertCircle, Bot, Loader2, MessageSquareX, RefreshCw, Send, Square, Trash2 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useChat } from '@ai-sdk/react'
@@ -60,12 +60,14 @@ export default function PersonaChatPage() {
 
   const [displayName, setDisplayName] = useState('')
   const [avatarUrl, setAvatarUrl] = useState<string | undefined>(undefined)
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | undefined>(undefined)
   const [phase, setPhase] = useState<Phase>('loading')
   const [persona, setPersona] = useState<PersonaRecordInfo | null>(null)
   const [buildProgress, setBuildProgress] = useState<PersonaBuildProgressInfo | null>(null)
   const [buildError, setBuildError] = useState<string | null>(null)
   const [conversationId, setConversationId] = useState<number | null>(null)
   const [input, setInput] = useState('')
+  const [clearingConversations, setClearingConversations] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const lastSavedCountRef = useRef(0)
 
@@ -83,13 +85,19 @@ export default function PersonaChatPage() {
   useEffect(() => {
     if (!sessionId) return
     let cancelled = false
-    void window.electronAPI.chat.getSessionDetail(sessionId).then((res) => {
+    void Promise.all([
+      window.electronAPI.chat.getSessionDetail(sessionId),
+      window.electronAPI.chat.getMyAvatarUrl(),
+    ]).then(([res, myAvatarRes]) => {
       if (cancelled) return
       if (res.success && res.detail) {
         setDisplayName(res.detail.displayName || res.detail.nickName || sessionId)
         setAvatarUrl(res.detail.avatarUrl)
       } else {
         setDisplayName(sessionId)
+      }
+      if (myAvatarRes.success && myAvatarRes.avatarUrl) {
+        setMyAvatarUrl(myAvatarRes.avatarUrl)
       }
     }).catch(() => { if (!cancelled) setDisplayName(sessionId) })
     return () => { cancelled = true }
@@ -170,6 +178,49 @@ export default function PersonaChatPage() {
     setConversationId(null)
     lastSavedCountRef.current = 0
     setPhase('confirm')
+  }
+
+  const handleClearConversations = async () => {
+    if (busy || clearingConversations) return
+    const confirmed = window.confirm(`删除和「${displayName || sessionId}」分身的所有对话记录？画像会保留。`)
+    if (!confirmed) return
+
+    setClearingConversations(true)
+    try {
+      const scope = { kind: 'persona', sessionId }
+      const deleteViaExistingApis = async () => {
+        const list = await window.electronAPI.agent.listConversations(scope)
+        if (!list.success || !Array.isArray(list.conversations)) {
+          throw new Error(list.error || '读取对话记录失败')
+        }
+        for (const item of list.conversations) {
+          const id = Number((item as { id?: unknown }).id)
+          if (Number.isFinite(id) && id > 0) {
+            const res = await window.electronAPI.agent.deleteConversation(id)
+            if (!res.success) throw new Error(res.error || '删除对话记录失败')
+          }
+        }
+      }
+      const deleteByScope = window.electronAPI.agent.deleteConversationsByScope
+      if (deleteByScope) {
+        try {
+          const res = await deleteByScope(scope)
+          if (!res.success) throw new Error(res.error || '删除对话记录失败')
+        } catch (e) {
+          if (!String(e instanceof Error ? e.message : e).includes('No handler registered')) throw e
+          await deleteViaExistingApis()
+        }
+      } else {
+        await deleteViaExistingApis()
+      }
+      setMessages([])
+      setConversationId(null)
+      lastSavedCountRef.current = 0
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      setClearingConversations(false)
+    }
   }
 
   const handleSend = async () => {
@@ -270,6 +321,22 @@ export default function PersonaChatPage() {
         </Tooltip>
         <Tooltip delay={0}>
           <Tooltip.Trigger>
+            <Button
+              isIconOnly
+              size="sm"
+              variant="ghost"
+              aria-label="删除对话记录"
+              isDisabled={busy || clearingConversations}
+              isPending={clearingConversations}
+              onPress={handleClearConversations}
+            >
+              <MessageSquareX size={16} />
+            </Button>
+          </Tooltip.Trigger>
+          <Tooltip.Content>删除该分身的所有对话记录</Tooltip.Content>
+        </Tooltip>
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
             <Button isIconOnly size="sm" variant="ghost" aria-label="删除分身" onPress={handleDelete}>
               <Trash2 size={16} />
             </Button>
@@ -297,7 +364,7 @@ export default function PersonaChatPage() {
                 {bubbles.map((bubble, index) => (
                   <div
                     key={`${message.id}:${index}`}
-                    className={`whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm ${
+                    className={`whitespace-pre-wrap wrap-break-word rounded-2xl px-3 py-2 text-sm ${
                       isMine
                         ? 'rounded-tr-sm bg-success-soft text-success-soft-foreground'
                         : 'rounded-tl-sm bg-surface text-foreground'
@@ -307,6 +374,7 @@ export default function PersonaChatPage() {
                   </div>
                 ))}
               </div>
+              {isMine && <PersonaAvatar name="我" avatarUrl={myAvatarUrl} size={30} />}
             </div>
           )
         })}

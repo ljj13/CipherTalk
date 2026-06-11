@@ -247,9 +247,9 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
   const setPetWindowMaterial = (expanded: boolean): void => {
     if (!petWindow || petWindow.isDestroyed()) return
     try {
-      if (process.platform === 'win32') {
-        petWindow.setBackgroundMaterial(expanded ? 'acrylic' : 'none')
-      } else if (process.platform === 'darwin') {
+      // win32 不做 setBackgroundMaterial 切换：acrylic 切回 'none' 后透明窗口会被
+      // 合成器画成不可恢复的黑底（Electron 已知 bug），气泡观感靠 .pet-notice 自身的 CSS 玻璃态。
+      if (process.platform === 'darwin') {
         petWindow.setVibrancy(expanded ? 'hud' : null)
       }
     } catch {
