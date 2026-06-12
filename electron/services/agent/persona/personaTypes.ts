@@ -71,6 +71,10 @@ export interface PersonaStats {
   avgFriendMsgChars: number
   /** 对方平均一轮连发几条 */
   avgFriendBurst: number
+  /** 私聊语料不足时补充收集的群聊发言条数（仅喂风格卡/深层画像，不进问答对） */
+  groupMessageCount?: number
+  /** 群聊发言来自几个群 */
+  groupSessionCount?: number
 }
 
 export interface PersonaRecord {
@@ -98,6 +102,8 @@ export interface PersonaExtractInput {
   friendName: string
   /** 渲染好的对话语料（轮次合并后，连发用 ／ 分隔） */
   corpusText: string
+  /** 群聊补充语料（TA 在群里的发言节选）：只喂风格卡，不喂 few-shot 挖掘（群聊问答错位） */
+  groupCorpusText?: string
   stats: PersonaStats
 }
 

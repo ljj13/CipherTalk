@@ -4,7 +4,7 @@ import { join } from 'path'
 import type { UIMessage } from 'ai'
 import type { MainProcessContext } from '../context'
 import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope } from '../../services/agent/types'
-import type { PersonaNotes, PersonaProfile } from '../../services/agent/persona/personaTypes'
+import type { PersonaNotes, PersonaProfile, PersonaStats } from '../../services/agent/persona/personaTypes'
 
 /** 进行中的 agent 运行：runId → AbortController，用于取消。 */
 const agentAborters = new Map<string, AbortController>()
@@ -1003,7 +1003,13 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
         profile: revised.profile,
         // 新黄金样本追加在后、总量封顶（最新的优先保留）
         fewShots: [...persona.fewShots, ...revised.newFewShots].slice(-10),
-        stats: buildPersonaCorpus(messages, persona.displayName).stats,
+        // 群聊来源标记保留：画像卡里群聊提炼的内容不会因增量修订消失
+        stats: {
+          ...buildPersonaCorpus(messages, persona.displayName).stats,
+          ...(persona.stats.groupMessageCount
+            ? { groupMessageCount: persona.stats.groupMessageCount, groupSessionCount: persona.stats.groupSessionCount }
+            : {}),
+        },
         corpusUntil,
       })
 
@@ -1133,13 +1139,37 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       }, 6000)
 
       sendProgress('corpus', '正在分析说话风格', 40)
-      const { buildPersonaCorpus, MIN_FRIEND_MESSAGES, mergeTurns, renderProfileChunks, extractPersonaPairs } =
+      const { buildPersonaCorpus, MIN_FRIEND_MESSAGES, PROFILE_MAX_CHUNKS, mergeTurns, renderProfileChunks, extractPersonaPairs } =
         await import('../../services/agent/persona/personaCorpus')
       const corpus = buildPersonaCorpus(messages, displayName)
+
+      // 私聊语料不足时，从 TA 所在群聊收集发言补充（只喂风格卡/深层画像，不进问答对——群聊问答错位）
+      let groupCorpus: import('../../services/agent/persona/personaGroupCorpus').PersonaGroupCorpus | null = null
       if (corpus.stats.friendMessageCount < MIN_FRIEND_MESSAGES) {
-        const error = `与「${displayName}」的可用文本消息太少（${corpus.stats.friendMessageCount} 条，至少需要 ${MIN_FRIEND_MESSAGES} 条），不足以克隆`
-        sendProgress('error', '克隆失败', 100, error)
-        return { success: false, error }
+        sendProgress('corpus', '私聊语料不足，正在收集群聊发言', 42)
+        try {
+          const { collectGroupCorpus } = await import('../../services/agent/persona/personaGroupCorpus')
+          groupCorpus = await collectGroupCorpus(sessionId, displayName, (detail) => {
+            sendProgress('corpus', '私聊语料不足，正在收集群聊发言', 44, detail)
+          })
+        } catch (e) {
+          logger?.warn('Persona', '群聊语料收集失败，仅用私聊语料', { sessionId, ...errorToLogData(e) })
+        }
+        const totalFriendMessages = corpus.stats.friendMessageCount + (groupCorpus?.friendMessageCount || 0)
+        if (totalFriendMessages < MIN_FRIEND_MESSAGES) {
+          const groupNote = groupCorpus?.friendMessageCount
+            ? `私聊 ${corpus.stats.friendMessageCount} 条 + 群聊 ${groupCorpus.friendMessageCount} 条`
+            : `${corpus.stats.friendMessageCount} 条`
+          const error = `与「${displayName}」的可用文本消息太少（${groupNote}，至少需要 ${MIN_FRIEND_MESSAGES} 条），不足以克隆`
+          sendProgress('error', '克隆失败', 100, error)
+          return { success: false, error }
+        }
+      }
+      const stats: PersonaStats = {
+        ...corpus.stats,
+        ...(groupCorpus?.friendMessageCount
+          ? { groupMessageCount: groupCorpus.friendMessageCount, groupSessionCount: groupCorpus.groupCount }
+          : {}),
       }
       const turns = mergeTurns(messages)
 
@@ -1150,11 +1180,14 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
         providerConfig,
         friendName: displayName,
         corpusText: corpus.corpusText,
-        stats: corpus.stats,
+        groupCorpusText: groupCorpus?.friendMessageCount ? groupCorpus.corpusText : undefined,
+        stats,
       })
 
       // 深层画像 map-reduce：逐块提取（并发 3，单块失败跳过），全失败则降级为无深层画像
-      const profileChunks = renderProfileChunks(turns, displayName)
+      // 群聊块排私聊块之后，总量仍封顶（私聊不足时私聊块本来就少，群聊块补得进来）
+      const profileChunks = [...renderProfileChunks(turns, displayName), ...(groupCorpus?.profileChunks || [])]
+        .slice(0, PROFILE_MAX_CHUNKS)
       const parts: Array<PersonaProfile | undefined> = new Array(profileChunks.length)
       let nextChunk = 0
       let doneChunks = 0
@@ -1197,7 +1230,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
         displayName,
         card: extracted.card,
         fewShots: extracted.fewShots,
-        stats: corpus.stats,
+        stats,
         profile,
         corpusUntil,
         modelProvider: providerConfig.name,
@@ -1221,6 +1254,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
         sessionId,
         elapsedMs: Date.now() - startedAt,
         friendMessageCount: corpus.stats.friendMessageCount,
+        groupMessageCount: groupCorpus?.friendMessageCount || 0,
         fewShotCount: persona.fewShots.length,
         profileChunkCount: profileChunks.length,
         hasProfile: !!profile,

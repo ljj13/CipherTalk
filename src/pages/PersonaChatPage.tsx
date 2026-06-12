@@ -484,7 +484,7 @@ export default function PersonaChatPage() {
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-foreground">{headerTitle}</div>
           <div className="truncate text-xs text-muted">
-            数字分身{persona ? ` · 基于 ${persona.stats.friendMessageCount} 条消息` : ''}
+            数字分身{persona ? ` · 基于 ${persona.stats.friendMessageCount + (persona.stats.groupMessageCount || 0)} 条消息${persona.stats.groupMessageCount ? `（含群聊发言 ${persona.stats.groupMessageCount} 条）` : ''}` : ''}
           </div>
         </div>
         <Tooltip delay={0}>
