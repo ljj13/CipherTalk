@@ -80,6 +80,19 @@ function corpusPreamble(input: PersonaExtractInput): string {
   ].join('\n')
 }
 
+/** 风格卡专用：私聊语料 + 群聊发言节选（few-shot 挖掘不用这份——群聊问答是错位的）。 */
+function cardCorpus(input: PersonaExtractInput): string {
+  const base = corpusPreamble(input)
+  if (!input.groupCorpusText) return base
+  return [
+    base,
+    '',
+    `【补充语料】以下是「${input.friendName}」在群聊中的发言节选（共 ${input.stats.groupMessageCount || 0} 条，来自 TA 所在的群）。`,
+    '「群友」是群里其他人，不是「我」；这部分只用于分析 TA 的说话风格与性格，注意群聊语气可能比私聊更随意。',
+    input.groupCorpusText,
+  ].join('\n')
+}
+
 const CARD_JSON_SHAPE = `{
   "tone": "语气与说话风格，2-4 句中文描述",
   "personalityTraits": ["性格特征短语", "..."],
@@ -108,7 +121,7 @@ export async function extractPersona(input: PersonaExtractInput, signal?: AbortS
           '你是一名语言风格侧写师。根据聊天记录总结目标人物的说话风格与性格，' +
           '只依据记录本身，不要臆造；描述要具体可执行（能直接指导模仿其说话），避免空泛形容词。' +
           `\n只输出一个 JSON 对象，不要任何解释或代码围栏，格式如下：\n${CARD_JSON_SHAPE}`,
-        prompt: `${corpus}\n\n请侧写「${input.friendName}」，按要求输出 JSON。`,
+        prompt: `${cardCorpus(input)}\n\n请侧写「${input.friendName}」，按要求输出 JSON。`,
         temperature: 0.3,
         signal,
       },

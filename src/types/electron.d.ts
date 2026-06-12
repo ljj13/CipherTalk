@@ -213,6 +213,8 @@ export interface PersonaRecordInfo {
     friendMessageCount: number
     avgFriendMsgChars: number
     avgFriendBurst: number
+    groupMessageCount?: number
+    groupSessionCount?: number
   }
   profile: PersonaProfileInfo | null
   corpusUntil: number

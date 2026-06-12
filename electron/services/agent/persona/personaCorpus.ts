@@ -15,13 +15,13 @@ import type { PersonaPair, PersonaStats } from './personaTypes'
 /** 对方可用文本消息低于此数时拒绝克隆（语料太少画像必然失真） */
 export const MIN_FRIEND_MESSAGES = 50
 
-const TURN_GAP_SECONDS = 3 * 60   // 同一人相邻消息间隔超过此值视为新一轮
-const MSG_CHAR_CAP = 200          // 单条消息进语料的字符上限（防超长消息撑爆）
+export const TURN_GAP_SECONDS = 3 * 60   // 同一人相邻消息间隔超过此值视为新一轮
+export const MSG_CHAR_CAP = 200          // 单条消息进语料的字符上限（防超长消息撑爆）
 const CORPUS_CHAR_BUDGET = 14000  // 渲染语料的总字符预算（最近的轮次优先）
-const BURST_JOINER = '／'         // 一轮内连发多条的分隔符（提示词里会说明）
+export const BURST_JOINER = '／'         // 一轮内连发多条的分隔符（提示词里会说明）
 
 // 深层画像 map-reduce：把全量历史切成块逐块提取，块数封顶控制成本
-const PROFILE_CHUNK_CHARS = 10000
+export const PROFILE_CHUNK_CHARS = 10000
 export const PROFILE_MAX_CHUNKS = 12
 
 // 检索式 few-shot 的问答对：单边文本上限 / 连发条数上限
@@ -42,7 +42,7 @@ export interface PersonaCorpus {
 }
 
 /** 取消息用于风格分析的文本：文本消息用解析内容，语音消息只收已转写的。 */
-function messageText(m: ChatSearchMemoryMessage): string {
+export function messageText(m: ChatSearchMemoryMessage): string {
   if (m.localType === 1) return m.parsedContent.trim()
   if (m.localType === 34) {
     return (voiceTranscribeService.getCachedTranscript(m.sessionId, m.createTime) || '').trim()
