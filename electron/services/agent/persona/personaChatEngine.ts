@@ -409,8 +409,8 @@ export async function runPersonaChat(
     // TTS 配好才允许模型发语音：没配时标记只会变成念不出的哑文本
     let voiceEnabled = false
     try {
-      const { isTtsAvailable } = await import('../../ai/ttsService')
-      voiceEnabled = isTtsAvailable()
+      const { isPersonaTtsVoiceAvailable, isTtsAvailable } = await import('../../ai/ttsService')
+      voiceEnabled = isTtsAvailable() || isPersonaTtsVoiceAvailable(input.persona.ttsVoice)
     } catch { /* TTS 不可用就纯文字 */ }
     const voiceForwardRequested = voiceEnabled && wantsVoiceForwardReply(userText)
 

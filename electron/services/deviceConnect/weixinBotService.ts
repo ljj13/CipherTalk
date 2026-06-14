@@ -28,6 +28,7 @@ import {
   type IlinkSession,
 } from './weixinIlinkClient'
 import { synthesizeWeixinVoice } from './weixinVoiceService'
+import type { PersonaTtsVoiceBinding } from '../agent/persona/personaTypes'
 
 const TOKEN_FILE = 'wechat-bot-token.json'
 const MODE_FILE = 'wechat-bot-modes.json'
@@ -69,6 +70,8 @@ type WechatBotMedia = {
   filePath?: string
   text?: string
   caption?: string
+  personaVoice?: PersonaTtsVoiceBinding | null
+  ttsInstructions?: string
   durationMs?: number
   sampleRate?: number
 }
@@ -78,6 +81,8 @@ type WechatBotReply = {
   textBubbles?: string[]
   media: WechatBotMedia[]
   personaActions: WechatPersonaAction[]
+  personaVoice?: PersonaTtsVoiceBinding | null
+  ttsInstructions?: string
 }
 
 type WechatConversationMode = {
@@ -274,14 +279,14 @@ function splitVoiceMarkedReply(reply: WechatBotReply, forceVoice: boolean): Wech
     if (VOICE_MARKER_RE.test(trimmed)) {
       hasVoiceMarker = true
       const voiceText = trimmed.replace(VOICE_MARKER_RE, '').trim()
-      if (voiceText) media.push({ kind: 'voice', text: voiceText })
+      if (voiceText) media.push({ kind: 'voice', text: voiceText, personaVoice: reply.personaVoice, ttsInstructions: reply.ttsInstructions })
     } else {
       textBubbles.push(trimmed)
     }
   }
 
   if (!hasVoiceMarker && forceVoice) {
-    media.push({ kind: 'voice', text })
+    media.push({ kind: 'voice', text, personaVoice: reply.personaVoice, ttsInstructions: reply.ttsInstructions })
     return { text: '', textBubbles: [], media: dedupeMedia(media), personaActions: reply.personaActions }
   }
 
@@ -1167,7 +1172,10 @@ class WeixinBotService {
           const voiceText = String(item.text || '').trim()
           if (!voiceText) throw new Error('语音文本为空')
           console.log(`[WechatBot] 开始合成微信语音 textLength=${voiceText.length}`)
-          const voice = await synthesizeWeixinVoice(voiceText)
+          const voice = await synthesizeWeixinVoice(voiceText, {
+            personaVoice: item.personaVoice,
+            instructions: item.ttsInstructions,
+          })
           console.log(`[WechatBot] 微信语音合成完成 file=${voice.filePath} durationMs=${voice.durationMs} sampleRate=${voice.sampleRate}`)
           await sendVoice(session, toUserId, voice.filePath, {
             playtimeMs: voice.durationMs,
@@ -1352,6 +1360,7 @@ class WeixinBotService {
         profile: persona.profile,
         notes,
         stickers: persona.stickers,
+        ttsVoice: persona.ttsVoice,
       },
       messages,
       outputMode: 'wechat',
@@ -1364,7 +1373,14 @@ class WeixinBotService {
         if (bubble) textBubbles.push(bubble)
       }
     })
-    return { text: reply.trim(), textBubbles: normalizeWechatTextBubbles(textBubbles), media: [], personaActions: [] }
+    return {
+      text: reply.trim(),
+      textBubbles: normalizeWechatTextBubbles(textBubbles),
+      media: [],
+      personaActions: [],
+      personaVoice: persona.ttsVoice,
+      ttsInstructions: persona.card.ttsInstructions,
+    }
   }
 
   // ── token 持久化（userData 下独立 JSON，不混入共享 config） ──

@@ -658,10 +658,13 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     }
   })
 
-  ipcMain.handle('tts:speak', async (_e, text: string, options?: { config?: Record<string, unknown> }) => {
+  ipcMain.handle('tts:speak', async (_e, text: string, options?: { config?: Record<string, unknown>; personaVoice?: unknown }) => {
     try {
-      const { synthesizeSpeech } = await import('../../services/ai/ttsService')
-      const config = options?.config && typeof options.config === 'object' ? options.config : undefined
+      const { resolvePersonaVoiceTtsConfig, synthesizeSpeech } = await import('../../services/ai/ttsService')
+      const configPatch = options?.config && typeof options.config === 'object' ? options.config : undefined
+      const config = options?.personaVoice && typeof options.personaVoice === 'object'
+        ? resolvePersonaVoiceTtsConfig(options.personaVoice as any, configPatch as any)
+        : configPatch
       return await synthesizeSpeech(String(text || ''), config ? { config: config as any, useCache: true } : undefined)
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e), errorCode: 'SYNTHESIS_FAILED' }
@@ -1011,6 +1014,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
             profile: persona.profile,
             notes,
             stickers: persona.stickers,
+            ttsVoice: persona.ttsVoice,
           },
           messages,
         },
@@ -1049,6 +1053,21 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     try {
       const { personaStore } = await import('../../services/agent/persona/personaStore')
       return { success: true, personas: personaStore.list() }
+    } catch (e) {
+      return { success: false, error: e instanceof Error ? e.message : String(e) }
+    }
+  })
+
+  ipcMain.handle('persona:cloneVoice', async (_event, payload: { sessionId: string; displayName?: string }) => {
+    try {
+      const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
+      const { clonePersonaVoiceFromSession } = await import('../../services/agent/persona/personaVoiceCloneService')
+      await refreshResolvedProxyUrl()
+      return await clonePersonaVoiceFromSession({
+        sessionId: String(payload?.sessionId || '').trim(),
+        displayName: String(payload?.displayName || '').trim(),
+        logger: ctx.getLogService(),
+      })
     } catch (e) {
       return { success: false, error: e instanceof Error ? e.message : String(e) }
     }

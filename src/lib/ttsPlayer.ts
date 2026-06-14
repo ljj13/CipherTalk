@@ -5,6 +5,7 @@
  * 同一时刻只播一条：再次触发同 key 即停止，触发其他 key 则切换。
  */
 import { useEffect, useState } from 'react'
+import type { PersonaTtsVoiceBindingInfo, TtsConfig } from '@/types/electron'
 
 export type TtsSpeakingPhase = 'loading' | 'playing'
 
@@ -24,7 +25,9 @@ export interface SpeakResult {
 
 export interface SpeakOptions {
   awaitEnd?: boolean
+  config?: Partial<TtsConfig>
   instructions?: string
+  personaVoice?: PersonaTtsVoiceBindingInfo | null
 }
 
 let currentAudio: HTMLAudioElement | null = null
@@ -118,9 +121,15 @@ export async function speakText(key: string, text: string, options: SpeakOptions
   let result: { success: boolean; audioBase64?: string; mimeType?: string; error?: string; errorCode?: string } | null = null
   try {
     const instructions = String(options.instructions || '').trim()
+    const config = {
+      ...(options.config || {}),
+      ...(instructions ? { instructions } : {}),
+    }
     result = await window.electronAPI.tts.speak(
       content,
-      instructions ? { config: { instructions } } : undefined,
+      Object.keys(config).length > 0 || options.personaVoice
+        ? { config: Object.keys(config).length > 0 ? config : undefined, personaVoice: options.personaVoice || undefined }
+        : undefined,
     )
   } catch (e) {
     result = { success: false, error: e instanceof Error ? e.message : String(e), errorCode: 'SYNTHESIS_FAILED' }

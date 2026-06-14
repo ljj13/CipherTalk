@@ -1,0 +1,347 @@
+/**
+ * 数字分身声音复刻：从好友历史语音取样，调用豆包声音复刻 V3，并把 speaker 绑定到 persona。
+ */
+import { createHash, randomUUID } from 'crypto'
+import { chatService } from '../../chatService'
+import { createProxyFetch, getResolvedProxyUrl } from '../../ai/proxyFetch'
+import { getTtsConfig } from '../../ai/ttsService'
+import { VOLCENGINE_DEFAULT_TTS_ENDPOINT } from '../../ai/volcengineTtsProtocol'
+import type { PersonaRecord, PersonaTtsVoiceBinding } from './personaTypes'
+import { personaStore } from './personaStore'
+
+type PersonaVoiceCloneLogger = {
+  warn?(category: string, message: string, data?: unknown): void
+  error?(category: string, message: string, data?: unknown): void
+}
+
+export interface PersonaVoiceCloneInput {
+  sessionId: string
+  displayName?: string
+  logger?: PersonaVoiceCloneLogger | null
+}
+
+export type PersonaVoiceCloneResult =
+  | { success: true; persona: PersonaRecord; voice: PersonaTtsVoiceBinding }
+  | { success: false; error: string }
+
+interface ParsedWav {
+  sampleRate: number
+  channels: number
+  bitsPerSample: number
+  pcm: Buffer
+  durationSeconds: number
+}
+
+interface VoiceSample {
+  audioBase64: string
+  sampleCount: number
+  sampleSeconds: number
+}
+
+interface CloneStatus {
+  status?: number
+  message?: string
+  modelType?: number
+}
+
+interface CloneResult {
+  speakerId: string
+  status: CloneStatus
+}
+
+const VOLCENGINE_VOICE_CLONE_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
+const VOLCENGINE_VOICE_STATUS_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/get_voice'
+const VOLCENGINE_VOICE_RESOURCE_ID = 'seed-icl-2.0'
+const VOLCENGINE_VOICE_MODEL_TYPE = 4
+const VOICE_CLONE_MIN_SECONDS = 8
+const VOICE_CLONE_TARGET_SECONDS = 18
+const VOICE_CLONE_MAX_MESSAGES = 30
+const VOICE_CLONE_POLL_INTERVAL_MS = 2_000
+const VOICE_CLONE_TIMEOUT_MS = 180_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function makeCustomSpeakerId(sessionId: string): string {
+  const digest = createHash('sha1').update(sessionId).digest('hex').slice(0, 16)
+  return `custom_zh_ciphertalk_${digest}`
+}
+
+function parseWav(base64: string): ParsedWav {
+  const buffer = Buffer.from(base64, 'base64')
+  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
+    throw new Error('语音样本不是 WAV 数据')
+  }
+
+  let offset = 12
+  let audioFormat = 0
+  let channels = 0
+  let sampleRate = 0
+  let bitsPerSample = 0
+  let pcm: Buffer | null = null
+
+  while (offset + 8 <= buffer.length) {
+    const chunkId = buffer.toString('ascii', offset, offset + 4)
+    const chunkSize = buffer.readUInt32LE(offset + 4)
+    const chunkStart = offset + 8
+    const chunkEnd = Math.min(chunkStart + chunkSize, buffer.length)
+
+    if (chunkId === 'fmt ' && chunkSize >= 16) {
+      audioFormat = buffer.readUInt16LE(chunkStart)
+      channels = buffer.readUInt16LE(chunkStart + 2)
+      sampleRate = buffer.readUInt32LE(chunkStart + 4)
+      bitsPerSample = buffer.readUInt16LE(chunkStart + 14)
+    } else if (chunkId === 'data') {
+      pcm = Buffer.from(buffer.subarray(chunkStart, chunkEnd))
+    }
+
+    offset = chunkEnd + (chunkSize % 2)
+  }
+
+  if (!pcm || !channels || !sampleRate || !bitsPerSample) throw new Error('WAV 数据缺少音频块')
+  if (audioFormat !== 1 || bitsPerSample !== 16) throw new Error('仅支持 PCM 16-bit WAV 语音样本')
+
+  const bytesPerSecond = sampleRate * channels * (bitsPerSample / 8)
+  return {
+    sampleRate,
+    channels,
+    bitsPerSample,
+    pcm,
+    durationSeconds: pcm.length / bytesPerSecond,
+  }
+}
+
+function buildWav(sample: Pick<ParsedWav, 'sampleRate' | 'channels' | 'bitsPerSample'>, pcm: Buffer): Buffer {
+  const byteRate = sample.sampleRate * sample.channels * (sample.bitsPerSample / 8)
+  const blockAlign = sample.channels * (sample.bitsPerSample / 8)
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0)
+  header.writeUInt32LE(36 + pcm.length, 4)
+  header.write('WAVE', 8)
+  header.write('fmt ', 12)
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(sample.channels, 22)
+  header.writeUInt32LE(sample.sampleRate, 24)
+  header.writeUInt32LE(byteRate, 28)
+  header.writeUInt16LE(blockAlign, 32)
+  header.writeUInt16LE(sample.bitsPerSample, 34)
+  header.write('data', 36)
+  header.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([header, pcm])
+}
+
+function isSameWavFormat(a: ParsedWav, b: ParsedWav): boolean {
+  return a.sampleRate === b.sampleRate && a.channels === b.channels && a.bitsPerSample === b.bitsPerSample
+}
+
+async function collectVoiceSample(sessionId: string): Promise<VoiceSample> {
+  const result = await chatService.getAllVoiceMessages(sessionId)
+  if (!result.success || !Array.isArray(result.messages)) {
+    throw new Error(result.error || '读取好友语音消息失败')
+  }
+
+  const candidates = result.messages
+    .filter((message) => Number(message.isSend || 0) !== 1)
+    .sort((a, b) => Number(b.createTime || 0) - Number(a.createTime || 0))
+    .slice(0, VOICE_CLONE_MAX_MESSAGES)
+
+  if (candidates.length === 0) {
+    throw new Error('没有找到对方发来的语音消息，无法复刻声音')
+  }
+
+  const samples: ParsedWav[] = []
+  let base: ParsedWav | null = null
+  let totalSeconds = 0
+
+  for (const message of candidates) {
+    const localId = Number(message.localId || 0)
+    if (!localId) continue
+    const voice = await chatService.getVoiceData(sessionId, String(localId), message.createTime, message.serverId)
+    if (!voice.success || !voice.data) continue
+
+    try {
+      const parsed = parseWav(voice.data)
+      if (parsed.durationSeconds < 1) continue
+      if (!base) base = parsed
+      if (!isSameWavFormat(base, parsed)) continue
+      samples.push(parsed)
+      totalSeconds += parsed.durationSeconds
+      if (totalSeconds >= VOICE_CLONE_TARGET_SECONDS) break
+    } catch {
+      // 单条语音损坏或格式不适配时跳过，继续尝试下一条。
+    }
+  }
+
+  if (!base || samples.length === 0) {
+    throw new Error('没有可用的 PCM WAV 语音样本')
+  }
+  if (totalSeconds < VOICE_CLONE_MIN_SECONDS) {
+    throw new Error(`可用语音样本约 ${Math.round(totalSeconds)} 秒，建议至少 ${VOICE_CLONE_MIN_SECONDS} 秒后再复刻`)
+  }
+
+  const silence = Buffer.alloc(Math.round(base.sampleRate * base.channels * (base.bitsPerSample / 8) * 0.18))
+  const pcmParts: Buffer[] = []
+  samples.forEach((sample, index) => {
+    if (index > 0) pcmParts.push(silence)
+    pcmParts.push(sample.pcm)
+  })
+
+  return {
+    audioBase64: buildWav(base, Buffer.concat(pcmParts)).toString('base64'),
+    sampleCount: samples.length,
+    sampleSeconds: Number(totalSeconds.toFixed(1)),
+  }
+}
+
+function formatApiError(payload: unknown): string {
+  if (!payload || typeof payload !== 'object') return String(payload || '')
+  const data = payload as any
+  return String(
+    data.message ||
+    data.error ||
+    data.msg ||
+    data.BaseResp?.StatusMessage ||
+    data.status_text ||
+    JSON.stringify(data),
+  ).slice(0, 500)
+}
+
+function ensureVolcengineOk(payload: any): void {
+  const code = payload?.code ?? payload?.status_code ?? payload?.BaseResp?.StatusCode
+  if (code === undefined || code === null || Number(code) === 0) return
+  throw new Error(`豆包声音复刻失败 ${code}: ${formatApiError(payload)}`)
+}
+
+async function postVolcengineJson(url: string, apiKey: string, body: Record<string, unknown>): Promise<any> {
+  const fetchImpl = createProxyFetch(getResolvedProxyUrl()) || fetch
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'X-Api-Key': apiKey,
+      'X-Api-Resource-Id': VOLCENGINE_VOICE_RESOURCE_ID,
+      'X-Api-Request-Id': randomUUID(),
+    },
+    body: JSON.stringify(body),
+  }) as Response
+  const text = await response.text().catch(() => '')
+  let payload: any = null
+  try {
+    payload = text ? JSON.parse(text) : {}
+  } catch {
+    payload = { message: text }
+  }
+  if (!response.ok) {
+    throw new Error(`豆包声音复刻 HTTP ${response.status}: ${formatApiError(payload) || response.statusText}`)
+  }
+  ensureVolcengineOk(payload)
+  return payload
+}
+
+function extractSpeakerId(payload: any, fallback: string): string {
+  const value = payload?.speaker_id || payload?.data?.speaker_id || payload?.result?.speaker_id || ''
+  const speaker = String(value || '').trim()
+  return speaker && speaker !== 'custom_speaker_id' ? speaker : fallback
+}
+
+function extractCloneStatus(payload: any, speakerId: string): CloneStatus {
+  const statuses = [
+    ...(Array.isArray(payload?.speaker_status) ? payload.speaker_status : []),
+    ...(Array.isArray(payload?.data?.speaker_status) ? payload.data.speaker_status : []),
+  ]
+  const matched = statuses.find((item: any) => String(item?.speaker_id || item?.speaker || '') === speakerId) || statuses[0]
+  const source = matched || payload?.data || payload
+  const statusValue = source?.status ?? source?.speaker_status
+  return {
+    status: statusValue === undefined || statusValue === null ? undefined : Number(statusValue),
+    message: String(source?.message || source?.status_message || source?.status_text || payload?.message || '').trim(),
+    modelType: source?.model_type === undefined ? undefined : Number(source.model_type),
+  }
+}
+
+async function cloneVolcengineVoice(apiKey: string, speakerId: string, displayName: string, sample: VoiceSample): Promise<CloneResult> {
+  const payload = await postVolcengineJson(VOLCENGINE_VOICE_CLONE_ENDPOINT, apiKey, {
+    speaker_id: 'custom_speaker_id',
+    custom_speaker_id: speakerId,
+    display_name: displayName,
+    audio: {
+      data: sample.audioBase64,
+      format: 'wav',
+    },
+    language: 0,
+    model_type: VOLCENGINE_VOICE_MODEL_TYPE,
+  })
+
+  const actualSpeakerId = extractSpeakerId(payload, speakerId)
+  const startedAt = Date.now()
+  let lastStatus: CloneStatus = extractCloneStatus(payload, actualSpeakerId)
+  if (lastStatus.status === 2 || lastStatus.status === 4) return { speakerId: actualSpeakerId, status: lastStatus }
+
+  while (Date.now() - startedAt < VOICE_CLONE_TIMEOUT_MS) {
+    await sleep(VOICE_CLONE_POLL_INTERVAL_MS)
+    const statusPayload = await postVolcengineJson(VOLCENGINE_VOICE_STATUS_ENDPOINT, apiKey, {
+      speaker_id: actualSpeakerId,
+    })
+    lastStatus = extractCloneStatus(statusPayload, actualSpeakerId)
+    if (lastStatus.status === 2 || lastStatus.status === 4) return { speakerId: actualSpeakerId, status: lastStatus }
+    if (lastStatus.status === 3) {
+      throw new Error(lastStatus.message || '豆包声音复刻失败')
+    }
+  }
+
+  throw new Error(lastStatus.message || '豆包声音复刻超时，请稍后重试或到官方控制台查看状态')
+}
+
+export async function clonePersonaVoiceFromSession(input: PersonaVoiceCloneInput): Promise<PersonaVoiceCloneResult> {
+  const sessionId = String(input.sessionId || '').trim()
+  const logger = input.logger || null
+  try {
+    if (!sessionId) return { success: false, error: '缺少 sessionId' }
+    const current = personaStore.get(sessionId)
+    if (!current) return { success: false, error: '请先克隆数字分身，再克隆声音' }
+
+    const cfg = getTtsConfig()
+    const volcengine = cfg.providers.volcengine
+    if (!volcengine?.apiKey) {
+      return { success: false, error: '未配置火山引擎/豆包 API Key，请先在 TTS 设置里填写豆包密钥' }
+    }
+
+    const displayName = String(input.displayName || current.displayName || sessionId).trim()
+    const speakerId = makeCustomSpeakerId(sessionId)
+    const sample = await collectVoiceSample(sessionId)
+    const clone = await cloneVolcengineVoice(volcengine.apiKey, speakerId, displayName, sample)
+    const now = Date.now()
+    const voice: PersonaTtsVoiceBinding = {
+      provider: 'volcengine',
+      protocol: 'volcengine-bidirectional',
+      source: 'volcengine-voice-clone',
+      baseURL: volcengine.baseURL || VOLCENGINE_DEFAULT_TTS_ENDPOINT,
+      model: VOLCENGINE_VOICE_RESOURCE_ID,
+      voice: clone.speakerId,
+      displayName,
+      sampleCount: sample.sampleCount,
+      sampleSeconds: sample.sampleSeconds,
+      modelType: clone.status.modelType || VOLCENGINE_VOICE_MODEL_TYPE,
+      createdAt: current.ttsVoice?.createdAt || now,
+      updatedAt: now,
+    }
+    const updated = personaStore.patch(sessionId, { ttsVoice: voice })
+    if (!updated) return { success: false, error: '保存分身音色失败' }
+
+    logger?.warn?.('PersonaVoice', '声音复刻完成并绑定到数字分身', {
+      sessionId,
+      displayName,
+      speakerId: clone.speakerId,
+      sampleCount: sample.sampleCount,
+      sampleSeconds: sample.sampleSeconds,
+      modelType: voice.modelType,
+    })
+    return { success: true, persona: updated, voice }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e)
+    logger?.error?.('PersonaVoice', '声音复刻失败', { sessionId, error: message })
+    return { success: false, error: message }
+  }
+}

@@ -6,7 +6,7 @@ import Database from 'better-sqlite3'
 import { existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { ConfigService } from '../../config'
-import type { PersonaCard, PersonaFewShot, PersonaProfile, PersonaRecord, PersonaStats, PersonaSticker } from './personaTypes'
+import type { PersonaCard, PersonaFewShot, PersonaProfile, PersonaRecord, PersonaStats, PersonaSticker, PersonaTtsVoiceBinding } from './personaTypes'
 
 const DB_NAME = 'agent_personas.db'
 
@@ -20,6 +20,7 @@ interface PersonaRow {
   stats_json: string
   profile_json: string | null
   stickers_json: string | null
+  tts_voice_json: string | null
   corpus_until: number
   model_provider: string
   model_id: string
@@ -36,6 +37,8 @@ export interface PersonaUpsertInput {
   profile?: PersonaProfile | null
   /** TA 常用的表情包词典 */
   stickers?: PersonaSticker[]
+  /** TA 的专属复刻音色；不传时保留旧值。 */
+  ttsVoice?: PersonaTtsVoiceBinding | null
   /** 已蒸馏到的消息时间水位（createTime 秒） */
   corpusUntil?: number
   modelProvider: string
@@ -49,6 +52,7 @@ export interface PersonaPatchInput {
   stats?: PersonaStats
   profile?: PersonaProfile | null
   stickers?: PersonaSticker[]
+  ttsVoice?: PersonaTtsVoiceBinding | null
   corpusUntil?: number
 }
 
@@ -78,6 +82,7 @@ function rowToRecord(row: PersonaRow): PersonaRecord {
     stats: JSON.parse(row.stats_json) as PersonaStats,
     profile: safeParse<PersonaProfile>(row.profile_json),
     stickers: safeParse<PersonaSticker[]>(row.stickers_json) || [],
+    ttsVoice: safeParse<PersonaTtsVoiceBinding>(row.tts_voice_json),
     corpusUntil: Number(row.corpus_until || 0),
     modelProvider: row.model_provider,
     modelId: row.model_id,
@@ -146,6 +151,7 @@ export class PersonaStore {
       'ALTER TABLE personas ADD COLUMN profile_json TEXT',
       'ALTER TABLE personas ADD COLUMN corpus_until INTEGER NOT NULL DEFAULT 0',
       'ALTER TABLE personas ADD COLUMN stickers_json TEXT',
+      'ALTER TABLE personas ADD COLUMN tts_voice_json TEXT',
     ]) {
       try { db.exec(ddl) } catch { /* 列已存在 */ }
     }
@@ -172,8 +178,8 @@ export class PersonaStore {
     const now = Date.now()
     this.getDb()
       .prepare(`
-        INSERT INTO personas (account_id, session_id, display_name, card_json, few_shots_json, stats_json, profile_json, stickers_json, corpus_until, model_provider, model_id, created_at, updated_at)
-        VALUES (@accountId, @sessionId, @displayName, @cardJson, @fewShotsJson, @statsJson, @profileJson, @stickersJson, @corpusUntil, @modelProvider, @modelId, @now, @now)
+        INSERT INTO personas (account_id, session_id, display_name, card_json, few_shots_json, stats_json, profile_json, stickers_json, tts_voice_json, corpus_until, model_provider, model_id, created_at, updated_at)
+        VALUES (@accountId, @sessionId, @displayName, @cardJson, @fewShotsJson, @statsJson, @profileJson, @stickersJson, @ttsVoiceJson, @corpusUntil, @modelProvider, @modelId, @now, @now)
         ON CONFLICT(account_id, session_id) DO UPDATE SET
           display_name = excluded.display_name,
           card_json = excluded.card_json,
@@ -181,6 +187,7 @@ export class PersonaStore {
           stats_json = excluded.stats_json,
           profile_json = excluded.profile_json,
           stickers_json = excluded.stickers_json,
+          tts_voice_json = COALESCE(excluded.tts_voice_json, personas.tts_voice_json),
           corpus_until = excluded.corpus_until,
           model_provider = excluded.model_provider,
           model_id = excluded.model_id,
@@ -195,6 +202,7 @@ export class PersonaStore {
         statsJson: JSON.stringify(input.stats),
         profileJson: input.profile ? JSON.stringify(input.profile) : null,
         stickersJson: input.stickers?.length ? JSON.stringify(input.stickers) : null,
+        ttsVoiceJson: input.ttsVoice ? JSON.stringify(input.ttsVoice) : null,
         corpusUntil: input.corpusUntil || 0,
         modelProvider: input.modelProvider,
         modelId: input.modelId,
@@ -210,6 +218,7 @@ export class PersonaStore {
     const current = this.get(sessionId)
     if (!current) return null
     const nextProfile = input.profile !== undefined ? input.profile : current.profile
+    const nextTtsVoice = input.ttsVoice !== undefined ? input.ttsVoice : current.ttsVoice
     this.getDb()
       .prepare(`
         UPDATE personas SET
@@ -218,6 +227,7 @@ export class PersonaStore {
           stats_json = @statsJson,
           profile_json = @profileJson,
           stickers_json = @stickersJson,
+          tts_voice_json = @ttsVoiceJson,
           corpus_until = @corpusUntil,
           updated_at = @now
         WHERE account_id = @accountId AND session_id = @sessionId
@@ -230,6 +240,7 @@ export class PersonaStore {
         statsJson: JSON.stringify(input.stats ?? current.stats),
         profileJson: nextProfile ? JSON.stringify(nextProfile) : null,
         stickersJson: (input.stickers ?? current.stickers)?.length ? JSON.stringify(input.stickers ?? current.stickers) : null,
+        ttsVoiceJson: nextTtsVoice ? JSON.stringify(nextTtsVoice) : null,
         corpusUntil: input.corpusUntil ?? current.corpusUntil,
         now: Date.now(),
       })

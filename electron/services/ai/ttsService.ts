@@ -11,6 +11,7 @@ import { createHash } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { ConfigService } from '../config'
+import type { PersonaTtsVoiceBinding } from '../agent/persona/personaTypes'
 import { createProxyFetch, getResolvedProxyUrl } from './proxyFetch'
 import { VOLCENGINE_DEFAULT_TTS_ENDPOINT, synthesizeViaVolcengineBidirectional } from './volcengineTtsProtocol'
 
@@ -251,6 +252,42 @@ export function getTtsConfig(): TtsConfig {
     return normalizeTtsConfig(cfg as Partial<TtsConfig>)
   } finally {
     cs.close()
+  }
+}
+
+/** persona 专属音色是否可用：绑定存在，且全局豆包 provider 留有 API Key。 */
+export function isPersonaTtsVoiceAvailable(ttsVoice?: PersonaTtsVoiceBinding | null): boolean {
+  if (!ttsVoice?.voice || ttsVoice.provider !== 'volcengine') return false
+  const cfg = getTtsConfig()
+  const volcengine = cfg.providers.volcengine
+  return Boolean(volcengine?.apiKey && (ttsVoice.model || 'seed-icl-2.0'))
+}
+
+/**
+ * 把 persona 专属音色转换为一次性 TTS 配置。
+ * 不保存密钥到 persona；这里从全局豆包 provider 取 key，保证切到小米后分身仍能显式走豆包。
+ */
+export function resolvePersonaVoiceTtsConfig(
+  ttsVoice: PersonaTtsVoiceBinding,
+  overrides: Partial<TtsConfig> = {},
+): Partial<TtsConfig> {
+  const cfg = getTtsConfig()
+  const volcengine = cfg.providers.volcengine
+  const instructions = String(overrides.instructions ?? '').trim() || volcengine.instructions
+  const speed = Number.isFinite(Number(overrides.speed)) && Number(overrides.speed) > 0
+    ? Number(overrides.speed)
+    : volcengine.speed
+
+  return {
+    enabled: true,
+    activeProvider: 'volcengine',
+    protocol: 'volcengine-bidirectional',
+    apiKey: volcengine.apiKey,
+    baseURL: String(ttsVoice.baseURL || volcengine.baseURL || VOLCENGINE_DEFAULT_TTS_ENDPOINT),
+    model: String(ttsVoice.model || 'seed-icl-2.0'),
+    voice: String(ttsVoice.voice || ''),
+    instructions,
+    speed,
   }
 }
 

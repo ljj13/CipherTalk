@@ -95,6 +95,24 @@ export interface PersonaStats {
   groupSessionCount?: number
 }
 
+/** 数字分身绑定的专属 TTS 音色。密钥不落库，合成时读取全局服务商配置。 */
+export interface PersonaTtsVoiceBinding {
+  provider: 'volcengine'
+  protocol: 'volcengine-bidirectional'
+  source: 'volcengine-voice-clone'
+  baseURL: string
+  /** X-Api-Resource-Id；复刻音色固定走 seed-icl-2.0。 */
+  model: string
+  /** 火山/豆包 speaker_id。 */
+  voice: string
+  displayName?: string
+  sampleCount?: number
+  sampleSeconds?: number
+  modelType?: number
+  createdAt: number
+  updatedAt: number
+}
+
 export interface PersonaRecord {
   id: number
   accountId: string
@@ -107,6 +125,8 @@ export interface PersonaRecord {
   profile: PersonaProfile | null
   /** TA 常用的表情包词典（旧记录为空数组，重建后才有） */
   stickers: PersonaSticker[]
+  /** TA 的专属复刻音色；存在时分身语音优先使用它，不跟随全局当前 TTS 服务商。 */
+  ttsVoice: PersonaTtsVoiceBinding | null
   /** 已蒸馏到的消息时间水位（createTime 秒），增量进化用 */
   corpusUntil: number
   modelProvider: string
@@ -187,6 +207,8 @@ export interface PersonaChatPersona {
   notes?: PersonaNotes
   /** TA 常用的表情包词典；模型按编号点播，引擎换成真实表情包气泡 */
   stickers?: PersonaSticker[]
+  /** TA 的专属复刻音色；只影响语音气泡，不影响文本生成模型。 */
+  ttsVoice?: PersonaTtsVoiceBinding | null
 }
 
 /** 主进程 → AI 子进程的克隆聊天请求载荷。 */

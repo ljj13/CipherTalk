@@ -8,7 +8,8 @@ import { tmpdir } from 'os'
 import { extname, join } from 'path'
 import { ConfigService } from '../config'
 import { getAppPath, isElectronPackaged } from '../runtimePaths'
-import { synthesizeSpeech } from '../ai/ttsService'
+import { resolvePersonaVoiceTtsConfig, synthesizeSpeech } from '../ai/ttsService'
+import type { PersonaTtsVoiceBinding } from '../agent/persona/personaTypes'
 
 export interface WeixinVoiceFile {
   filePath: string
@@ -101,11 +102,18 @@ function convertAudioToWav(inputPath: string, outputPath: string): Promise<void>
   })
 }
 
-export async function synthesizeWeixinVoice(text: string): Promise<WeixinVoiceFile> {
+export async function synthesizeWeixinVoice(
+  text: string,
+  options: { personaVoice?: PersonaTtsVoiceBinding | null; instructions?: string } = {},
+): Promise<WeixinVoiceFile> {
   const input = String(text || '').trim().slice(0, MAX_VOICE_TEXT_CHARS)
   if (!input) throw new Error('语音内容为空')
 
-  const speech = await synthesizeSpeech(input, { useCache: true })
+  const configPatch = options.instructions ? { instructions: options.instructions } : undefined
+  const config = options.personaVoice
+    ? resolvePersonaVoiceTtsConfig(options.personaVoice, configPatch)
+    : configPatch
+  const speech = await synthesizeSpeech(input, config ? { config, useCache: true } : { useCache: true })
   if (!speech.success || !speech.audioBase64) {
     throw new Error(speech.error || 'TTS 合成失败')
   }

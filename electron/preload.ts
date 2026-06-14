@@ -202,6 +202,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('persona:list') as Promise<{ success: boolean; personas?: unknown[]; error?: string }>,
     build: (payload: { sessionId: string; displayName?: string }) =>
       ipcRenderer.invoke('persona:build', payload) as Promise<{ success: boolean; persona?: unknown; error?: string }>,
+    cloneVoice: (payload: { sessionId: string; displayName?: string }) =>
+      ipcRenderer.invoke('persona:cloneVoice', payload) as Promise<{ success: boolean; persona?: unknown; voice?: unknown; error?: string }>,
     delete: (sessionId: string) =>
       ipcRenderer.invoke('persona:delete', sessionId) as Promise<{ success: boolean; error?: string }>,
     refreshIfStale: (sessionId: string) =>

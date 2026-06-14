@@ -58,6 +58,7 @@ export interface TtsSpeakResult {
 
 export interface TtsSpeakOptions {
   config?: Partial<TtsConfig>
+  personaVoice?: PersonaTtsVoiceBindingInfo | null
 }
 
 export interface ImageGenConfig {
@@ -201,6 +202,21 @@ export interface PersonaProfileInfo {
   sharedEvents: string[]
 }
 
+export interface PersonaTtsVoiceBindingInfo {
+  provider: 'volcengine'
+  protocol: 'volcengine-bidirectional'
+  source: 'volcengine-voice-clone'
+  baseURL: string
+  model: string
+  voice: string
+  displayName?: string
+  sampleCount?: number
+  sampleSeconds?: number
+  modelType?: number
+  createdAt: number
+  updatedAt: number
+}
+
 export interface PersonaRecordInfo {
   id: number
   accountId: string
@@ -213,6 +229,7 @@ export interface PersonaRecordInfo {
     friendMessageCount: number
     avgFriendMsgChars: number
     avgFriendBurst: number
+    voiceRatio?: number
     groupMessageCount?: number
     groupSessionCount?: number
   }
@@ -226,6 +243,7 @@ export interface PersonaRecordInfo {
     count: number
     contexts: string[]
   }>
+  ttsVoice: PersonaTtsVoiceBindingInfo | null
   corpusUntil: number
   modelProvider: string
   modelId: string
@@ -1179,6 +1197,7 @@ export interface ElectronAPI {
     get: (sessionId: string) => Promise<{ success: boolean; persona?: PersonaRecordInfo | null; error?: string }>
     list: () => Promise<{ success: boolean; personas?: PersonaRecordInfo[]; error?: string }>
     build: (payload: { sessionId: string; displayName?: string }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; error?: string }>
+    cloneVoice: (payload: { sessionId: string; displayName?: string }) => Promise<{ success: boolean; persona?: PersonaRecordInfo; voice?: PersonaTtsVoiceBindingInfo; error?: string }>
     delete: (sessionId: string) => Promise<{ success: boolean; error?: string }>
     refreshIfStale: (sessionId: string) => Promise<{ success: boolean; refreshed?: boolean; persona?: PersonaRecordInfo | null; error?: string }>
     reflect: (payload: { sessionId: string; conversationId: number }) => Promise<{ success: boolean; reflected?: boolean; error?: string }>
