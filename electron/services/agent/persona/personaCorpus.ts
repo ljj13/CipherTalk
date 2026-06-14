@@ -88,6 +88,18 @@ function computeStats(turns: PersonaTurn[]): PersonaStats {
   }
 }
 
+/** 对方语音消息占比：语音 / (文本 + 语音)，按原始消息数（含未转写语音），反映本人爱不爱用语音。 */
+function computeVoiceRatio(messages: ChatSearchMemoryMessage[]): number {
+  let voice = 0
+  let convo = 0
+  for (const m of messages) {
+    if (m.isSend === 1) continue // 只看对方（被克隆者）
+    if (m.localType === 1) convo += 1
+    else if (m.localType === 34) { convo += 1; voice += 1 }
+  }
+  return convo > 0 ? Math.round((voice / convo) * 1000) / 1000 : 0
+}
+
 /** 把轮次渲染成「我: xxx／xxx」式对话文本；从最新往回装，装满预算后按时间正序输出。 */
 function renderCorpus(turns: PersonaTurn[], friendName: string): { text: string; usedTurns: number } {
   const lines: string[] = []
@@ -105,6 +117,7 @@ function renderCorpus(turns: PersonaTurn[], friendName: string): { text: string;
 export function buildPersonaCorpus(messages: ChatSearchMemoryMessage[], friendName: string): PersonaCorpus {
   const turns = mergeTurns(messages)
   const stats = computeStats(turns)
+  stats.voiceRatio = computeVoiceRatio(messages)
   const { text } = renderCorpus(turns, friendName)
   return { corpusText: text, stats, turnCount: turns.length }
 }

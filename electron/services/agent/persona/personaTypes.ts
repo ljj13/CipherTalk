@@ -87,6 +87,8 @@ export interface PersonaStats {
   avgFriendMsgChars: number
   /** 对方平均一轮连发几条 */
   avgFriendBurst: number
+  /** 对方语音消息占比（语音数 / (文本+语音)，含未转写语音）；旧记录无此值，重建后才有 */
+  voiceRatio?: number
   /** 私聊语料不足时补充收集的群聊发言条数（仅喂风格卡/深层画像，不进问答对） */
   groupMessageCount?: number
   /** 群聊发言来自几个群 */

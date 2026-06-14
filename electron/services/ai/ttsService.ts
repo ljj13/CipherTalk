@@ -1,35 +1,36 @@
 /**
  * 文字转语音服务 —— 独立的 TTS 配置（朗读 AI 回复/微信消息/角色语音回复用），与聊天模型分开。
- * 配置存 ConfigService.ttsConfig，支持三种接口形态（protocol）：
- * - openai-speech：标准 /audio/speech 专用端点（硅基流动 CosyVoice、OpenAI tts 等），走 AI SDK generateSpeech
- * - openai-chat：聊天接口出音频（gpt-4o-audio 风格 /chat/completions + modalities，小米等平台），直连 fetch
- * - custom：完整接口地址，按 OpenAI speech 兼容 JSON 形态直连 fetch，不自动拼接路径
+ * 配置存 ConfigService.ttsConfig，仅保留两类服务：
+ * - xiaomi-mimo-tts：小米 MiMo V2.5 TTS 专用 /chat/completions，按 api-key + audio 参数直连 fetch
+ * - volcengine-bidirectional：火山引擎/豆包 V3 WebSocket 双向流式接口，按文档二进制协议合成后回传完整音频
+ * 每个服务商配置独立保存在 providers 下，切换服务商不会覆盖另一套 key/model/voice。
  * 可在主进程与 AI 子进程复用（ConfigService 在两边都能解析路径）。
  */
-import { experimental_generateSpeech as generateSpeech } from 'ai'
-import { createOpenAI } from '@ai-sdk/openai'
 import Database from 'better-sqlite3'
 import { createHash } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { ConfigService } from '../config'
 import { createProxyFetch, getResolvedProxyUrl } from './proxyFetch'
+import { VOLCENGINE_DEFAULT_TTS_ENDPOINT, synthesizeViaVolcengineBidirectional } from './volcengineTtsProtocol'
 
-export type TtsProtocol = 'openai-speech' | 'openai-chat' | 'custom'
+export type TtsProviderId = 'xiaomi' | 'volcengine'
+export type TtsProtocol = 'xiaomi-mimo-tts' | 'volcengine-bidirectional'
 
-export interface TtsConfig {
-  enabled: boolean
-  /** 接口形态；旧配置无此字段，按 openai-speech 处理 */
+export interface TtsProviderConfig {
   protocol: TtsProtocol
   apiKey: string
   baseURL: string
   model: string
-  /** 音色。硅基流动格式如 FunAudioLLM/CosyVoice2-0.5B:alex；OpenAI 如 alloy。 */
   voice: string
-  /** 语气/风格指令。支持的语音模型会按自然语言控制朗读方式。 */
   instructions: string
-  /** 语速，1 = 正常。 */
   speed: number
+}
+
+export interface TtsConfig extends TtsProviderConfig {
+  enabled: boolean
+  activeProvider: TtsProviderId
+  providers: Record<TtsProviderId, TtsProviderConfig>
 }
 
 export interface TtsSynthesisResult {
@@ -43,7 +44,7 @@ export interface TtsSynthesisResult {
   errorCode?: 'NOT_CONFIGURED' | 'SYNTHESIS_FAILED'
 }
 
-/** 单次合成的文本上限，超长截断（OpenAI /audio/speech 上限 4096 字符）。 */
+/** 单次合成的文本上限，超长截断，避免长消息造成 TTS 请求过大。 */
 const MAX_TTS_INPUT_CHARS = 4000
 const TTS_CHAT_TIMEOUT_MS = 90000
 const TTS_CACHE_DB_NAME = 'tts-cache.db'
@@ -54,17 +55,200 @@ let cacheDb: Database.Database | null = null
 let cacheDbPath: string | null = null
 const pendingSyntheses = new Map<string, Promise<TtsSynthesisResult>>()
 
+type VolcengineTtsResourceGroup = 'legacyTts' | 'tts2' | 'icl2'
+
+const VOLCENGINE_RESOURCE_GROUPS: Record<string, VolcengineTtsResourceGroup> = {
+  'seed-tts-2.0': 'tts2',
+  'seed-icl-2.0': 'icl2',
+}
+
+const VOLCENGINE_LEGACY_RESOURCE_MIGRATIONS: Record<string, string> = {
+  'seed-tts-1.0': 'seed-tts-2.0',
+  'seed-tts-1.0-concurr': 'seed-tts-2.0',
+  'seed-icl-1.0': 'seed-icl-2.0',
+  'seed-icl-1.0-concurr': 'seed-icl-2.0',
+}
+
+const VOLCENGINE_RESOURCE_DEFAULT_SPEAKERS: Record<string, string> = {
+  'seed-tts-2.0': 'zh_female_shuangkuaisisi_uranus_bigtts',
+}
+
+const XIAOMI_MIMO_DEFAULT_BASE_URL = 'https://api.xiaomimimo.com/v1'
+const XIAOMI_MIMO_DEFAULT_MODEL = 'mimo-v2.5-tts'
+const XIAOMI_MIMO_DEFAULT_VOICE = 'mimo_default'
+
+const XIAOMI_MIMO_MODEL_DEFAULT_VOICES: Record<string, string> = {
+  'mimo-v2.5-tts': XIAOMI_MIMO_DEFAULT_VOICE,
+  'mimo-v2.5-tts-voicedesign': '',
+  'mimo-v2.5-tts-voiceclone': '',
+}
+
+const DEFAULT_XIAOMI_TTS_PROVIDER: TtsProviderConfig = {
+  protocol: 'xiaomi-mimo-tts',
+  apiKey: '',
+  baseURL: XIAOMI_MIMO_DEFAULT_BASE_URL,
+  model: XIAOMI_MIMO_DEFAULT_MODEL,
+  voice: XIAOMI_MIMO_DEFAULT_VOICE,
+  instructions: '',
+  speed: 1,
+}
+
+const DEFAULT_VOLCENGINE_TTS_PROVIDER: TtsProviderConfig = {
+  protocol: 'volcengine-bidirectional',
+  apiKey: '',
+  baseURL: VOLCENGINE_DEFAULT_TTS_ENDPOINT,
+  model: 'seed-tts-2.0',
+  voice: VOLCENGINE_RESOURCE_DEFAULT_SPEAKERS['seed-tts-2.0'],
+  instructions: '',
+  speed: 1,
+}
+
+const DEFAULT_TTS_PROVIDERS: Record<TtsProviderId, TtsProviderConfig> = {
+  xiaomi: DEFAULT_XIAOMI_TTS_PROVIDER,
+  volcengine: DEFAULT_VOLCENGINE_TTS_PROVIDER,
+}
+
+const DEFAULT_TTS_CONFIG: TtsConfig = {
+  enabled: false,
+  activeProvider: 'xiaomi',
+  ...DEFAULT_XIAOMI_TTS_PROVIDER,
+  providers: {
+    xiaomi: { ...DEFAULT_XIAOMI_TTS_PROVIDER },
+    volcengine: { ...DEFAULT_VOLCENGINE_TTS_PROVIDER },
+  },
+}
+
+function normalizeVolcengineResourceId(resourceId: string): string {
+  const normalized = String(resourceId || '').trim()
+  return VOLCENGINE_LEGACY_RESOURCE_MIGRATIONS[normalized] || normalized
+}
+
+function getVolcengineSpeakerGroup(speaker: string): VolcengineTtsResourceGroup | null {
+  const normalized = String(speaker || '').trim()
+  if (!normalized) return null
+  if (/^(S_|icl_)/.test(normalized)) return 'icl2'
+  if (normalized.endsWith('_uranus_bigtts') || /^saturn_.+_tob$/.test(normalized)) return 'tts2'
+  if (
+    normalized === 'custom_mix_bigtts' ||
+    /^BV\d+_streaming$/i.test(normalized) ||
+    normalized.endsWith('_moon_bigtts') ||
+    normalized.endsWith('_mars_bigtts') ||
+    normalized.includes('_emo_v2_mars_bigtts') ||
+    normalized.includes('_conversation_wvae_bigtts')
+  ) {
+    return 'legacyTts'
+  }
+  return null
+}
+
+function normalizeVolcengineTtsConfig(cfg: TtsProviderConfig): TtsProviderConfig {
+  if (cfg.protocol !== 'volcengine-bidirectional') return cfg
+
+  const resourceId = normalizeVolcengineResourceId(cfg.model)
+  const speaker = String(cfg.voice || '').trim()
+  const resourceGroup = VOLCENGINE_RESOURCE_GROUPS[resourceId]
+  const speakerGroup = getVolcengineSpeakerGroup(speaker)
+  if (!resourceGroup || !speakerGroup || resourceGroup === speakerGroup) {
+    return resourceId === cfg.model ? cfg : { ...cfg, model: resourceId }
+  }
+
+  const fallbackSpeaker = VOLCENGINE_RESOURCE_DEFAULT_SPEAKERS[resourceId] || ''
+  if (resourceId === cfg.model && fallbackSpeaker === cfg.voice) return cfg
+  return { ...cfg, model: resourceId, voice: fallbackSpeaker }
+}
+
+function normalizeXiaomiMimoTtsConfig(cfg: TtsProviderConfig): TtsProviderConfig {
+  if (cfg.protocol !== 'xiaomi-mimo-tts') return cfg
+
+  const baseURL = normalizeTtsBaseURL(cfg.baseURL) || XIAOMI_MIMO_DEFAULT_BASE_URL
+  const model = String(cfg.model || '').trim() || XIAOMI_MIMO_DEFAULT_MODEL
+  const defaultVoice = XIAOMI_MIMO_MODEL_DEFAULT_VOICES[model]
+  const voice = model === 'mimo-v2.5-tts-voicedesign'
+    ? ''
+    : defaultVoice === undefined
+      ? String(cfg.voice || '').trim()
+      : String(cfg.voice || defaultVoice).trim()
+
+  if (baseURL === cfg.baseURL && model === cfg.model && voice === cfg.voice) return cfg
+  return { ...cfg, baseURL, model, voice }
+}
+
+function getProviderIdForProtocol(protocol: unknown): TtsProviderId {
+  return protocol === 'volcengine-bidirectional' ? 'volcengine' : 'xiaomi'
+}
+
+function normalizeProviderId(provider: unknown, fallback: TtsProviderId = 'xiaomi'): TtsProviderId {
+  return provider === 'volcengine' || provider === 'xiaomi' ? provider : fallback
+}
+
+function normalizeProviderConfig(provider: TtsProviderId, config: Partial<TtsProviderConfig> = {}): TtsProviderConfig {
+  const defaults = DEFAULT_TTS_PROVIDERS[provider]
+  const merged: TtsProviderConfig = {
+    ...defaults,
+    ...config,
+    protocol: defaults.protocol,
+    apiKey: String(config.apiKey ?? defaults.apiKey ?? ''),
+    baseURL: String(config.baseURL ?? defaults.baseURL ?? ''),
+    model: String(config.model ?? defaults.model ?? ''),
+    voice: String(config.voice ?? defaults.voice ?? ''),
+    instructions: String(config.instructions ?? defaults.instructions ?? ''),
+    speed: Number.isFinite(Number(config.speed)) && Number(config.speed) > 0 ? Number(config.speed) : defaults.speed,
+  }
+  return provider === 'volcengine'
+    ? normalizeVolcengineTtsConfig(merged)
+    : normalizeXiaomiMimoTtsConfig(merged)
+}
+
+function hasFlatProviderPatch(value: Partial<TtsConfig>): boolean {
+  return ['protocol', 'apiKey', 'baseURL', 'model', 'voice', 'instructions', 'speed']
+    .some((key) => Object.prototype.hasOwnProperty.call(value, key))
+}
+
+function normalizeTtsConfig(raw: Partial<TtsConfig> = {}): TtsConfig {
+  const rawProviders = (raw.providers && typeof raw.providers === 'object'
+    ? raw.providers
+    : {}) as Partial<Record<TtsProviderId, Partial<TtsProviderConfig>>>
+  const fallbackProvider = getProviderIdForProtocol(raw.protocol)
+  const activeProvider = normalizeProviderId(raw.activeProvider, fallbackProvider)
+  const providers: Record<TtsProviderId, TtsProviderConfig> = {
+    xiaomi: normalizeProviderConfig('xiaomi', rawProviders.xiaomi),
+    volcengine: normalizeProviderConfig('volcengine', rawProviders.volcengine),
+  }
+
+  if (hasFlatProviderPatch(raw)) {
+    const flatProvider = normalizeProviderId(raw.activeProvider, getProviderIdForProtocol(raw.protocol))
+    providers[flatProvider] = normalizeProviderConfig(flatProvider, {
+      ...providers[flatProvider],
+      protocol: raw.protocol,
+      apiKey: raw.apiKey,
+      baseURL: raw.baseURL,
+      model: raw.model,
+      voice: raw.voice,
+      instructions: raw.instructions,
+      speed: raw.speed,
+    })
+  }
+
+  const activeConfig = providers[activeProvider]
+  return {
+    ...DEFAULT_TTS_CONFIG,
+    enabled: raw.enabled === true,
+    activeProvider,
+    ...activeConfig,
+    providers,
+  }
+}
+
+function isXiaomiMimoVoiceCloneSample(voice: string): boolean {
+  return /^data:audio\/(?:mpeg|mp3|wav|x-wav);base64,/i.test(String(voice || '').trim())
+}
+
 /** 读取持久化的 TTS 配置。 */
 export function getTtsConfig(): TtsConfig {
   const cs = new ConfigService()
   try {
     const cfg = cs.get('ttsConfig')
-    // 旧版本持久化的配置没有 protocol 字段，补默认
-    return {
-      ...cfg,
-      protocol: cfg.protocol || 'openai-speech',
-      instructions: String((cfg as Partial<TtsConfig>).instructions || ''),
-    }
+    return normalizeTtsConfig(cfg as Partial<TtsConfig>)
   } finally {
     cs.close()
   }
@@ -74,13 +258,15 @@ export function getTtsConfig(): TtsConfig {
 export function saveTtsConfig(patch: Partial<TtsConfig>): TtsConfig {
   const cs = new ConfigService()
   try {
-    const stored = cs.get('ttsConfig')
-    const next: TtsConfig = {
+    const stored = normalizeTtsConfig(cs.get('ttsConfig') as Partial<TtsConfig>)
+    const next = normalizeTtsConfig({
       ...stored,
       ...patch,
-      protocol: patch.protocol || stored.protocol || 'openai-speech',
-      instructions: String(patch.instructions ?? stored.instructions ?? ''),
-    }
+      providers: {
+        ...stored.providers,
+        ...(patch.providers || {}),
+      },
+    })
     cs.set('ttsConfig', next)
     return next
   } finally {
@@ -90,13 +276,27 @@ export function saveTtsConfig(patch: Partial<TtsConfig>): TtsConfig {
 
 /** TTS 是否可用：启用且配了 key/模型。渲染端据此决定走在线合成还是系统朗读。 */
 export function isTtsAvailable(cfg: TtsConfig = getTtsConfig()): boolean {
-  return cfg.enabled && Boolean(cfg.apiKey) && Boolean(cfg.model)
+  const needsXiaomiVoice = cfg.protocol === 'xiaomi-mimo-tts' &&
+    cfg.model !== 'mimo-v2.5-tts-voicedesign'
+  return cfg.enabled &&
+    Boolean(cfg.apiKey) &&
+    Boolean(cfg.model) &&
+    (cfg.protocol !== 'volcengine-bidirectional' || Boolean(cfg.voice)) &&
+    (!needsXiaomiVoice || Boolean(cfg.voice))
 }
 
 function validateTtsConfig(cfg: TtsConfig): string | null {
   if (!cfg.apiKey) return '未配置 TTS API Key'
   if (!cfg.model) return '未配置 TTS 模型'
-  if (cfg.protocol === 'custom' && !cfg.baseURL) return '自定义接口必须填写完整接口地址'
+  if (cfg.protocol === 'volcengine-bidirectional' && !cfg.voice) return '未配置火山引擎音色 Speaker'
+  if (cfg.protocol === 'xiaomi-mimo-tts' && cfg.model !== 'mimo-v2.5-tts-voicedesign' && !cfg.voice) {
+    return cfg.model === 'mimo-v2.5-tts-voiceclone'
+      ? '未配置小米音色样本 Data URL'
+      : '未配置小米预置音色'
+  }
+  if (cfg.protocol === 'xiaomi-mimo-tts' && cfg.model === 'mimo-v2.5-tts-voiceclone' && !isXiaomiMimoVoiceCloneSample(cfg.voice)) {
+    return '小米音色复刻样本必须是 data:audio/mpeg;base64,... 或 data:audio/wav;base64,...'
+  }
   if (cfg.baseURL) {
     try {
       new URL(cfg.baseURL)
@@ -105,6 +305,10 @@ function validateTtsConfig(cfg: TtsConfig): string | null {
     }
   }
   return null
+}
+
+function getVolcengineEndpoint(cfg: TtsConfig): string {
+  return normalizeTtsBaseURL(cfg.baseURL) || VOLCENGINE_DEFAULT_TTS_ENDPOINT
 }
 
 /** 把各种异常拼成带 HTTP 状态/响应体的可诊断信息（AI SDK 的 APICallError 自带这些字段）。 */
@@ -177,17 +381,34 @@ function normalizeTtsInstructions(instructions: string): string {
   return String(instructions || '').trim().slice(0, 1000)
 }
 
+function getChatCompletionsEndpoint(baseURL: string): string {
+  const normalized = normalizeTtsBaseURL(baseURL)
+  if (/\/chat\/completions$/i.test(normalized)) return normalized
+  return `${normalized}/chat/completions`
+}
+
+function getXiaomiMimoSpeedInstruction(speed: number): string {
+  const normalized = normalizeTtsSpeed(speed)
+  if (normalized <= 0.85) return '语速偏慢，停顿更从容。'
+  if (normalized >= 1.15) return '语速偏快，表达更轻快。'
+  return ''
+}
+
+function stripBase64DataUrl(value: string): string {
+  return String(value || '').trim().replace(/^data:[^;]+;base64,/i, '')
+}
+
 function createTtsCacheKey(text: string, cfg: TtsConfig): string {
   return createHash('sha256').update(JSON.stringify({
     version: TTS_CACHE_VERSION,
     text,
-    protocol: cfg.protocol || 'openai-speech',
+    protocol: cfg.protocol,
     baseURL: normalizeTtsBaseURL(cfg.baseURL),
     model: cfg.model,
     voice: cfg.voice || '',
     instructions: normalizeTtsInstructions(cfg.instructions),
     speed: normalizeTtsSpeed(cfg.speed),
-    format: 'mp3',
+    format: cfg.protocol === 'xiaomi-mimo-tts' ? 'wav' : 'mp3',
   })).digest('hex')
 }
 
@@ -254,7 +475,7 @@ function writeTtsCache(cacheKey: string, text: string, cfg: TtsConfig, result: T
     `).run(
       cacheKey,
       createHash('sha256').update(text).digest('hex'),
-      cfg.protocol || 'openai-speech',
+      cfg.protocol,
       normalizeTtsBaseURL(cfg.baseURL),
       cfg.model,
       cfg.voice || '',
@@ -302,55 +523,45 @@ export function clearTtsCache(): { success: boolean; error?: string } {
   }
 }
 
-/** openai-speech：标准 /audio/speech 端点（AI SDK generateSpeech）。 */
-async function synthesizeViaSpeechApi(text: string, cfg: TtsConfig, signal?: AbortSignal): Promise<TtsSynthesisResult> {
-  const fetch = createProxyFetch(getResolvedProxyUrl())
-  const model = createOpenAI({
-    apiKey: cfg.apiKey,
-    baseURL: cfg.baseURL || undefined,
-    name: 'tts',
-    fetch,
-  }).speech(cfg.model)
-
-  const { audio } = await generateSpeech({
-    model,
-    text,
-    voice: cfg.voice || undefined,
-    instructions: normalizeTtsInstructions(cfg.instructions) || undefined,
-    speed: cfg.speed && cfg.speed !== 1 ? cfg.speed : undefined,
-    outputFormat: 'mp3',
-    maxRetries: 1,
-    abortSignal: signal,
-  })
-
-  return {
-    success: true,
-    audioBase64: audio.base64,
-    mimeType: audio.mediaType || 'audio/mpeg',
-  }
-}
-
-/** custom：完整接口地址，按 OpenAI /audio/speech 兼容 JSON 请求，直接读取音频响应。 */
-async function synthesizeViaCustomApi(text: string, cfg: TtsConfig, signal?: AbortSignal): Promise<TtsSynthesisResult> {
+/** xiaomi-mimo-tts：小米 MiMo V2.5 TTS，按官方 /chat/completions 音频参数调用。 */
+async function synthesizeViaXiaomiMimoApi(text: string, cfg: TtsConfig, signal?: AbortSignal): Promise<TtsSynthesisResult> {
   const fetchImpl = createProxyFetch(getResolvedProxyUrl()) || fetch
-  const endpoint = cfg.baseURL.trim()
-  const body: Record<string, unknown> = {
-    model: cfg.model,
-    input: text,
-    voice: cfg.voice || undefined,
-    response_format: 'mp3',
-  }
+  const endpoint = getChatCompletionsEndpoint(cfg.baseURL || XIAOMI_MIMO_DEFAULT_BASE_URL)
+  const model = String(cfg.model || XIAOMI_MIMO_DEFAULT_MODEL).trim()
   const instructions = normalizeTtsInstructions(cfg.instructions)
-  if (instructions) body.instructions = instructions
-  if (cfg.speed && cfg.speed !== 1) body.speed = cfg.speed
+  const speedInstruction = getXiaomiMimoSpeedInstruction(cfg.speed)
+  const userInstruction = [instructions, speedInstruction].filter(Boolean).join('\n')
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> = []
+
+  if (userInstruction || model === 'mimo-v2.5-tts-voicedesign' || model === 'mimo-v2.5-tts-voiceclone') {
+    messages.push({
+      role: 'user',
+      content: userInstruction || (model === 'mimo-v2.5-tts-voicedesign'
+        ? '请生成自然、清晰、适合日常对话的中文音色。'
+        : ''),
+    })
+  }
+  messages.push({ role: 'assistant', content: text })
+
+  const audio: Record<string, unknown> = { format: 'wav' }
+  if (model === 'mimo-v2.5-tts-voicedesign') {
+    audio.optimize_text_preview = true
+  } else {
+    audio.voice = cfg.voice || XIAOMI_MIMO_DEFAULT_VOICE
+  }
 
   const response = await fetchImpl(endpoint, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      authorization: `Bearer ${cfg.apiKey}`,
+      'api-key': cfg.apiKey,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      model,
+      messages,
+      audio,
+      stream: false,
+    }),
     signal,
   }) as Response
 
@@ -359,106 +570,45 @@ async function synthesizeViaCustomApi(text: string, cfg: TtsConfig, signal?: Abo
     return { success: false, error: `HTTP ${response.status} · ${detail.slice(0, 300) || response.statusText}`, errorCode: 'SYNTHESIS_FAILED' }
   }
 
-  const mimeType = response.headers.get('content-type')?.split(';')[0] || 'audio/mpeg'
-  if (mimeType.startsWith('application/json')) {
-    const payload: any = await response.json().catch(() => null)
-    const data = String(payload?.audio || payload?.audio_base64 || payload?.data || payload?.result?.audio || '').trim()
-    if (data) return { success: true, audioBase64: data, mimeType: 'audio/mpeg' }
-    const url = String(payload?.url || payload?.audio_url || payload?.result?.url || '').trim()
-    if (url) {
-      const audioResponse = await fetchImpl(url, { signal })
-      if (!audioResponse.ok) {
-        return { success: false, error: `下载音频失败: HTTP ${audioResponse.status}`, errorCode: 'SYNTHESIS_FAILED' }
-      }
-      const audioMimeType = audioResponse.headers.get('content-type')?.split(';')[0] || 'audio/mpeg'
-      const buffer = Buffer.from(await audioResponse.arrayBuffer())
-      return { success: true, audioBase64: buffer.toString('base64'), mimeType: audioMimeType }
-    }
-    return { success: false, error: `接口返回成功但没有音频数据：${JSON.stringify(payload)?.slice(0, 300) || '空响应'}`, errorCode: 'SYNTHESIS_FAILED' }
-  }
-
-  const buffer = Buffer.from(await response.arrayBuffer())
-  return { success: true, audioBase64: buffer.toString('base64'), mimeType }
-}
-
-/**
- * openai-chat：聊天接口出音频（gpt-4o-audio 风格）。
- * 请求 /chat/completions + modalities:["text","audio"]，响应取 choices[0].message.audio.data（base64）；
- * 个别平台返回 audio.url，也兼容下载。
- * 角色语义两派自适应：TTS 派（小米等）要求文本放 assistant 角色（照读），对话派（gpt-4o-audio）要求 user 角色；
- * 先按 assistant 发，参数类 4xx 再换 user 重试。
- */
-async function synthesizeViaChatApi(text: string, cfg: TtsConfig, signal?: AbortSignal): Promise<TtsSynthesisResult> {
-  if (!cfg.baseURL) return { success: false, error: '聊天接口形态必须填写接口地址', errorCode: 'NOT_CONFIGURED' }
-  const fetchImpl = createProxyFetch(getResolvedProxyUrl()) || fetch
-  const endpoint = `${cfg.baseURL.trim().replace(/\/+$/, '')}/chat/completions`
-  const instructions = normalizeTtsInstructions(cfg.instructions)
-  const styleMessage = instructions
-    ? { role: 'system', content: `请按以下语音风格朗读，不要解释，也不要把本指令读出来：${instructions}` }
-    : null
-
-  const attempts: Array<Array<{ role: string; content: string }>> = [
-    ...(styleMessage
-      ? [
-          [styleMessage, { role: 'assistant', content: text }],
-          [styleMessage, { role: 'user', content: text }],
-        ]
-      : []),
-    [{ role: 'assistant', content: text }],
-    [{ role: 'user', content: text }],
-  ]
-  let response: Response | null = null
-  let lastError = ''
-  for (const messages of attempts) {
-    const attempt = await fetchImpl(endpoint, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${cfg.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: cfg.model,
-        modalities: ['text', 'audio'],
-        audio: {
-          voice: cfg.voice || undefined,
-          format: 'mp3',
-        },
-        messages,
-        stream: false,
-      }),
-      signal,
-    }) as Response
-    if (attempt.ok) {
-      response = attempt
-      break
-    }
-    const body = await attempt.text().catch(() => '')
-    lastError = `HTTP ${attempt.status} · ${body.slice(0, 300) || attempt.statusText}`
-    // 只有参数类错误才值得换角色重试；鉴权/限流/服务端错误直接报出去
-    if (attempt.status !== 400 && attempt.status !== 422) break
-  }
-  if (!response) {
-    return { success: false, error: lastError || '请求失败', errorCode: 'SYNTHESIS_FAILED' }
-  }
-
   const payload: any = await response.json().catch(() => null)
-  const audio = payload?.choices?.[0]?.message?.audio
-  const data = String(audio?.data || '').trim()
+  const responseAudio = payload?.choices?.[0]?.message?.audio
+  const data = stripBase64DataUrl(String(responseAudio?.data || ''))
   if (data) {
-    return { success: true, audioBase64: data, mimeType: 'audio/mpeg' }
+    const format = String(responseAudio?.format || 'wav').toLowerCase()
+    return {
+      success: true,
+      audioBase64: data,
+      mimeType: format === 'mp3' ? 'audio/mpeg' : 'audio/wav',
+    }
   }
-  const url = String(audio?.url || '').trim()
+
+  const url = String(responseAudio?.url || '').trim()
   if (url) {
     const audioResponse = await fetchImpl(url, { signal })
     if (!audioResponse.ok) {
       return { success: false, error: `下载音频失败: HTTP ${audioResponse.status}`, errorCode: 'SYNTHESIS_FAILED' }
     }
-    const mimeType = audioResponse.headers.get('content-type')?.split(';')[0] || 'audio/mpeg'
+    const mimeType = audioResponse.headers.get('content-type')?.split(';')[0] || 'audio/wav'
     const buffer = Buffer.from(await audioResponse.arrayBuffer())
     return { success: true, audioBase64: buffer.toString('base64'), mimeType }
   }
+
   const preview = JSON.stringify(payload)?.slice(0, 300) || '空响应'
-  return { success: false, error: `接口返回成功但没有音频数据（message.audio.data/url 均为空）：${preview}`, errorCode: 'SYNTHESIS_FAILED' }
+  return { success: false, error: `小米接口返回成功但没有音频数据（message.audio.data/url 均为空）：${preview}`, errorCode: 'SYNTHESIS_FAILED' }
+}
+
+/** volcengine-bidirectional：火山引擎/豆包 V3 WebSocket 双向流式 TTS。 */
+async function synthesizeViaVolcengineApi(text: string, cfg: TtsConfig, signal?: AbortSignal): Promise<TtsSynthesisResult> {
+  return synthesizeViaVolcengineBidirectional({
+    apiKey: cfg.apiKey,
+    endpoint: getVolcengineEndpoint(cfg),
+    resourceId: cfg.model,
+    speaker: cfg.voice,
+    text,
+    instructions: cfg.instructions,
+    speed: cfg.speed,
+    signal,
+  })
 }
 
 /** 合成语音。cfg 缺省读持久化配置（试听时传 overrides）。 */
@@ -466,7 +616,7 @@ export async function synthesizeSpeech(
   text: string,
   options: { config?: Partial<TtsConfig>; signal?: AbortSignal; useCache?: boolean } = {},
 ): Promise<TtsSynthesisResult> {
-  const cfg: TtsConfig = { ...getTtsConfig(), ...options.config }
+  const cfg: TtsConfig = normalizeTtsConfig({ ...getTtsConfig(), ...options.config })
   if (!options.config && !isTtsAvailable(cfg)) {
     return { success: false, error: '未启用或未配置文字转语音', errorCode: 'NOT_CONFIGURED' }
   }
@@ -494,13 +644,10 @@ export async function synthesizeSpeech(
   options.signal?.addEventListener('abort', () => controller.abort())
 
   const runSynthesis = async (): Promise<TtsSynthesisResult> => {
-    if (cfg.protocol === 'custom') {
-      return synthesizeViaCustomApi(input, cfg, controller.signal)
+    if (cfg.protocol === 'volcengine-bidirectional') {
+      return synthesizeViaVolcengineApi(input, cfg, controller.signal)
     }
-    if (cfg.protocol === 'openai-chat') {
-      return synthesizeViaChatApi(input, cfg, controller.signal)
-    }
-    return synthesizeViaSpeechApi(input, cfg, controller.signal)
+    return synthesizeViaXiaomiMimoApi(input, cfg, controller.signal)
   }
 
   const task = (async (): Promise<TtsSynthesisResult> => {

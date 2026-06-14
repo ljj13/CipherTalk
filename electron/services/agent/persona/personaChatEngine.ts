@@ -266,6 +266,14 @@ async function retrieveSimilarPairs(sessionId: string, query: string): Promise<P
   }
 }
 
+/** 把克隆得到的真实语音占比转成发语音倾向提示（用第二人称，分身即本人）；占比过低或缺失返回 null，走默认克制。 */
+function voiceTendencyLine(ratio?: number): string | null {
+  if (!ratio || ratio < 0.05) return null
+  if (ratio < 0.2) return '- 你平时偶尔发语音：多数还是打字，只在情绪上来或随口唠叨时才来一条语音。'
+  if (ratio < 0.45) return '- 你平时比较爱发语音：不少消息会用语音，尤其聊得起劲或情绪上头时；该用语音就用，别全程打字。'
+  return '- 你平时很爱发语音：多数想说的话都用语音，打字反而少；除非内容必须用文字（链接、清单、要对方复制的东西），否则优先发语音。'
+}
+
 export function buildPersonaSystemPrompt(
   persona: PersonaChatPersona,
   memories: string[],
@@ -363,6 +371,7 @@ export function buildPersonaSystemPrompt(
     '- 回复几条由你根据上下文定：简单的话就一条，有内容的拆成 2-4 条，像真人打字那样一句一句发',
     ...(voiceEnabled ? [
       '- 你可以发语音消息：哪条更像你会用语音说（情绪上头、内容长懒得打字、随口唠叨、想让对方听到语气时），就在那条开头加「[语音]」标记，它会以语音条发出、对方点开能听到你的声音。语音合成会使用上面的声音表现指令；语音不受文字气泡长度限制，你自己按场景和这个人的习惯判断长短：有人会发几秒短语音，也会发几十秒长语音；长语音可以更口语化、带停顿和“呃”“然后”这种，但别为了凑长度废话',
+      ...(voiceTendencyLine(stats.voiceRatio) ? [voiceTendencyLine(stats.voiceRatio) as string] : []),
       ...(voiceForwardRequested ? [
         '- 这轮对方明确说想听语音/全程语音/多发几条语音：你应该明显提高语音比例。可以是一条比较完整的长语音，也可以是几条短语音连续发；每条语音的长短由你根据语气、情绪和内容自然决定。想用语音发的每条都以「[语音]」开头，仍然按真人感觉决定，不要机械地把所有内容都变成同样长度的语音',
       ] : []),

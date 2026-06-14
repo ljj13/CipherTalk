@@ -149,16 +149,37 @@ interface ConfigSchema {
     maxResults: number
   }
   // 文字转语音 —— 朗读 AI 回复/微信消息/角色语音回复，独立于聊天模型
-  // protocol: openai-speech = 标准 /audio/speech；openai-chat = 聊天接口出音频；custom = 完整接口地址
+  // 仅保留小米 MiMo 与火山引擎/豆包；providers 持久化两套独立配置，切换服务商不会互相覆盖。
   ttsConfig: {
     enabled: boolean
-    protocol: 'openai-speech' | 'openai-chat' | 'custom'
+    activeProvider: 'xiaomi' | 'volcengine'
+    protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional'
     apiKey: string
     baseURL: string
     model: string
     voice: string
     instructions: string
     speed: number
+    providers: {
+      xiaomi: {
+        protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional'
+        apiKey: string
+        baseURL: string
+        model: string
+        voice: string
+        instructions: string
+        speed: number
+      }
+      volcengine: {
+        protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional'
+        apiKey: string
+        baseURL: string
+        model: string
+        voice: string
+        instructions: string
+        speed: number
+      }
+    }
   }
   // AI 作图 —— AI 助手 generate_image 工具用，独立于聊天模型
   imageGenConfig: {
@@ -280,13 +301,34 @@ const defaults: ConfigSchema = {
   },
   ttsConfig: {
     enabled: false,
-    protocol: 'openai-speech',
+    activeProvider: 'xiaomi',
+    protocol: 'xiaomi-mimo-tts',
     apiKey: '',
-    baseURL: 'https://api.siliconflow.cn/v1',
-    model: 'FunAudioLLM/CosyVoice2-0.5B',
-    voice: 'FunAudioLLM/CosyVoice2-0.5B:anna',
+    baseURL: 'https://api.xiaomimimo.com/v1',
+    model: 'mimo-v2.5-tts',
+    voice: 'mimo_default',
     instructions: '',
     speed: 1,
+    providers: {
+      xiaomi: {
+        protocol: 'xiaomi-mimo-tts',
+        apiKey: '',
+        baseURL: 'https://api.xiaomimimo.com/v1',
+        model: 'mimo-v2.5-tts',
+        voice: 'mimo_default',
+        instructions: '',
+        speed: 1,
+      },
+      volcengine: {
+        protocol: 'volcengine-bidirectional',
+        apiKey: '',
+        baseURL: 'wss://openspeech.bytedance.com/api/v3/tts/bidirection',
+        model: 'seed-tts-2.0',
+        voice: 'zh_female_shuangkuaisisi_uranus_bigtts',
+        instructions: '',
+        speed: 1,
+      },
+    },
   },
   imageGenConfig: {
     enabled: false,

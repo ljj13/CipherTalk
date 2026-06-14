@@ -28,15 +28,23 @@ export interface WebSearchConfig {
   maxResults: number
 }
 
-export interface TtsConfig {
-  enabled: boolean
-  protocol: 'openai-speech' | 'openai-chat' | 'custom'
+export type TtsProviderId = 'xiaomi' | 'volcengine'
+export type TtsProtocol = 'xiaomi-mimo-tts' | 'volcengine-bidirectional'
+
+export interface TtsProviderConfig {
+  protocol: TtsProtocol
   apiKey: string
   baseURL: string
   model: string
   voice: string
   instructions: string
   speed: number
+}
+
+export interface TtsConfig extends TtsProviderConfig {
+  enabled: boolean
+  activeProvider: TtsProviderId
+  providers: Record<TtsProviderId, TtsProviderConfig>
 }
 
 export interface TtsSpeakResult {
