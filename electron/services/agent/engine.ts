@@ -5,11 +5,11 @@
 import { generateText, smoothStream, ToolLoopAgent, stepCountIs, type ModelMessage, type UIMessageChunk } from 'ai'
 import type { SystemModelMessage } from '@ai-sdk/provider-utils'
 import { createLanguageModel } from './provider'
-import { buildAgentPromptParts, IMAGE_GEN_PROMPT, PLAN_MODE_PROMPT, WEB_SEARCH_PROMPT } from './prompts'
+import { buildAgentPromptParts, CODE_WORKSPACE_PROMPT, IMAGE_GEN_PROMPT, PLAN_MODE_PROMPT, WEB_SEARCH_PROMPT } from './prompts'
 import { isWebSearchAvailable } from '../ai/webSearchService'
 import { isImageGenAvailable } from '../ai/imageGenService'
 import { applyAnthropicCacheControl, buildPromptCacheKey, buildProviderOptions } from './cache'
-import { buildPlanModeTools, buildTools } from './tools'
+import { buildCodeOnlyTools, buildPlanModeTools, buildTools } from './tools'
 import { afterTurnMemory, buildMemoryContext, preloadRelevantMemories } from './tools/memory'
 import { compactMessages } from './compaction'
 import { runFinalReview, summarizeToolOutput, type ToolOutputSummary } from './finalReview'
@@ -47,6 +47,7 @@ export function buildAgentInstructions(
   const dynamicSystem = [
     promptParts.dynamicSystem,
     input.planMode ? PLAN_MODE_PROMPT : '',
+    input.codeWorkspace ? CODE_WORKSPACE_PROMPT : '',
     webSearchOn ? WEB_SEARCH_PROMPT : '',
     imageGenOn ? IMAGE_GEN_PROMPT : '',
     memoryContext,
@@ -89,11 +90,25 @@ function trackToolChunk(
   chunk: UIMessageChunk,
   toolNames: Map<string, string>,
   summaries: ToolOutputSummary[],
+  pendingToolCalls?: Map<string, { toolName: string; input?: unknown }>,
 ): void {
   if ('toolCallId' in chunk && 'toolName' in chunk && typeof chunk.toolCallId === 'string' && typeof chunk.toolName === 'string') {
     toolNames.set(chunk.toolCallId, chunk.toolName)
   }
+  if (chunk.type === 'tool-input-available') {
+    pendingToolCalls?.set(chunk.toolCallId, { toolName: chunk.toolName, input: chunk.input })
+    return
+  }
+  if (
+    chunk.type === 'tool-input-error' ||
+    chunk.type === 'tool-output-error' ||
+    chunk.type === 'tool-output-denied'
+  ) {
+    pendingToolCalls?.delete(chunk.toolCallId)
+    return
+  }
   if (chunk.type !== 'tool-output-available') return
+  pendingToolCalls?.delete(chunk.toolCallId)
   const toolName = toolNames.get(chunk.toolCallId) || 'unknown_tool'
   summaries.push(summarizeToolOutput(toolName, chunk.output))
 }
@@ -215,11 +230,15 @@ export async function runAgent(
     const toolsDisabled = input.toolMode === 'disabled'
     const webSearchOn = !toolsDisabled && isWebSearchAvailable()
     const imageGenOn = !toolsDisabled && isImageGenAvailable()
+    const toolProfile = input.toolProfile ?? (input.codeWorkspace ? 'hybrid' : 'chat')
+    const codeWorkspace = (toolProfile === 'code' || toolProfile === 'hybrid') ? (input.codeWorkspace ?? null) : null
     const baseTools = toolsDisabled
       ? {}
       : withToolTimeouts(input.planMode
-        ? buildPlanModeTools(input.scope)
-        : buildTools(input.scope, input.providerConfig, input.mcpTools, webSearchOn, imageGenOn))
+        ? buildPlanModeTools(input.scope, codeWorkspace)
+        : toolProfile === 'code'
+          ? buildCodeOnlyTools(codeWorkspace, webSearchOn, imageGenOn)
+          : buildTools(input.scope, input.providerConfig, input.mcpTools, webSearchOn, imageGenOn, codeWorkspace))
     perf('构建工具集', `${Object.keys(baseTools).length} 个`)
     const prepared = buildAgentInstructions(input, memoryContext, relevantMemoryContext, baseTools, webSearchOn, imageGenOn)
     perf('组装系统提示')
@@ -255,6 +274,7 @@ export async function runAgent(
     let perfFirstOutputSeen = false
     const toolNames = new Map<string, string>()
     const toolSummaries: ToolOutputSummary[] = []
+    const pendingToolCalls = new Map<string, { toolName: string; input?: unknown }>()
     for await (const chunk of result.toUIMessageStream({
       messageMetadata: ({ part }) => {
         if (part.type !== 'finish') return undefined
@@ -277,7 +297,7 @@ export async function runAgent(
         perf('模型首个增量输出（真正开始回复）', chunk.type)
       }
       if (chunk.type === 'finish') { finishChunk = chunk; continue }
-      trackToolChunk(chunk, toolNames, toolSummaries)
+      trackToolChunk(chunk, toolNames, toolSummaries, pendingToolCalls)
       onChunk(chunk)
     }
     let assistantText = ''
@@ -299,6 +319,16 @@ export async function runAgent(
     if (assistantText && !signal?.aborted) {
       await injectAutoMemories(assistantText, input, onChunk, signal)
       perf('自动记忆抽取')
+    }
+    if (pendingToolCalls.size > 0 && !signal?.aborted) {
+      for (const [toolCallId, pending] of pendingToolCalls.entries()) {
+        onChunk({
+          type: 'tool-output-error',
+          toolCallId,
+          errorText: `工具 ${pending.toolName} 没有返回执行结果。请确认代码工作区已选择并启用；如果刚更新过 Electron 主进程/preload，需要重启应用后再试。`,
+        })
+      }
+      perf('补齐未完成工具状态', `${pendingToolCalls.size} 个`)
     }
     if (finishChunk) onChunk(finishChunk)
     reportAgentProgress({ stage: 'run_finished', title: '回答生成完成' })

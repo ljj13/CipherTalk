@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { UIMessage } from 'ai'
 import type { MainProcessContext } from '../context'
-import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope } from '../../services/agent/types'
+import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope, AgentToolProfile } from '../../services/agent/types'
+import type { CodeWorkspaceRef } from '../../services/agent/codeWorkspaceTypes'
 import type { PersonaNotes, PersonaRecord, PersonaTtsVoiceBinding } from '../../services/agent/persona/personaTypes'
 
 /** 进行中的 agent 运行：runId → AbortController，用于取消。 */
@@ -189,6 +190,8 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     modelConfig?: AgentProviderConfigOverride | null
     conversationId?: number | null
     planMode?: boolean
+    toolProfile?: AgentToolProfile
+    codeWorkspace?: CodeWorkspaceRef | null
   }) => {
     const sender = event.sender
     const { runId } = payload
@@ -198,12 +201,20 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
     const logger = ctx.getLogService()
     const startedAt = Date.now()
     const scope = payload.scope ?? { kind: 'global' as const }
+    const toolProfile: AgentToolProfile = payload.toolProfile === 'code' || payload.toolProfile === 'hybrid' || payload.toolProfile === 'chat'
+      ? payload.toolProfile
+      : payload.codeWorkspace ? 'hybrid' : 'chat'
+    const codeWorkspace = payload.codeWorkspace && typeof payload.codeWorkspace.root === 'string'
+      ? payload.codeWorkspace
+      : null
     const initialLastUserText = lastUserTextFromUiMessages(payload.messages || [])
     const baseRunData = {
       runId,
       conversationId: payload.conversationId ?? null,
       messageCount: payload.messages?.length ?? 0,
       lastUserTextLength: initialLastUserText.length,
+      toolProfile,
+      hasCodeWorkspace: Boolean(codeWorkspace),
       ...scopeToLogData(scope),
     }
     let stage = 'start'
@@ -423,7 +434,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       let firstChunkSeen = false
       let firstModelOutputSeen = false
       await agentProcessService.run(
-        { messages, providerConfig, scope, mcpTools, skills, planMode: payload.planMode === true },
+        { messages, providerConfig, scope, mcpTools, skills, planMode: payload.planMode === true, toolProfile, codeWorkspace },
         (chunk) => {
           chunkCount += 1
           lastActivityAt = Date.now()

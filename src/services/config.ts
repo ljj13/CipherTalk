@@ -46,7 +46,8 @@ export const CONFIG_KEYS = {
   CLOSE_TO_TRAY: 'closeToTray',
   HARDWARE_ACCELERATION_ENABLED: 'hardwareAccelerationEnabled',
   AI_PROVIDER_MODEL_CACHE: 'aiProviderModelCache',
-  AI_ACTIVE_CONFIG_PRESET_ID: 'aiActiveConfigPresetId'
+  AI_ACTIVE_CONFIG_PRESET_ID: 'aiActiveConfigPresetId',
+  AGENT_CODE_WORKSPACE_ROOT: 'agentCodeWorkspaceRoot'
 } as const
 
 export type { AccountProfile, AccountProfileInput, AccountProfilePatch }

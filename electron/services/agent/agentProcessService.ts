@@ -10,6 +10,8 @@ import { join } from 'path'
 import type { UIMessageChunk } from 'ai'
 import { getAppPath, isElectronPackaged } from '../runtimePaths'
 import { getElectronWorkerEnv } from '../workerEnvironment'
+import { codeWorkspaceService } from './codeWorkspaceService'
+import type { CodeWorkspaceToolCall } from './codeWorkspaceTypes'
 import type { AgentProgressEvent, AgentProviderConfig, AgentRunInput } from './types'
 
 const UTILITY_FILE = 'aiAgentUtilityProcess.js'
@@ -233,6 +235,10 @@ export class AgentProcessService {
           void this.handleMcpCall(worker, msg.payload)
           return
         }
+        if (msg?.type === 'codeWorkspace:call') {
+          void this.handleCodeWorkspaceCall(worker, msg.payload)
+          return
+        }
         if (msg?.id === 0 && msg.type === 'ready') {
           if (!readyFired) {
             readyFired = true
@@ -378,6 +384,26 @@ export class AgentProcessService {
       worker.postMessage({ type: 'mcp:result', payload: { reqId, result: response.result } })
     } catch (e: any) {
       worker.postMessage({ type: 'mcp:result', payload: { reqId, error: e?.message || String(e) } })
+    }
+  }
+
+  /**
+   * 处理子进程发来的代码工作区请求：文件系统和 shell 只允许主进程 CodeWorkspaceService 触碰。
+   */
+  private async handleCodeWorkspaceCall(
+    worker: UtilityProcess,
+    payload: { reqId: number } & CodeWorkspaceToolCall,
+  ): Promise<void> {
+    const reqId = payload?.reqId
+    try {
+      const result = await codeWorkspaceService.handleToolCall({
+        method: payload.method,
+        args: payload.args && typeof payload.args === 'object' ? payload.args : {},
+        workspace: payload.workspace ?? null,
+      })
+      worker.postMessage({ type: 'codeWorkspace:result', payload: { reqId, result } })
+    } catch (e: any) {
+      worker.postMessage({ type: 'codeWorkspace:result', payload: { reqId, error: e?.message || String(e) } })
     }
   }
 

@@ -125,6 +125,7 @@ interface ConfigSchema {
       updatedAt: number
     }
   }
+  agentCodeWorkspaceRoot: string
   // 嵌入模型（语义/向量检索，独立于聊天模型）
   embeddingConfig: {
     enabled: boolean
@@ -288,6 +289,7 @@ const defaults: ConfigSchema = {
   aiActiveConfigPresetId: '',
   aiProviderConfigs: {},  // 空对象，用户配置后填充
   aiProviderModelCache: {},
+  agentCodeWorkspaceRoot: '',
   embeddingConfig: {
     enabled: false,
     provider: '',

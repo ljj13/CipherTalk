@@ -23,6 +23,16 @@ const TOOL_TIMEOUT_OVERRIDES: Record<string, number> = {
   search_stickers: 240_000, // 首次构建表情包词典可能触发最近会话补建索引
   send_random_image: 240_000, // 同上 + 图片解密
   generate_image: 3_600_000, // 慢速作图模型经常超过 1 分钟，跟作图服务默认超时保持一致
+  code_read_file: 120_000,
+  code_list_files: 120_000,
+  code_workspace_status: 120_000,
+  code_replace_in_file: 600_000, // 可能等待用户审批
+  code_write_file: 600_000,
+  code_delete_file: 600_000,
+  code_run_command: 600_000,
+  code_start_dev_server: 600_000,
+  code_stop_dev_server: 120_000,
+  code_get_dev_server_logs: 120_000,
 }
 
 function stepFingerprint(step: StepResult<ToolSet>): string | null {

@@ -50,9 +50,11 @@ import {
 } from '@/components/ai-elements/chain-of-thought'
 import { Loader } from '@/components/ai-elements/loader'
 import { Shimmer } from '@/components/ai-elements/shimmer'
-import { IpcChatTransport, type AgentModelConfig, type AgentProgressEvent, type AgentReasoningEffort, type AgentScope } from '@/features/aiagent/transport/ipcChatTransport'
+import { IpcChatTransport, type AgentModelConfig, type AgentProgressEvent, type AgentReasoningEffort, type AgentScope, type AgentToolProfile, type CodeWorkspaceRef } from '@/features/aiagent/transport/ipcChatTransport'
+import { CodeWorkspacePanel } from './CodeWorkspacePanel'
 import * as configService from '@/services/config'
 import { useTtsSpeaker } from '@/lib/ttsPlayer'
+import type { CodeWorkspaceApprovalRequest, CodeWorkspaceEvent, CodeWorkspaceState } from '@/types/electron'
 
 // 斜杠预设：按 AI 助手的工具能力分组，“”留空让用户填关键词/人名/日期
 const PROMPT_PRESET_GROUPS = [
@@ -2421,6 +2423,82 @@ export default function AgentPage() {
     setWebSearchOn(next)
     void window.electronAPI.webSearch?.setConfig({ enabled: next })
   }, [webSearchOn, webSearchHasKey])
+  const [codeWorkspaceEnabled, setCodeWorkspaceEnabled] = useState(false)
+  const [codeWorkspaceState, setCodeWorkspaceState] = useState<CodeWorkspaceState | null>(null)
+  const [codeWorkspaceApproval, setCodeWorkspaceApproval] = useState<CodeWorkspaceApprovalRequest | null>(null)
+  const [codeWorkspaceLogs, setCodeWorkspaceLogs] = useState<string[]>([])
+  const codeWorkspaceRef = useRef<CodeWorkspaceRef | null>(null)
+  codeWorkspaceRef.current = codeWorkspaceEnabled && codeWorkspaceState?.workspace
+    ? codeWorkspaceState.workspace
+    : null
+  const handleSelectCodeWorkspace = useCallback(async () => {
+    const result = await window.electronAPI.agentWorkspace.selectWorkspace()
+    if (result.success && result.state) {
+      setCodeWorkspaceState(result.state)
+      setCodeWorkspaceLogs(result.state.recentLogs || [])
+      setCodeWorkspaceEnabled(true)
+      setAgentNotice('')
+    } else if (!result.canceled) {
+      setAgentNotice(`代码工作区选择失败：${result.error || '未知错误'}`)
+    }
+  }, [])
+  const handleClearCodeWorkspace = useCallback(async () => {
+    const result = await window.electronAPI.agentWorkspace.clearWorkspace()
+    if (result.success) {
+      setCodeWorkspaceState(result.state || null)
+      setCodeWorkspaceLogs([])
+      setCodeWorkspaceEnabled(false)
+      setCodeWorkspaceApproval(null)
+    } else {
+      setAgentNotice(`清除代码工作区失败：${result.error || '未知错误'}`)
+    }
+  }, [])
+  const handleApproveCodeWorkspace = useCallback((requestId: string) => {
+    setCodeWorkspaceApproval(null)
+    void window.electronAPI.agentWorkspace.approve(requestId)
+  }, [])
+  const handleRejectCodeWorkspace = useCallback((requestId: string) => {
+    setCodeWorkspaceApproval(null)
+    void window.electronAPI.agentWorkspace.reject(requestId)
+  }, [])
+  const handleStopCodeDevServer = useCallback(async () => {
+    const result = await window.electronAPI.agentWorkspace.stopDevServer()
+    if (result.success && result.state) {
+      setCodeWorkspaceState(result.state)
+      setCodeWorkspaceLogs(result.state.recentLogs || [])
+    } else if (!result.success) {
+      setAgentNotice(`停止开发服务器失败：${result.error || '未知错误'}`)
+    }
+  }, [])
+  useEffect(() => {
+    let cancelled = false
+    void window.electronAPI.agentWorkspace.getState().then((result) => {
+      if (cancelled || !result.success || !result.state) return
+      setCodeWorkspaceState(result.state)
+      setCodeWorkspaceLogs(result.state.recentLogs || [])
+    })
+    const offApproval = window.electronAPI.agentWorkspace.onApprovalRequest((request) => {
+      setCodeWorkspaceApproval(request)
+    })
+    const offEvent = window.electronAPI.agentWorkspace.onWorkspaceEvent((event: CodeWorkspaceEvent) => {
+      if (event.state) {
+        setCodeWorkspaceState(event.state)
+        setCodeWorkspaceLogs(event.state.recentLogs || [])
+        if (!event.state.workspace) setCodeWorkspaceEnabled(false)
+      }
+      if (event.log) {
+        setCodeWorkspaceLogs((prev) => [...prev, event.log!].slice(-600))
+      }
+      if (event.type === 'approval-resolved' && event.requestId) {
+        setCodeWorkspaceApproval((current) => current?.requestId === event.requestId ? null : current)
+      }
+    })
+    return () => {
+      cancelled = true
+      offApproval()
+      offEvent()
+    }
+  }, [])
   const [currentProviderId, setCurrentProviderId] = useState('')
   const [currentModelId, setCurrentModelId] = useState('')
   const [toolElapsedByKey, setToolElapsedByKey] = useState<Record<string, number>>({})
@@ -2588,6 +2666,8 @@ export default function AgentPage() {
       () => conversationIdRef.current,
       handleAgentProgress,
       () => planModeRef.current,
+      () => (codeWorkspaceRef.current ? 'hybrid' : 'chat') as AgentToolProfile,
+      () => codeWorkspaceRef.current,
     ),
     [handleAgentProgress]
   )
@@ -3428,6 +3508,18 @@ export default function AgentPage() {
           </Toolbar>
         </div>
       </div>
+      <CodeWorkspacePanel
+        approval={codeWorkspaceApproval}
+        enabled={codeWorkspaceEnabled}
+        logs={codeWorkspaceLogs}
+        onApprove={handleApproveCodeWorkspace}
+        onClear={handleClearCodeWorkspace}
+        onReject={handleRejectCodeWorkspace}
+        onSelect={handleSelectCodeWorkspace}
+        onStopDevServer={handleStopCodeDevServer}
+        onToggleEnabled={setCodeWorkspaceEnabled}
+        state={codeWorkspaceState}
+      />
       {memoryIntroStatus === 'checking' ? (
         <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground text-sm">
           <Loader />
@@ -3537,10 +3629,20 @@ export default function AgentPage() {
                       )
                     }
                     const toolName = part.type.replace(/^tool-/, '')
-                    const done = part.state === 'output-available' || part.state === 'output-error'
+                    const done = part.state === 'output-available' || part.state === 'output-error' || part.state === 'output-denied'
                     const toolLabel = formatToolName(toolName)
                     const elapsedMs = toolElapsedByKey[toolPartProgressKey(part, toolName)]
-                    const label = done && elapsedMs ? `${toolLabel} · ${formatElapsed(elapsedMs)}` : toolLabel
+                    const stateLabel = part.state === 'approval-requested'
+                      ? '等待确认'
+                      : part.state === 'approval-responded'
+                        ? '已确认'
+                        : part.state === 'output-denied'
+                          ? '已拒绝'
+                          : ''
+                    const label = [
+                      toolLabel,
+                      done && elapsedMs ? formatElapsed(elapsedMs) : stateLabel,
+                    ].filter(Boolean).join(' · ')
                     const badges = collectToolBadges(part.input)
                     const delegateTasks = toolName === 'delegate_analysis' ? getDelegateTasks(part) : undefined
                     if (part.state === 'output-available') {
@@ -3565,6 +3667,9 @@ export default function AgentPage() {
                         )}
                         {part.state === 'output-error' && part.errorText && (
                           <p className="text-destructive text-xs">{part.errorText}</p>
+                        )}
+                        {part.state === 'output-denied' && (
+                          <p className="text-muted-foreground text-xs">用户拒绝了这次工具操作。</p>
                         )}
                         {toolName === 'delegate_analysis' && subAgentEventsForMessage.length > 0 && (
                           <SubAgentProgressPanel events={subAgentEventsForMessage} tasks={delegateTasks} />
@@ -3769,6 +3874,27 @@ export default function AgentPage() {
                           </Switch>
                         </span>
                       </Dropdown.Item>
+                      <Dropdown.Item
+                        id="code-workspace"
+                        textValue="代码工作区"
+                        onAction={() => {
+                          if (codeWorkspaceState?.workspace) {
+                            setCodeWorkspaceEnabled((value) => !value)
+                          } else {
+                            void handleSelectCodeWorkspace()
+                          }
+                        }}
+                      >
+                        <Code2 className="size-4 shrink-0 text-muted" />
+                        <Label>代码工作区</Label>
+                        <span className="ml-auto inline-flex pointer-events-none">
+                          <Switch aria-label="代码工作区" isSelected={codeWorkspaceEnabled && Boolean(codeWorkspaceState?.workspace)}>
+                            <Switch.Control>
+                              <Switch.Thumb />
+                            </Switch.Control>
+                          </Switch>
+                        </span>
+                      </Dropdown.Item>
                     </PromptInputActionMenuContent>
                   </PromptInputActionMenu>
                   <SlashPresetButton showGroupSeparator />
@@ -3800,6 +3926,20 @@ export default function AgentPage() {
                   >
                     <Globe className="size-3.5" />
                     联网搜索
+                    <X className="size-3" />
+                  </HeroButton>
+                )}
+
+                {codeWorkspaceEnabled && codeWorkspaceState?.workspace && (
+                  <HeroButton
+                    aria-label="关闭代码工作区"
+                    className="gap-1"
+                    onPress={() => setCodeWorkspaceEnabled(false)}
+                    size="sm"
+                    variant="secondary"
+                  >
+                    <Code2 className="size-3.5" />
+                    代码工作区
                     <X className="size-3" />
                   </HeroButton>
                 )}

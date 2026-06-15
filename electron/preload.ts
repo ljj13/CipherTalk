@@ -157,8 +157,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // AI Agent（主进程 broker → AI 子进程；流式 chunk 经 agent:chunk 推回）
   agent: {
-    run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: unknown, conversationId?: number | null, planMode?: boolean) =>
-      ipcRenderer.invoke('agent:run', { runId, messages, scope, modelConfig, conversationId, planMode }) as Promise<{ success: boolean; error?: string }>,
+    run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: unknown, conversationId?: number | null, planMode?: boolean, toolProfile?: unknown, codeWorkspace?: unknown) =>
+      ipcRenderer.invoke('agent:run', { runId, messages, scope, modelConfig, conversationId, planMode, toolProfile, codeWorkspace }) as Promise<{ success: boolean; error?: string }>,
     abort: (runId: string) => ipcRenderer.invoke('agent:abort', runId) as Promise<{ success: boolean }>,
     generateTitle: (firstMessage: string, modelConfig?: unknown) =>
       ipcRenderer.invoke('agent:generateTitle', { firstMessage, modelConfig }) as Promise<{ success: boolean; title?: string; error?: string }>,
@@ -191,6 +191,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }
       ipcRenderer.on('agent:progress', listener)
       return () => ipcRenderer.removeListener('agent:progress', listener)
+    },
+  },
+
+  agentWorkspace: {
+    selectWorkspace: () => ipcRenderer.invoke('agentWorkspace:selectWorkspace') as Promise<{ success: boolean; canceled?: boolean; state?: unknown; error?: string }>,
+    clearWorkspace: () => ipcRenderer.invoke('agentWorkspace:clearWorkspace') as Promise<{ success: boolean; state?: unknown; error?: string }>,
+    stopDevServer: () => ipcRenderer.invoke('agentWorkspace:stopDevServer') as Promise<{ success: boolean; state?: unknown; result?: unknown; error?: string }>,
+    getState: () => ipcRenderer.invoke('agentWorkspace:getState') as Promise<{ success: boolean; state?: unknown; error?: string }>,
+    approve: (requestId: string) => ipcRenderer.invoke('agentWorkspace:approve', requestId) as Promise<{ success: boolean }>,
+    reject: (requestId: string, _reason?: string) => ipcRenderer.invoke('agentWorkspace:reject', requestId) as Promise<{ success: boolean }>,
+    onApprovalRequest: (callback: (request: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, request: unknown) => callback(request)
+      ipcRenderer.on('agentWorkspace:approvalRequest', listener)
+      return () => ipcRenderer.removeListener('agentWorkspace:approvalRequest', listener)
+    },
+    onWorkspaceEvent: (callback: (event: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, event: unknown) => callback(event)
+      ipcRenderer.on('agentWorkspace:event', listener)
+      return () => ipcRenderer.removeListener('agentWorkspace:event', listener)
     },
   },
 

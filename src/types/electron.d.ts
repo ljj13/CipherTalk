@@ -158,6 +158,53 @@ export interface HttpApiStatusPayload {
   lastError: string
 }
 
+export type AgentToolProfile = 'chat' | 'code' | 'hybrid'
+export type CodeWorkspaceApprovalKind = 'write' | 'delete' | 'command' | 'dev-server' | 'sensitive-read'
+export type CodeWorkspaceApprovalRisk = 'low' | 'medium' | 'high'
+export type CodeWorkspaceApprovalDecision = 'approved' | 'rejected'
+
+export interface CodeWorkspaceRef {
+  id: string
+  root: string
+  approvalPolicy: 'on-request'
+}
+
+export interface CodeWorkspaceDevServerState {
+  running: boolean
+  command?: string
+  pid?: number
+  startedAt?: number
+  previewUrl?: string
+}
+
+export interface CodeWorkspaceState {
+  workspace: CodeWorkspaceRef | null
+  devServer: CodeWorkspaceDevServerState
+  recentLogs: string[]
+}
+
+export interface CodeWorkspaceApprovalRequest {
+  requestId: string
+  kind: CodeWorkspaceApprovalKind
+  workspaceRoot: string
+  targetPath?: string
+  command?: string
+  diffPreview?: string
+  risk: CodeWorkspaceApprovalRisk
+  summary: string
+  createdAt: number
+}
+
+export interface CodeWorkspaceEvent {
+  type: 'state' | 'log' | 'preview-url' | 'approval-resolved'
+  state?: CodeWorkspaceState
+  log?: string
+  previewUrl?: string
+  requestId?: string
+  decision?: CodeWorkspaceApprovalDecision
+  at: number
+}
+
 export interface StatsPartialError {
   dbName?: string
   dbPath?: string
@@ -1220,7 +1267,16 @@ export interface ElectronAPI {
     }) => void) => () => void
   }
   agent: {
-    run: (runId: string, messages: unknown[], scope?: unknown, modelConfig?: unknown, conversationId?: number | null) => Promise<{ success: boolean; error?: string }>
+    run: (
+      runId: string,
+      messages: unknown[],
+      scope?: unknown,
+      modelConfig?: unknown,
+      conversationId?: number | null,
+      planMode?: boolean,
+      toolProfile?: AgentToolProfile,
+      codeWorkspace?: CodeWorkspaceRef | null
+    ) => Promise<{ success: boolean; error?: string }>
     abort: (runId: string) => Promise<{ success: boolean }>
     generateTitle: (firstMessage: string, modelConfig?: unknown) => Promise<{ success: boolean; title?: string; error?: string }>
     onChunk: (runId: string, callback: (chunk: unknown) => void) => () => void
@@ -1233,6 +1289,16 @@ export interface ElectronAPI {
     renameConversation: (id: number, title: string) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     saveConversationMessages: (payload: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
     getLastConversation: (scope?: unknown) => Promise<{ success: boolean; conversation?: unknown; error?: string }>
+  }
+  agentWorkspace: {
+    selectWorkspace: () => Promise<{ success: boolean; canceled?: boolean; state?: CodeWorkspaceState; error?: string }>
+    clearWorkspace: () => Promise<{ success: boolean; state?: CodeWorkspaceState; error?: string }>
+    stopDevServer: () => Promise<{ success: boolean; state?: CodeWorkspaceState; result?: unknown; error?: string }>
+    getState: () => Promise<{ success: boolean; state?: CodeWorkspaceState; error?: string }>
+    approve: (requestId: string) => Promise<{ success: boolean; error?: string }>
+    reject: (requestId: string, reason?: string) => Promise<{ success: boolean; error?: string }>
+    onApprovalRequest: (callback: (request: CodeWorkspaceApprovalRequest) => void) => () => void
+    onWorkspaceEvent: (callback: (event: CodeWorkspaceEvent) => void) => () => void
   }
   persona: {
     get: (sessionId: string) => Promise<{ success: boolean; persona?: PersonaRecordInfo | null; error?: string }>

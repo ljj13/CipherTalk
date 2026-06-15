@@ -3,6 +3,7 @@
  * 编排全程跑在独立的 AI utilityProcess 子进程（见 Docs/密语AI-Agent开发文档（AI-SDK版）.md §3.1）。
  */
 import type { JSONSchema7, ModelMessage, UIMessageChunk } from 'ai'
+import type { CodeWorkspaceRef } from './codeWorkspaceTypes'
 
 /** AI SDK provider 协议种类（对齐 ai/providers/base.ts 的 ProviderKind）。 */
 export type ProviderKind = 'openai-responses' | 'openai-compatible' | 'anthropic' | 'google'
@@ -45,6 +46,8 @@ export interface AgentMcpToolDescriptor {
   description?: string
   inputSchema?: JSONSchema7
 }
+
+export type AgentToolProfile = 'chat' | 'code' | 'hybrid'
 
 export interface AgentSkillContextItem {
   name: string
@@ -99,6 +102,10 @@ export interface AgentRunInput {
   outputMode?: 'default' | 'wechat'
   /** 计划模式：开启后本轮只制定执行计划、不给最终结论（见 prompts.ts PLAN_MODE_PROMPT）。 */
   planMode?: boolean
+  /** 工具画像：chat=聊天/记忆工具，code=代码工作区工具，hybrid=两者同时挂载。 */
+  toolProfile?: AgentToolProfile
+  /** 用户选择的代码工作区；真正的文件/命令操作仍由主进程 CodeWorkspaceService 代理并审批。 */
+  codeWorkspace?: CodeWorkspaceRef | null
 }
 
 // ========= 主进程 ↔ AI 子进程 postMessage 协议 =========
