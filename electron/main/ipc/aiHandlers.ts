@@ -875,8 +875,8 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
   })
 
   ipcMain.handle('memory:list', async (_event, opts?: {
-    sourceType?: 'profile' | 'fact' | 'relationship'
-    sourceTypes?: Array<'profile' | 'fact' | 'relationship'>
+    sourceType?: string
+    sourceTypes?: string[]
     sessionId?: string
     tags?: string[]
     withoutTags?: string[]
@@ -885,9 +885,13 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
   }) => {
     try {
       const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
+      const sourceType = String(opts?.sourceType || '').trim()
+      const sourceTypes = Array.isArray(opts?.sourceTypes)
+        ? opts.sourceTypes.map((type) => String(type || '').trim()).filter(Boolean)
+        : undefined
       const items = memoryDatabase.listMemoryItems({
-        ...(opts?.sourceType ? { sourceType: opts.sourceType } : {}),
-        ...(Array.isArray(opts?.sourceTypes) ? { sourceTypes: opts.sourceTypes } : {}),
+        ...(sourceType ? { sourceType: sourceType as any } : {}),
+        ...(sourceTypes ? { sourceTypes: sourceTypes as any } : {}),
         ...(opts?.sessionId ? { sessionId: opts.sessionId } : {}),
         ...(Array.isArray(opts?.tags) ? { tags: opts.tags } : {}),
         ...(Array.isArray(opts?.withoutTags) ? { withoutTags: opts.withoutTags } : {}),
@@ -956,7 +960,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
 
   ipcMain.handle('memory:create', async (_event, payload: {
     memoryUid?: string
-    sourceType?: 'profile' | 'fact' | 'relationship'
+    sourceType?: string
     content?: string
     title?: string
     importance?: number
@@ -967,11 +971,11 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const { memoryDatabase } = await import('../../services/memory/memoryDatabase')
       const content = String(payload?.content || '').trim()
       if (!content) return { success: false, error: '记忆内容不能为空' }
-      const sourceType = payload?.sourceType || 'profile'
+      const sourceType = String(payload?.sourceType || 'profile').trim()
       const memoryUid = String(payload?.memoryUid || `${sourceType}:${Date.now()}`).trim()
       const item = memoryDatabase.upsertMemoryItem({
         memoryUid,
-        sourceType,
+        sourceType: sourceType as any,
         title: String(payload?.title || content.slice(0, 40)),
         content,
         ...(payload?.importance !== undefined ? { importance: payload.importance } : {}),
@@ -995,7 +999,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
 
   ipcMain.handle('memory:update', async (_event, payload: {
     id: number
-    sourceType?: 'profile' | 'fact' | 'relationship'
+    sourceType?: string
     content?: string
     importance?: number
     confidence?: number
@@ -1007,8 +1011,9 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       if (!Number.isFinite(id)) return { success: false, error: '无效的记忆 id' }
       const content = String(payload?.content || '').trim()
       if (!content) return { success: false, error: '记忆内容不能为空' }
+      const sourceType = String(payload?.sourceType || '').trim()
       const item = memoryDatabase.updateMemoryItem(id, {
-        ...(payload.sourceType ? { sourceType: payload.sourceType } : {}),
+        ...(sourceType ? { sourceType: sourceType as any } : {}),
         title: content.slice(0, 40),
         content,
         ...(payload.importance !== undefined ? { importance: payload.importance } : {}),

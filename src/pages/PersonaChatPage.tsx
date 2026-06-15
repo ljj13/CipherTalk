@@ -579,54 +579,56 @@ export default function PersonaChatPage() {
             数字分身{persona ? ` · 基于 ${persona.stats.friendMessageCount + (persona.stats.groupMessageCount || 0)} 条消息${persona.stats.groupMessageCount ? `（含群聊发言 ${persona.stats.groupMessageCount} 条）` : ''}${persona.ttsVoice ? ` · ${getPersonaVoiceLabel(persona)}` : ''}` : ''}
           </div>
         </div>
-        <Tooltip delay={0}>
-          <Tooltip.Trigger>
-            <Button
-              isIconOnly
-              size="sm"
-              variant={persona?.ttsVoice ? 'secondary' : 'ghost'}
-              aria-label={persona?.ttsVoice ? '重新克隆声音' : '克隆声音'}
-              isDisabled={busy || voiceCloning}
-              isPending={voiceCloning}
-              onPress={handleCloneVoice}
-            >
-              <Mic2 size={16} />
-            </Button>
-          </Tooltip.Trigger>
-          <Tooltip.Content>{persona?.ttsVoice ? '重新克隆声音' : '克隆声音'}</Tooltip.Content>
-        </Tooltip>
-        <Tooltip delay={0}>
-          <Tooltip.Trigger>
-            <Button isIconOnly size="sm" variant="ghost" aria-label="重建画像" isDisabled={busy} onPress={() => setPhase('confirm')}>
-              <RefreshCw size={16} />
-            </Button>
-          </Tooltip.Trigger>
-          <Tooltip.Content>重建画像（聊天记录更新后可重新克隆）</Tooltip.Content>
-        </Tooltip>
-        <Tooltip delay={0}>
-          <Tooltip.Trigger>
-            <Button
-              isIconOnly
-              size="sm"
-              variant="ghost"
-              aria-label="删除对话记录"
-              isDisabled={busy || clearingConversations}
-              isPending={clearingConversations}
-              onPress={() => setConfirmAction('clearConversations')}
-            >
-              <MessageSquareX size={16} />
-            </Button>
-          </Tooltip.Trigger>
-          <Tooltip.Content>删除该分身的所有对话记录</Tooltip.Content>
-        </Tooltip>
-        <Tooltip delay={0}>
-          <Tooltip.Trigger>
-            <Button isIconOnly size="sm" variant="ghost" aria-label="删除分身" onPress={() => setConfirmAction('deletePersona')}>
-              <Trash2 size={16} />
-            </Button>
-          </Tooltip.Trigger>
-          <Tooltip.Content>删除分身画像</Tooltip.Content>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1">
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button
+                isIconOnly
+                size="sm"
+                variant={persona?.ttsVoice ? 'secondary' : 'ghost'}
+                aria-label={persona?.ttsVoice ? '重新克隆声音' : '克隆声音'}
+                isDisabled={busy || voiceCloning}
+                isPending={voiceCloning}
+                onPress={handleCloneVoice}
+              >
+                <Mic2 size={16} />
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">{persona?.ttsVoice ? '重新克隆声音' : '克隆声音'}</Tooltip.Content>
+          </Tooltip>
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button isIconOnly size="sm" variant="ghost" aria-label="重建画像" isDisabled={busy} onPress={() => setPhase('confirm')}>
+                <RefreshCw size={16} />
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">重建画像（聊天记录更新后可重新克隆）</Tooltip.Content>
+          </Tooltip>
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="删除对话记录"
+                isDisabled={busy || clearingConversations}
+                isPending={clearingConversations}
+                onPress={() => setConfirmAction('clearConversations')}
+              >
+                <MessageSquareX size={16} />
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">删除该分身的所有对话记录</Tooltip.Content>
+          </Tooltip>
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Button isIconOnly size="sm" variant="ghost" aria-label="删除分身" onPress={() => setConfirmAction('deletePersona')}>
+                <Trash2 size={16} />
+              </Button>
+            </Tooltip.Trigger>
+            <Tooltip.Content placement="bottom">删除分身画像</Tooltip.Content>
+          </Tooltip>
+        </div>
       </div>
 
       {voiceCloneStatus && (

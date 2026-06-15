@@ -243,8 +243,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     migrateLegacy: () =>
       ipcRenderer.invoke('memory:migrateLegacy') as Promise<{ success: boolean; result?: unknown; error?: string }>,
     list: (opts?: {
-      sourceType?: 'profile' | 'fact' | 'relationship'
-      sourceTypes?: Array<'profile' | 'fact' | 'relationship'>
+      sourceType?: string
+      sourceTypes?: string[]
       sessionId?: string
       tags?: string[]
       withoutTags?: string[]
@@ -262,7 +262,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('memory:summarizeTodayDiary') as Promise<{ success: boolean; alreadyExists?: boolean; diary?: unknown; error?: string }>,
     create: (payload: {
       memoryUid?: string
-      sourceType?: 'profile' | 'fact' | 'relationship'
+      sourceType?: string
       content?: string
       title?: string
       importance?: number
@@ -272,7 +272,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('memory:create', payload) as Promise<{ success: boolean; item?: unknown; error?: string }>,
     delete: (id: number) =>
       ipcRenderer.invoke('memory:delete', id) as Promise<{ success: boolean; error?: string }>,
-    update: (payload: { id: number; sourceType?: 'profile' | 'fact' | 'relationship'; content?: string; importance?: number; confidence?: number; tags?: string[] }) =>
+    update: (payload: { id: number; sourceType?: string; content?: string; importance?: number; confidence?: number; tags?: string[] }) =>
       ipcRenderer.invoke('memory:update', payload) as Promise<{ success: boolean; item?: unknown; error?: string }>,
     consolidate: () =>
       ipcRenderer.invoke('memory:consolidate') as Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number }; error?: string }>,

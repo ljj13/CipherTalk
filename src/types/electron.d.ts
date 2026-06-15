@@ -165,17 +165,31 @@ export interface StatsPartialError {
   message: string
 }
 
+export type AgentMemorySourceType =
+  | 'message'
+  | 'conversation_block'
+  | 'fact'
+  | 'relationship'
+  | 'profile'
+  | 'timeline_summary'
+  | 'media'
+
 export interface AgentMemoryItem {
   id: number
-  sourceType: 'profile' | 'fact' | 'relationship' | string
+  memoryUid: string
+  sourceType: AgentMemorySourceType
   sessionId: string | null
   contactId: string | null
   groupId?: string | null
   title: string
   content: string
+  contentHash?: string
+  entities?: string[]
   importance: number
   confidence: number
   tags: string[]
+  timeStart?: number | null
+  timeEnd?: number | null
   sourceRefs?: Array<{ sessionId: string; localId: number; createTime: number; sortSeq: number; senderUsername?: string; excerpt?: string }>
   createdAt: number
   updatedAt: number
@@ -1238,14 +1252,14 @@ export interface ElectronAPI {
   memory: {
     migrationStatus: () => Promise<{ success: boolean; status?: MemoryMigrationStatusInfo; error?: string }>
     migrateLegacy: () => Promise<{ success: boolean; result?: MemoryMigrationResultInfo; error?: string }>
-    list: (opts?: { sourceType?: 'profile' | 'fact' | 'relationship'; sourceTypes?: Array<'profile' | 'fact' | 'relationship'>; sessionId?: string; tags?: string[]; withoutTags?: string[]; minConfidence?: number; limit?: number }) => Promise<{ success: boolean; items?: AgentMemoryItem[]; stats?: { itemCount: number }; error?: string }>
+    list: (opts?: { sourceType?: AgentMemorySourceType; sourceTypes?: AgentMemorySourceType[]; sessionId?: string; tags?: string[]; withoutTags?: string[]; minConfidence?: number; limit?: number }) => Promise<{ success: boolean; items?: AgentMemoryItem[]; stats?: { itemCount: number }; error?: string }>
     listDiaries: (limit?: number) => Promise<{ success: boolean; diaries?: MemoryDiaryEntryInfo[]; error?: string }>
     readDiary: (date: string) => Promise<{ success: boolean; diary?: MemoryDiaryEntryInfo; error?: string }>
     deleteDiary: (date: string) => Promise<{ success: boolean; error?: string }>
     summarizeTodayDiary: () => Promise<{ success: boolean; alreadyExists?: boolean; diary?: MemoryDiaryEntryInfo; error?: string }>
-    create: (payload: { memoryUid?: string; sourceType?: 'profile' | 'fact' | 'relationship'; content?: string; title?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
+    create: (payload: { memoryUid?: string; sourceType?: AgentMemorySourceType; content?: string; title?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
     delete: (id: number) => Promise<{ success: boolean; error?: string }>
-    update: (payload: { id: number; sourceType?: 'profile' | 'fact' | 'relationship'; content?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
+    update: (payload: { id: number; sourceType?: AgentMemorySourceType; content?: string; importance?: number; confidence?: number; tags?: string[] }) => Promise<{ success: boolean; item?: AgentMemoryItem; error?: string }>
     consolidate: () => Promise<{ success: boolean; result?: { removed: number; groups: number; scanned: number; profileBuilt?: boolean; profileBuildError?: string }; error?: string }>
     exportMarkdown: (outputDir: string) => Promise<{ success: boolean; result?: { files: string[]; itemCount: number }; error?: string }>
   }

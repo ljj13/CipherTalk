@@ -428,7 +428,7 @@ export function ChatHeader({
               <RefreshCw size={18} className={isRefreshingMessages || isUpdating ? 'animate-spin' : ''} />
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>刷新消息</Tooltip.Content>
+          <Tooltip.Content placement="bottom">刷新消息</Tooltip.Content>
         </Tooltip>
 
         <Tooltip delay={0}>
@@ -446,7 +446,7 @@ export function ChatHeader({
                 : <Sparkles size={18} className={vecStatus && vecStatus.count > 0 ? 'text-primary' : ''} />}
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content className="max-w-96">
+          <Tooltip.Content className="max-w-96" placement="bottom">
             <div className="space-y-1">
               <div>{vecTooltip}</div>
               {vectorEvidenceRows.length > 0 && (
@@ -475,7 +475,7 @@ export function ChatHeader({
                 {notifyEnabled ? <Bell size={18} className="text-primary" /> : <BellOff size={18} />}
               </Button>
             </Tooltip.Trigger>
-            <Tooltip.Content>{notifyEnabled ? '新消息提醒已开启 · 点击关闭' : '开启新消息提醒（桌宠气泡）'}</Tooltip.Content>
+            <Tooltip.Content placement="bottom">{notifyEnabled ? '新消息提醒已开启 · 点击关闭' : '开启新消息提醒（桌宠气泡）'}</Tooltip.Content>
           </Tooltip>
         )}
 
@@ -492,7 +492,7 @@ export function ChatHeader({
                 <Bot size={18} />
               </Button>
             </Tooltip.Trigger>
-            <Tooltip.Content>克隆好友（和 TA 的数字分身聊天）</Tooltip.Content>
+            <Tooltip.Content placement="bottom">克隆好友（和 TA 的数字分身聊天）</Tooltip.Content>
           </Tooltip>
         )}
 
@@ -510,7 +510,7 @@ export function ChatHeader({
                 {isExportingVoiceSample ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
               </Button>
             </Tooltip.Trigger>
-            <Tooltip.Content>{isExportingVoiceSample ? '正在导出复刻语音样本' : '导出复刻语音样本（至少 10 秒）'}</Tooltip.Content>
+            <Tooltip.Content placement="bottom">{isExportingVoiceSample ? '正在导出复刻语音样本' : '导出复刻语音样本（至少 10 秒）'}</Tooltip.Content>
           </Tooltip>
         )}
 
@@ -527,7 +527,7 @@ export function ChatHeader({
                 <Aperture size={18} />
               </Button>
             </Tooltip.Trigger>
-            <Tooltip.Content>查看朋友圈</Tooltip.Content>
+            <Tooltip.Content placement="bottom">查看朋友圈</Tooltip.Content>
           </Tooltip>
         )}
 
@@ -552,7 +552,7 @@ export function ChatHeader({
               {isBatchTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>
+          <Tooltip.Content placement="bottom">
             {isBatchTranscribing ? `批量转写中 (${batchTranscribeProgress.current}/${batchTranscribeProgress.total})` : '批量语音转文字'}
           </Tooltip.Content>
         </Tooltip>
@@ -570,7 +570,7 @@ export function ChatHeader({
               {isBatchDecrypting ? <Loader2 size={18} className="animate-spin" /> : <ImageIcon size={18} />}
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>
+          <Tooltip.Content placement="bottom">
             {isBatchDecrypting ? `批量解密中 (${batchDecryptProgress.current}/${batchDecryptProgress.total})` : '批量解密图片'}
           </Tooltip.Content>
         </Tooltip>
@@ -587,7 +587,7 @@ export function ChatHeader({
               <Info size={18} />
             </Button>
           </Tooltip.Trigger>
-          <Tooltip.Content>会话详情</Tooltip.Content>
+          <Tooltip.Content placement="bottom">会话详情</Tooltip.Content>
         </Tooltip>
       </div>
 
