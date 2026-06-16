@@ -57,17 +57,17 @@ function isDesktopScreenshotPath(filePath: string): boolean {
 export const sendWechatFile = tool({
   description:
     '仅在微信官方机器人场景下，把本地文件作为当前触发会话的回复附件。' +
-    'filePath 可以是电脑上可访问的任意本地文件绝对路径；不得指定联系人、群或 toUserId。桌面截图需要二次确认。',
+    'filePath 可以是电脑上可访问的任意本地文件绝对路径；不得指定联系人、群或 toUserId。桌面截图仅在当前微信消息明确要求截图时可直接回复。',
   inputSchema: z.object({
     filePath: z.string().min(1).describe('要发送的本地文件绝对路径'),
-    confirmedDesktopScreenshot: z.boolean().default(false).describe('仅当 filePath 是 desktop_screenshot 生成的截图且用户已明确确认发送到当前微信会话时为 true'),
+    confirmedDesktopScreenshot: z.boolean().default(false).describe('仅当 filePath 是 desktop_screenshot 生成的截图，且当前微信用户本条消息已明确要求截图/发截图时为 true；不需要二次追问'),
   }),
   execute: async ({ filePath, confirmedDesktopScreenshot }) => {
     try {
       const realFilePath = normalizeRealPath(filePath)
       if (!realFilePath) return { error: '文件不存在' }
       if (isDesktopScreenshotPath(realFilePath) && !confirmedDesktopScreenshot) {
-        return { error: '桌面截图属于敏感附件。请先询问用户是否要把这张截图作为当前微信会话回复附件发送；用户明确确认后，再传 confirmedDesktopScreenshot=true。' }
+        return { error: '桌面截图属于敏感附件。只有当前微信消息明确要求截图/发截图/截屏给我时，才可传 confirmedDesktopScreenshot=true 并作为当前会话回复附件；否则不要发送。' }
       }
       const stat = fs.statSync(realFilePath)
       if (!stat.isFile()) return { error: '路径不是文件' }

@@ -174,7 +174,7 @@ export function createDesktopTools(): ToolSet {
     desktop_screenshot: tool({
       description:
         '截取当前屏幕/窗口并保存为本机 PNG 文件。首版只看桌面，不点击、不键入。' +
-        '截图只在当前软件内预览/保存，不会自动发送到微信；回答时不要说"发到微信"。',
+        '软件内对话里截图只在当前软件内预览/保存，不会自动发送到微信；微信机器人入口下，只有当前用户明确要求截图时才可作为当前会话回复附件。',
       inputSchema: z.object({
         sourceId: z.string().optional().describe('可选 Electron desktopCapturer source id'),
         width: z.number().int().min(320).max(3840).default(1920),

@@ -44,7 +44,7 @@ const TOOL_PROMPT = `
 - create_artifact：产出 HTML、Excel、Word、PPT 本机文件。参数齐全但 confirmed!==true 时只返回 requiresConfirmation；用户确认后才传 confirmed=true 写文件。
 - create_task / list_tasks / update_task / cancel_task / run_task_now：管理主动/定时任务。任务不得发送微信消息；高风险动作执行前必须确认。
 - list_audit_logs / rollback_operation：查看 AI 操作审计和按快照回滚文件。回滚必须先确认，再传 confirmed=true。
-- desktop_screenshot / desktop_ocr：只看桌面，不点击、不键入；截图只保存到本机并在当前软件内可预览，不等于发微信。不要说"我会发到微信/发给某人"。
+- desktop_screenshot / desktop_ocr：只看桌面，不点击、不键入；软件内对话里截图只保存到本机并可预览，不等于发微信。不要说"我会发到微信/发给某人"。
 - persona_control：控制数字分身/克隆好友流程。用户说"打开/开启/进入/和某人的数字分身聊天"时用 action=open；如果不存在，按工具返回询问是否克隆。用户在上一轮已被询问后回复"确定/可以/开始/克隆吧"等肯定语义时，用 action=confirm_build，并沿用上一轮工具输出里的 sessionId/displayName。用户明确要求"向量化/建立语义索引"时用 action=vectorize。
 - export_chat：自动化导出一个聊天会话。只用于用户明确要求导出聊天记录；先 validateOnly=true 校验/解析，缺 session/dateRange/format/mediaOptions/outputDir 就追问。mediaOptions 必须显式给头像、图片、视频、表情、语音五项布尔值。参数齐全后先请求最终确认；只有用户明确确认后，才调用 confirmed=true 写文件。支持 chatlab、chatlab-jsonl、json、html、excel、sql，不支持 txt。
 `
@@ -125,7 +125,7 @@ const WECHAT_REPLY_MEDIA_PROMPT = `
 # 当前微信会话回复附件
 - 仅在微信官方机器人入口可用，且只允许作为"当前触发会话"的回复附件；工具没有、也不得伪造联系人/群/toUserId 参数。
 - 用户要求把图片/视频/文件作为本轮回复发回来时，可用 send_wechat_media / send_wechat_file 准备附件；真正发送由 weixinBotService 绑定当前 incoming session 完成。
-- desktop_screenshot 产生的桌面截图是敏感内容：先截图并用文字问是否要作为当前微信回复附件发送；用户明确确认后，才允许调用 send_wechat_media/send_wechat_file，并传 confirmedDesktopScreenshot=true。
+- desktop_screenshot 产生的桌面截图是敏感内容：只有当前这条微信消息明确要求"截图/发截图/截屏给我"时，才可直接调用 send_wechat_media/send_wechat_file 作为当前会话回复附件，并传 confirmedDesktopScreenshot=true；这不是二次确认，不要再追问。若用户没有明确要求发送截图，则不要发。
 - send_sticker / send_random_image 也只能回复当前触发会话，一轮最多 1 个点缀；不要跨会话发送。
 - 生成图片仍用 generate_image；工具返回 filePath 后会作为当前微信会话回复附件处理。
 - 任何主动任务、定时任务、关键词触发都不得调用这些工具给微信发消息。`
