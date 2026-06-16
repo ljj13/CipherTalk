@@ -72,6 +72,7 @@ type TypingIndicator = {
 
 type WechatBotMedia = {
   kind: 'image' | 'file' | 'video' | 'voice'
+  source?: 'desktop_screenshot' | 'tool' | 'directive'
   filePath?: string
   text?: string
   caption?: string
@@ -108,6 +109,8 @@ type PreparedWechatIncomingMessage = {
 type WechatBotReply = {
   text: string
   textBubbles?: string[]
+  savedText?: string
+  savedTextBubbles?: string[]
   media: WechatBotMedia[]
   personaActions: WechatPersonaAction[]
   personaVoice?: PersonaTtsVoiceBinding | null
@@ -148,6 +151,11 @@ type PendingPersonaQueue = {
   running: boolean
   typing: TypingIndicator | null
   cancelled: boolean
+}
+
+type WechatPersonaBubbleContext = {
+  personaVoice?: PersonaTtsVoiceBinding | null
+  ttsInstructions?: string
 }
 
 interface StoredModes {
@@ -412,7 +420,11 @@ function rememberToolNameFromChunk(chunk: UIMessageChunk, toolNames: Map<string,
   }
 }
 
-function extractMediaFromToolChunk(chunk: UIMessageChunk, toolNames: Map<string, string>): WechatBotMedia | null {
+function extractMediaFromToolChunk(
+  chunk: UIMessageChunk,
+  toolNames: Map<string, string>,
+  options: { allowDesktopScreenshotReply?: boolean } = {},
+): WechatBotMedia | null {
   const c = chunk as {
     type?: string
     toolCallId?: string
@@ -428,15 +440,19 @@ function extractMediaFromToolChunk(chunk: UIMessageChunk, toolNames: Map<string,
     case 'generate_image':
     case 'send_random_image':
     case 'send_sticker':
-      return { kind: 'image', filePath }
+      return { kind: 'image', filePath, source: 'tool' }
     case 'send_wechat_file':
-      return { kind: 'file', filePath }
+      return { kind: 'file', filePath, source: 'tool' }
+    case 'desktop_screenshot':
+      return options.allowDesktopScreenshotReply
+        ? { kind: 'image', filePath, source: 'desktop_screenshot' }
+        : null
     case 'send_wechat_media': {
       const kind = c.output.kind === 'image' || c.output.kind === 'video' || c.output.kind === 'file'
         ? c.output.kind
         : 'file'
       const caption = typeof c.output.caption === 'string' ? c.output.caption.trim() : ''
-      return { kind, filePath, caption }
+      return { kind, filePath, caption, source: 'tool' }
     }
     default:
       return null
@@ -505,6 +521,15 @@ function wantsVoiceReply(text: string): boolean {
   return /(?:发|回|用|说|讲|来).{0,8}(?:语音|声音)|(?:语音|声音).{0,8}(?:回复|说|讲|发|回)|听你说|想听/i.test(text)
 }
 
+function wantsDesktopScreenshotReply(text: string): boolean {
+  const normalized = text.replace(/\s+/g, '')
+  if (/(?:怎么|如何|怎样).{0,8}(?:截图|截屏)/.test(normalized)) return false
+  return (
+    /(?:截图|截屏|屏幕截图|桌面截图)/.test(normalized) &&
+    /(?:发我|发给我|给我|发来|发一下|发|传我|看看|看下|看一下)/.test(normalized)
+  ) || /(?:截个?|拍个?).{0,4}(?:图|屏).{0,8}(?:发|给我|看看|看下|看一下)/.test(normalized)
+}
+
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -513,6 +538,8 @@ function splitVoiceMarkedReply(reply: WechatBotReply, forceVoice: boolean): Wech
   const text = reply.text.trim()
   if (!text) return reply
   const sourceBubbles = reply.textBubbles?.length ? reply.textBubbles : [text]
+  const savedTextBubbles = reply.savedTextBubbles?.length ? reply.savedTextBubbles : sourceBubbles
+  const savedText = reply.savedText || savedTextBubbles.join('\n')
   const textBubbles: string[] = []
   const media: WechatBotMedia[] = [...reply.media]
   let hasVoiceMarker = false
@@ -531,10 +558,10 @@ function splitVoiceMarkedReply(reply: WechatBotReply, forceVoice: boolean): Wech
 
   if (!hasVoiceMarker && forceVoice) {
     media.push({ kind: 'voice', text, personaVoice: reply.personaVoice, ttsInstructions: reply.ttsInstructions })
-    return { text: '', textBubbles: [], media: dedupeMedia(media), personaActions: reply.personaActions }
+    return { ...reply, text: '', textBubbles: [], savedText, savedTextBubbles, media: dedupeMedia(media), personaActions: reply.personaActions }
   }
 
-  return { text: textBubbles.join('\n'), textBubbles, media: dedupeMedia(media), personaActions: reply.personaActions }
+  return { ...reply, text: textBubbles.join('\n'), textBubbles, savedText, savedTextBubbles, media: dedupeMedia(media), personaActions: reply.personaActions }
 }
 
 function splitWechatExplicitBubbles(text: string): string[] {
@@ -587,6 +614,66 @@ function stripPersonaStickerBubbles(reply: WechatBotReply): WechatBotReply {
 }
 
 const MEDIA_DIRECTIVE_RE = /^MEDIA:\s*(.+)$/i
+
+function stripMediaDirectiveLines(text: string): string {
+  return text
+    .split(/\n/)
+    .filter((line) => !MEDIA_DIRECTIVE_RE.test(line.trim()))
+    .join('\n')
+    .trim()
+}
+
+function summarizeWechatMedia(item: WechatBotMedia): string {
+  if (item.kind === 'voice') {
+    const text = String(item.text || '').trim()
+    return text ? `[语音] ${text}` : '[已发送语音]'
+  }
+  if (item.source === 'desktop_screenshot') return '[已发送截图]'
+  const label = item.kind === 'image' ? '图片' : item.kind === 'video' ? '视频' : '文件'
+  const caption = String(item.caption || '').trim()
+  return caption ? `[已发送${label}] ${caption}` : `[已发送${label}]`
+}
+
+function summarizePersonaAction(action: WechatPersonaAction): string {
+  switch (action.action) {
+    case 'open_persona_chat':
+      return `[已打开数字分身] ${action.displayName}`
+    case 'build_persona':
+      return `[已创建数字分身] ${action.displayName}`
+    case 'build_session_vectors':
+      return `[已构建聊天索引] ${action.displayName}`
+    case 'ask_persona_build':
+      return `[已询问是否创建数字分身] ${action.displayName}`
+    default:
+      return `[数字分身动作] ${action.displayName}`
+  }
+}
+
+function buildSavedReplyBubbles(rawBubbles: string[], media: WechatBotMedia[], personaActions: WechatPersonaAction[]): string[] {
+  const bubbles = rawBubbles
+    .map(stripMediaDirectiveLines)
+    .filter(Boolean)
+  const summaries = [
+    ...media.map(summarizeWechatMedia),
+    ...personaActions.map(summarizePersonaAction),
+  ].filter(Boolean)
+  return [...normalizeWechatTextBubbles(bubbles), ...summaries]
+}
+
+function getSavedAssistantText(reply: WechatBotReply): string {
+  const savedBubbles = reply.savedTextBubbles?.length ? normalizeWechatTextBubbles(reply.savedTextBubbles) : []
+  const savedText = (reply.savedText || savedBubbles.join('\n')).trim()
+  if (savedText) return savedText
+
+  const text = reply.text.trim()
+  if (text) return text
+
+  const summaries = [
+    ...reply.media.map(summarizeWechatMedia),
+    ...reply.personaActions.map(summarizePersonaAction),
+  ].filter(Boolean)
+  return summaries.join('\n') || '[微信回复已处理]'
+}
 
 async function extractMediaDirectives(text: string): Promise<{ text: string; media: WechatBotMedia[] }> {
   const media: WechatBotMedia[] = []
@@ -1039,8 +1126,10 @@ class WeixinBotService {
       const history = agentConversationStore.load(conv.id)?.messages ?? [userMsg]
       typing = await this.startTypingIndicator(from, contextToken)
       const forceVoice = wantsVoiceReply(commandText)
+      const allowDesktopScreenshotReply = wantsDesktopScreenshotReply(commandText)
       console.log(`[WechatBot] 开始调用普通 Agent history=${history.length} forceVoice=${forceVoice}`)
-      const rawReply = await this.runAgent(history)
+      let rawReply = await this.runAgent(history, { allowDesktopScreenshotReply })
+      rawReply = await this.completeDesktopScreenshotReplyIfNeeded(rawReply, allowDesktopScreenshotReply)
       console.log(`[WechatBot] 普通 Agent 原始回复 textLength=${rawReply.text.length} bubbles=${rawReply.textBubbles?.length || 0} media=${rawReply.media.length}`)
       const reply = splitVoiceMarkedReply(rawReply, forceVoice)
       console.log(`[WechatBot] Agent 回复长度=${reply.text.length} 媒体=${reply.media.length} voiceMedia=${reply.media.filter((item) => item.kind === 'voice').length} 内容="${reply.text.slice(0, 120)}"`)
@@ -1053,7 +1142,7 @@ class WeixinBotService {
         const assistantMsg: UIMessage = {
           id: `wx-a-${Date.now()}`,
           role: 'assistant',
-          parts: [{ type: 'text', text: reply.text || `[已触发 ${reply.personaActions.length} 个数字分身动作]` }]
+          parts: [{ type: 'text', text: getSavedAssistantText(reply) }]
         }
         agentConversationStore.append(conv.id, [assistantMsg])
         if (reply.text) {
@@ -1437,10 +1526,38 @@ class WeixinBotService {
       agentConversationStore.append(conv.id, [userMsg])
 
       const history = agentConversationStore.load(conv.id)?.messages ?? [userMsg]
+      const forceVoice = texts.some(wantsVoiceReply)
+      let streamedBubbleCount = 0
+      let sendChain: Promise<void> = Promise.resolve()
+      const enqueuePersonaBubbleSend = (bubble: string, bubbleContext: WechatPersonaBubbleContext) => {
+        if (forceVoice) return
+        const trimmed = bubble.trim()
+        if (!trimmed || PERSONA_STICKER_BUBBLE_RE.test(trimmed)) return
+        sendChain = sendChain.then(async () => {
+          if (queue.cancelled || !this.session) return
+          await this.stopPersonaQueueTyping(queue)
+          if (VOICE_MARKER_RE.test(trimmed)) {
+            const voiceText = trimmed.replace(VOICE_MARKER_RE, '').trim()
+            if (voiceText) {
+              await this.sendReplyMedia(queue.from, [{
+                kind: 'voice',
+                text: voiceText,
+                personaVoice: bubbleContext.personaVoice,
+                ttsInstructions: bubbleContext.ttsInstructions,
+              }], contextToken)
+              streamedBubbleCount += 1
+            }
+            return
+          }
+          await this.sendTextBubbles(queue.from, [trimmed], contextToken)
+          streamedBubbleCount += 1
+        })
+      }
       const reply = splitVoiceMarkedReply(
-        stripPersonaStickerBubbles(await this.runPersonaChat(queue.mode, history)),
-        texts.some(wantsVoiceReply),
+        stripPersonaStickerBubbles(await this.runPersonaChat(queue.mode, history, enqueuePersonaBubbleSend)),
+        forceVoice,
       )
+      await sendChain
 
       if (queue.cancelled) return
       if (!this.session || (!reply.text && reply.media.length === 0)) return
@@ -1448,16 +1565,19 @@ class WeixinBotService {
       agentConversationStore.append(conv.id, [{
         id: `wxp-a-${Date.now()}`,
         role: 'assistant',
-        parts: [{ type: 'text', text: reply.text || `[已发送 ${reply.media.length} 个媒体文件]` }],
+        parts: [{ type: 'text', text: getSavedAssistantText(reply) }],
       }])
-      if (reply.text) await this.sendTextBubbles(queue.from, getReplyTextBubbles(reply), contextToken)
-      await this.sendReplyMedia(queue.from, reply.media, contextToken)
+      if (forceVoice || streamedBubbleCount === 0) {
+        if (reply.text) await this.sendTextBubbles(queue.from, getReplyTextBubbles(reply), contextToken)
+        await this.sendReplyMedia(queue.from, reply.media, contextToken)
+      }
       this.logger?.warn('WechatBot', '已回复微信数字分身消息', {
         from: queue.from,
         sessionId: queue.mode.sessionId,
         mergedCount: texts.length,
         replyLength: reply.text.length,
         mediaCount: reply.media.length,
+        streamedBubbleCount,
       })
     } catch (e) {
       await this.stopPersonaQueueTyping(queue)
@@ -1538,6 +1658,57 @@ class WeixinBotService {
       const session = this.session
       if (!session) return
       await sendText(session, toUserId, normalized[i], contextToken)
+    }
+  }
+
+  private async prepareDesktopScreenshotMedia(): Promise<{ success: true; media: WechatBotMedia } | { success: false; error: string }> {
+    try {
+      const { agentCapabilityService } = await import('../agent/agentCapabilityService')
+      const result = await agentCapabilityService.handleCall('desktop_screenshot', {}) as Record<string, unknown>
+      if (result?.success !== true) {
+        return { success: false, error: String(result?.error || '截图失败') }
+      }
+      const filePath = typeof result.filePath === 'string' ? result.filePath.trim() : ''
+      if (!filePath) return { success: false, error: '截图成功但没有生成文件路径' }
+      return { success: true, media: { kind: 'image', filePath, source: 'desktop_screenshot' } }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  private async completeDesktopScreenshotReplyIfNeeded(reply: WechatBotReply, allowed: boolean): Promise<WechatBotReply> {
+    if (!allowed) return reply
+    const doneText = '截好了，发你了'
+    if (reply.media.some((item) => item.source === 'desktop_screenshot')) {
+      return {
+        ...reply,
+        text: doneText,
+        textBubbles: [doneText],
+        savedText: `${doneText}\n[已发送截图]`,
+        savedTextBubbles: [doneText, '[已发送截图]'],
+      }
+    }
+
+    const screenshot = await this.prepareDesktopScreenshotMedia()
+    if (!screenshot.success) {
+      const text = `截图失败：${screenshot.error}`
+      return {
+        ...reply,
+        text,
+        textBubbles: [text],
+        savedText: text,
+        savedTextBubbles: [text],
+      }
+    }
+
+    const media = dedupeMedia([...reply.media, screenshot.media])
+    return {
+      ...reply,
+      text: doneText,
+      textBubbles: [doneText],
+      savedText: `${doneText}\n[已发送截图]`,
+      savedTextBubbles: [doneText, '[已发送截图]'],
+      media,
     }
   }
 
@@ -1651,7 +1822,10 @@ class WeixinBotService {
   }
 
   /** 把对话（历史 + 本轮）交给项目内 Agent，收集流式文本作为当前微信机器人会话的回复。 */
-  private async runAgent(uiMessages: UIMessage[]): Promise<WechatBotReply> {
+  private async runAgent(
+    uiMessages: UIMessage[],
+    options: { allowDesktopScreenshotReply?: boolean } = {},
+  ): Promise<WechatBotReply> {
     const { convertToModelMessages } = await import('ai')
     const { agentProcessService } = await import('../agent/agentProcessService')
     const { agentProfileService } = await import('../agent/agentProfileService')
@@ -1704,7 +1878,9 @@ class WeixinBotService {
           }
           textBlocks[index] += delta
         }
-        const item = extractMediaFromToolChunk(chunk, toolNames)
+        const item = extractMediaFromToolChunk(chunk, toolNames, {
+          allowDesktopScreenshotReply: options.allowDesktopScreenshotReply,
+        })
         if (item) {
           media.push(item)
           this.logger?.warn('WechatBot', '已收集 Agent 媒体输出', { kind: item.kind, filePath: item.filePath })
@@ -1721,15 +1897,24 @@ class WeixinBotService {
       : normalizeWechatTextBubbles([reply])
     const replyBubbles = rawReplyBubbles.flatMap(splitWechatMarkedBubbles)
     const directiveReply = await extractMediaDirectivesFromBubbles(replyBubbles)
+    const mediaOut = dedupeMedia([...media, ...directiveReply.media])
+    const personaActionsOut = dedupePersonaActions(personaActions)
+    const savedTextBubbles = buildSavedReplyBubbles(rawReplyBubbles, mediaOut, personaActionsOut)
     return {
       text: directiveReply.text,
       textBubbles: directiveReply.textBubbles,
-      media: dedupeMedia([...media, ...directiveReply.media]),
-      personaActions: dedupePersonaActions(personaActions),
+      savedText: savedTextBubbles.join('\n'),
+      savedTextBubbles,
+      media: mediaOut,
+      personaActions: personaActionsOut,
     }
   }
 
-  private async runPersonaChat(mode: WechatConversationMode, uiMessages: UIMessage[]): Promise<WechatBotReply> {
+  private async runPersonaChat(
+    mode: WechatConversationMode,
+    uiMessages: UIMessage[],
+    onTextBubble?: (bubble: string, context: WechatPersonaBubbleContext) => void,
+  ): Promise<WechatBotReply> {
     const { personaStore } = await import('../agent/persona/personaStore')
     const persona = personaStore.get(mode.sessionId)
     if (!persona) {
@@ -1750,8 +1935,31 @@ class WeixinBotService {
       // 无笔记照常聊
     }
     const messages = await convertToModelMessages(uiMessages)
-    let reply = ''
     const textBubbles: string[] = []
+    const textBlocks: string[] = []
+    const textBlockIndexes = new Map<string, number>()
+    const emittedTextBlockIndexes = new Set<number>()
+    const bubbleContext: WechatPersonaBubbleContext = {
+      personaVoice: persona.ttsVoice,
+      ttsInstructions: persona.card.ttsInstructions,
+    }
+    const ensureTextBlock = (id: string): number => {
+      let index = textBlockIndexes.get(id)
+      if (index !== undefined) return index
+      index = textBlocks.length
+      textBlockIndexes.set(id, index)
+      textBlocks.push('')
+      return index
+    }
+    const emitTextBlock = (id: string) => {
+      const index = textBlockIndexes.get(id)
+      if (index === undefined || emittedTextBlockIndexes.has(index)) return
+      emittedTextBlockIndexes.add(index)
+      for (const bubble of normalizeWechatTextBubbles([textBlocks[index]])) {
+        textBubbles.push(bubble)
+        onTextBubble?.(bubble, bubbleContext)
+      }
+    }
     await agentProcessService.personaChat({
       providerConfig,
       persona: {
@@ -1768,16 +1976,20 @@ class WeixinBotService {
       messages,
       outputMode: 'wechat',
     }, (chunk) => {
-      const c = chunk as { type?: string; delta?: string; text?: string }
-      if (c?.type === 'text-delta') {
-        const delta = c.delta ?? c.text ?? ''
-        reply += delta
-        const bubble = delta.replace(/^\n+/, '').trim()
-        if (bubble) textBubbles.push(bubble)
+      const c = chunk as { type?: string; id?: string; delta?: string; text?: string }
+      if (c?.type === 'text-start') {
+        ensureTextBlock(c.id || `text-${textBlocks.length}`)
+      } else if (c?.type === 'text-delta') {
+        const id = c.id || 'default'
+        const index = ensureTextBlock(id)
+        textBlocks[index] += c.delta ?? c.text ?? ''
+      } else if (c?.type === 'text-end') {
+        emitTextBlock(c.id || 'default')
       }
     })
+    for (const [id] of textBlockIndexes) emitTextBlock(id)
     return {
-      text: reply.trim(),
+      text: textBubbles.join('\n'),
       textBubbles: normalizeWechatTextBubbles(textBubbles),
       media: [],
       personaActions: [],

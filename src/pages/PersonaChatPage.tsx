@@ -17,16 +17,14 @@ import type { PersonaBuildProgressInfo, PersonaRecordInfo } from '../types/elect
 
 type Phase = 'loading' | 'confirm' | 'building' | 'chat'
 
-function messageText(message: UIMessage): string {
+function messageTextParts(message: UIMessage): string[] {
   return (message.parts || [])
     .map((part) => (part && typeof part === 'object' && part.type === 'text' ? String((part as { text?: unknown }).text || '') : ''))
     .filter(Boolean)
-    .join('')
 }
 
-/** 模型按"换行或／即分条"输出，两种分隔都拆成微信式的多条气泡。 */
-function splitBubbles(text: string): string[] {
-  return text.split(/[\n／]/).map((line) => line.trim()).filter(Boolean)
+function messageText(message: UIMessage): string {
+  return messageTextParts(message).join('\n')
 }
 
 /** 语音气泡标记（与 personaChatEngine 的提示词约定一致）：行首 [语音]/【语音】。 */
@@ -262,8 +260,8 @@ export default function PersonaChatPage() {
     if (texts.length === 0) return
     pendingRef.current = []
     setPendingTexts([])
-    // 多条连发合成一条多行消息：渲染端按行拆气泡，和逐条发出的观感一致
-    void sendMessage({ text: texts.join('\n') })
+    // 多条连发合成一条多 part 消息：每个 part 就是一个聊天气泡。
+    void sendMessage({ parts: texts.map((text) => ({ type: 'text' as const, text })) })
   }
 
   const armFlushTimer = (delayMs?: number) => {
@@ -350,7 +348,7 @@ export default function PersonaChatPage() {
             const played = new Set<string>()
             for (const message of conv.messages) {
               if (message.role !== 'assistant') continue
-              splitBubbles(messageText(message)).forEach((raw, index) => {
+              messageTextParts(message).forEach((raw, index) => {
                 if (parseBubble(raw).isVoice) played.add(`${message.id}:${index}`)
               })
             }
@@ -651,7 +649,7 @@ export default function PersonaChatPage() {
           </div>
         )}
         {messages.map((message) => {
-          const rawBubbles = splitBubbles(messageText(message))
+          const rawBubbles = messageTextParts(message).map((part) => part.trim()).filter(Boolean)
           if (rawBubbles.length === 0) return null
           const bubbles = rawBubbles.map(parseBubble)
           const isMine = message.role === 'user'
