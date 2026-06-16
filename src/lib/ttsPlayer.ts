@@ -1,7 +1,7 @@
 /**
  * 全局 TTS 播放器 —— 朗读 AI 回复 / 微信消息 / 角色语音回复共用的单例。
  * 优先走主进程在线流式合成（tts:stream），不可流式时回退完整合成（tts:speak）；
- * 未启用/未配置时回退浏览器 speechSynthesis（系统朗读）。
+ * 普通朗读未启用/未配置时回退浏览器 speechSynthesis；分身绑定音色时不回退系统朗读。
  * 同一时刻只播一条：再次触发同 key 即停止，触发其他 key 则切换。
  */
 import { useEffect, useState } from 'react'
@@ -349,6 +349,7 @@ async function speakWithOnlineStream(
 export async function speakText(key: string, text: string, options: SpeakOptions = {}): Promise<SpeakResult> {
   const content = String(text || '').trim()
   if (!content) return { ok: false, error: '朗读内容为空' }
+  const hasPersonaVoice = Boolean(options.personaVoice)
 
   if (speakingState?.key === key) {
     stopSpeaking()
@@ -377,6 +378,14 @@ export async function speakText(key: string, text: string, options: SpeakOptions
 
   if (result?.success && result.audioBase64) {
     return playAudioBase64(key, result.audioBase64, result.mimeType, seq, options.awaitEnd)
+  }
+
+  if (hasPersonaVoice) {
+    setSpeaking(null)
+    return {
+      ok: false,
+      error: result?.error || '分身音色合成失败，请检查 TTS 配置或音色样本',
+    }
   }
 
   // 未配置在线 TTS：回退系统朗读；其他失败也尽量回退，保证“能读出声”

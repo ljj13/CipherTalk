@@ -22,16 +22,23 @@ const HUMAN_TYPING_MAX_DELAY_MS = 7500
 const HUMAN_BUBBLE_PAUSE_MIN_MS = 700
 const HUMAN_BUBBLE_PAUSE_MAX_MS = 2200
 
+/** 语音气泡标记：行首 [语音]/【语音】，渲染端显示成微信语音条（见 PersonaChatPage）。 */
+const VOICE_MARKER_RE = /^[\[【]\s*(?:语音|voice)\s*[\]】]/i
+
 function splitReplyBubbles(text: string): string[] {
-  return text.split(new RegExp(`^\\s*${BURST_JOINER}\\s*$`, 'm')).map((line) => line.trim()).filter(Boolean)
+  return text
+    .split(new RegExp(`^\\s*${BURST_JOINER}\\s*$`, 'm'))
+    .flatMap((bubble) => {
+      const trimmed = bubble.trim()
+      if (!trimmed) return []
+      if (VOICE_MARKER_RE.test(trimmed)) return [trimmed]
+      return trimmed.split(/[\n／]/).map((line) => line.trim()).filter(Boolean)
+    })
 }
 
 // 兜底拆条：不分条的回复超过 max(此值, 平均字数×2.5) 才动它
 const FALLBACK_SPLIT_MIN_CHARS = 50
 const FALLBACK_MAX_BUBBLES = 5
-
-/** 语音气泡标记：行首 [语音]/【语音】，渲染端显示成微信语音条（见 PersonaChatPage）。 */
-const VOICE_MARKER_RE = /^[\[【]\s*(?:语音|voice)\s*[\]】]/i
 
 /** 模型点播表情包的标记：[表情:编号]，编号对应词典里 TA 常用的表情包。 */
 const STICKER_INTENT_RE = /^[\[【]\s*表情\s*[:：]\s*(\d+)\s*[\]】]/
@@ -190,7 +197,6 @@ async function emitCompleteTextAsUiChunks(
   const textId = `persona-text-${Date.now()}`
   onChunk({ type: 'start' })
   onChunk({ type: 'start-step' })
-  onChunk({ type: 'text-start', id: textId })
   const bubbles = splitReplyBubbles(text)
   for (let i = 0; i < bubbles.length; i += 1) {
     const delay = bubbles[i].startsWith(STICKER_BUBBLE_PREFIX) ? jitter(STICKER_PICK_DELAY_MS) : typingDelayMs(bubbles[i])
@@ -199,9 +205,11 @@ async function emitCompleteTextAsUiChunks(
       onChunk({ type: 'abort', reason: 'aborted' })
       return false
     }
-    onChunk({ type: 'text-delta', id: textId, delta: `${i === 0 ? '' : '\n'}${bubbles[i]}` })
+    const bubbleTextId = `${textId}-${i}`
+    onChunk({ type: 'text-start', id: bubbleTextId })
+    onChunk({ type: 'text-delta', id: bubbleTextId, delta: bubbles[i] })
+    onChunk({ type: 'text-end', id: bubbleTextId })
   }
-  onChunk({ type: 'text-end', id: textId })
   onChunk({ type: 'finish-step' })
   onChunk({ type: 'finish', finishReason, messageMetadata: metadata })
   return true

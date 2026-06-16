@@ -149,6 +149,75 @@ function errorToLogData(error: unknown): Record<string, unknown> {
   return { message: String(error) }
 }
 
+const PERSONA_VOICE_MARKER_RE = /^[\[【]\s*(?:语音|voice)\s*[\]】]\s*/i
+
+function createPersonaVoiceCachePrewarmer(input: {
+  runId: string
+  sessionId: string
+  ttsVoice: PersonaTtsVoiceBinding | null
+  instructions?: string
+  signal?: AbortSignal
+  logger?: { warn?(category: string, message: string, data?: any): void }
+}): (chunk: unknown) => void {
+  const textById = new Map<string, string>()
+  const queued = new Set<string>()
+
+  const prewarm = (rawText: string) => {
+    const match = rawText.match(PERSONA_VOICE_MARKER_RE)
+    if (!match || input.signal?.aborted) return
+
+    const text = rawText.slice(match[0].length).trim()
+    if (!text) return
+
+    const key = `${input.ttsVoice?.provider || 'default'}:${input.ttsVoice?.model || ''}:${input.ttsVoice?.voice || ''}:${input.instructions || ''}:${text}`
+    if (queued.has(key)) return
+    queued.add(key)
+
+    void (async () => {
+      try {
+        const { resolvePersonaVoiceTtsConfig, synthesizeSpeech } = await import('../../services/ai/ttsService')
+        const configPatch = input.instructions ? { instructions: input.instructions } : undefined
+        const config = input.ttsVoice
+          ? resolvePersonaVoiceTtsConfig(input.ttsVoice, configPatch as any)
+          : configPatch
+        const result = await synthesizeSpeech(text, config ? { config: config as any, useCache: true, signal: input.signal } : { useCache: true, signal: input.signal })
+        if (!result.success) {
+          input.logger?.warn?.('Persona', '分身语音预合成失败', {
+            runId: input.runId,
+            sessionId: input.sessionId,
+            error: result.error,
+            errorCode: result.errorCode,
+          })
+        }
+      } catch (error) {
+        input.logger?.warn?.('Persona', '分身语音预合成异常', {
+          runId: input.runId,
+          sessionId: input.sessionId,
+          ...errorToLogData(error),
+        })
+      }
+    })()
+  }
+
+  return (chunk: unknown) => {
+    if (!chunk || typeof chunk !== 'object') return
+    const item = chunk as { type?: unknown; id?: unknown; delta?: unknown }
+    const type = String(item.type || '')
+    const id = typeof item.id === 'string' ? item.id : ''
+    if (!id) return
+
+    if (type === 'text-start') {
+      textById.set(id, '')
+    } else if (type === 'text-delta') {
+      textById.set(id, `${textById.get(id) || ''}${String(item.delta || '')}`)
+    } else if (type === 'text-end') {
+      const text = textById.get(id) || ''
+      textById.delete(id)
+      prewarm(text)
+    }
+  }
+}
+
 export function registerAiHandlers(ctx: MainProcessContext): void {
   void import('../../services/agent/agentCapabilityService')
     .then(({ agentCapabilityService }) => agentCapabilityService.setContext(ctx))
@@ -999,6 +1068,18 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
 
       const { agentProcessService } = await import('../../services/agent/agentProcessService')
       agentProcessService.setLogger(logger)
+      const prewarmPersonaVoice = createPersonaVoiceCachePrewarmer({
+        runId,
+        sessionId,
+        ttsVoice: persona.ttsVoice,
+        instructions: persona.card.ttsInstructions,
+        signal: aborter.signal,
+        logger,
+      })
+      const sendPersonaChunk = (chunk: unknown) => {
+        send(chunk)
+        prewarmPersonaVoice(chunk)
+      }
       await agentProcessService.personaChat(
         {
           providerConfig,
@@ -1015,7 +1096,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
           },
           messages,
         },
-        send,
+        sendPersonaChunk,
         sendProgress,
         aborter.signal,
       )
