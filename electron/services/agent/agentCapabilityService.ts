@@ -888,7 +888,7 @@ export class AgentCapabilityService {
       filePath,
       sensitive: true,
       delivery: 'local-preview-only',
-      note: '桌面截图已保存到本机并可在当前软件内预览；不要说已发送到微信。如需在微信机器人当前会话回复该截图，必须先让用户明确确认。',
+      note: '桌面截图已保存到本机。软件内对话不要说已发送到微信；微信机器人入口下，如果当前用户明确要求截图，可直接把它作为当前会话回复附件发送。',
     }
   }
 

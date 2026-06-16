@@ -173,7 +173,7 @@ function isDesktopScreenshotPath(filePath: string): boolean {
 function assertDesktopScreenshotConfirmed(filePath: string, confirmed: boolean): void {
   if (!isDesktopScreenshotPath(filePath)) return
   if (!confirmed) {
-    throw new Error('桌面截图属于敏感附件。请先用文字询问用户是否要把这张截图作为当前微信会话回复附件发送；用户明确确认后，再传 confirmedDesktopScreenshot=true。')
+    throw new Error('桌面截图属于敏感附件。只有当前微信消息明确要求截图/发截图/截屏给我时，才可传 confirmedDesktopScreenshot=true 并作为当前会话回复附件；否则不要发送。')
   }
 }
 
@@ -181,11 +181,11 @@ export const sendWechatMedia = tool({
   description:
     '仅在微信官方机器人场景下，把媒体作为当前触发会话的回复附件。支持电脑上可访问的任意本地文件绝对路径，或 http/https 远程媒体 URL。' +
     '会自动按 MIME 分流为图片、视频或文件。仅当用户明确要求发送媒体/文件/图片/视频到微信时使用。' +
-    'caption 可作为附件前的简短说明文字。不得指定联系人、群或 toUserId。桌面截图需要二次确认。',
+    'caption 可作为附件前的简短说明文字。不得指定联系人、群或 toUserId。桌面截图仅在当前微信消息明确要求截图时可直接回复。',
   inputSchema: z.object({
     media: z.string().min(1).describe('本地文件绝对路径或 http/https 远程媒体 URL'),
     caption: z.string().optional().describe('媒体前要发送的简短说明文字'),
-    confirmedDesktopScreenshot: z.boolean().default(false).describe('仅当 media 是 desktop_screenshot 生成的截图且用户已明确确认发送到当前微信会话时为 true'),
+    confirmedDesktopScreenshot: z.boolean().default(false).describe('仅当 media 是 desktop_screenshot 生成的截图，且当前微信用户本条消息已明确要求截图/发截图时为 true；不需要二次追问'),
   }),
   execute: async ({ media, caption, confirmedDesktopScreenshot }) => {
     try {
