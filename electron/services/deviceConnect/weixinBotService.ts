@@ -505,6 +505,10 @@ function wantsVoiceReply(text: string): boolean {
   return /(?:发|回|用|说|讲|来).{0,8}(?:语音|声音)|(?:语音|声音).{0,8}(?:回复|说|讲|发|回)|听你说|想听/i.test(text)
 }
 
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function splitVoiceMarkedReply(reply: WechatBotReply, forceVoice: boolean): WechatBotReply {
   const text = reply.text.trim()
   if (!text) return reply
@@ -533,8 +537,15 @@ function splitVoiceMarkedReply(reply: WechatBotReply, forceVoice: boolean): Wech
   return { text: textBubbles.join('\n'), textBubbles, media: dedupeMedia(media), personaActions: reply.personaActions }
 }
 
+function splitWechatExplicitBubbles(text: string): string[] {
+  return text
+    .split(new RegExp(`^\\s*${escapeRegExp(WECHAT_TEXT_BUBBLE_SEPARATOR)}\\s*$`, 'm'))
+    .map((bubble) => bubble.trim())
+    .filter(Boolean)
+}
+
 function normalizeWechatTextBubbles(bubbles: string[]): string[] {
-  return bubbles.map((bubble) => bubble.trim()).filter(Boolean)
+  return bubbles.flatMap(splitWechatExplicitBubbles)
 }
 
 function personaBubbleSendPauseMs(index: number): number {
@@ -543,7 +554,7 @@ function personaBubbleSendPauseMs(index: number): number {
 }
 
 function splitWechatMarkedBubbles(text: string): string[] {
-  return text.split(new RegExp(`^\\s*${WECHAT_TEXT_BUBBLE_SEPARATOR}\\s*$`, 'm')).map((bubble) => bubble.trim()).filter(Boolean)
+  return splitWechatExplicitBubbles(text)
 }
 
 async function extractMediaDirectivesFromBubbles(bubbles: string[]): Promise<{ text: string; textBubbles: string[]; media: WechatBotMedia[] }> {
