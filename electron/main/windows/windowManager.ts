@@ -172,8 +172,10 @@ function getTrayIconPath(ctx: MainProcessContext): string {
   if (process.platform === 'darwin') {
     const isDev = !!process.env.VITE_DEV_SERVER_URL
     const devTrayPath = join(__dirname, '../public/tray-mac.png')
+    const packagedTrayPath = join(process.resourcesPath, 'tray-mac.png')
 
     if (isDev && existsSync(devTrayPath)) return devTrayPath
+    if (!isDev && existsSync(packagedTrayPath)) return packagedTrayPath
   }
 
   return getAppIconPath(ctx)
@@ -184,7 +186,11 @@ function getTrayImage(ctx: MainProcessContext) {
   const image = loadNativeImageIfValid(iconPath, 'tray icon')
 
   if (!image) return nativeImage.createEmpty()
-  if (process.platform === 'darwin') return image.resize({ height: 26 })
+  if (process.platform === 'darwin') {
+    const trayImage = image.resize({ height: 22 })
+    trayImage.setTemplateImage(true)
+    return trayImage
+  }
   return image
 }
 
