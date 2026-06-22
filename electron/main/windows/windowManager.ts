@@ -28,6 +28,8 @@ type ReleaseAnnouncementPayload = {
   generatedAt?: string
 }
 
+const MAIN_WINDOW_ROUTES = new Set(['/home', '/agent', '/settings', '/pets', '/diary', '/export'])
+
 function getReleaseAnnouncementPath(): string {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
   return isDev
@@ -172,8 +174,10 @@ function getTrayIconPath(ctx: MainProcessContext): string {
   if (process.platform === 'darwin') {
     const isDev = !!process.env.VITE_DEV_SERVER_URL
     const devTrayPath = join(__dirname, '../public/tray-mac.png')
+    const packagedTrayPath = join(process.resourcesPath, 'tray-mac.png')
 
     if (isDev && existsSync(devTrayPath)) return devTrayPath
+    if (!isDev && existsSync(packagedTrayPath)) return packagedTrayPath
   }
 
   return getAppIconPath(ctx)
@@ -184,7 +188,11 @@ function getTrayImage(ctx: MainProcessContext) {
   const image = loadNativeImageIfValid(iconPath, 'tray icon')
 
   if (!image) return nativeImage.createEmpty()
-  if (process.platform === 'darwin') return image.resize({ height: 26 })
+  if (process.platform === 'darwin') {
+    const trayImage = image.resize({ height: 22 })
+    trayImage.setTemplateImage(true)
+    return trayImage
+  }
   return image
 }
 
@@ -202,6 +210,12 @@ function setupDevToolsShortcut(win: BrowserWindow, getTargetWindow?: () => Brows
       event.preventDefault()
     }
   })
+}
+
+function hideMacWindowControls(win: BrowserWindow): void {
+  if (process.platform !== 'darwin') return
+  win.setWindowButtonVisibility(false)
+  win.setWindowButtonPosition({ x: -100, y: -100 })
 }
 
 function loadWindowRoute(
@@ -271,16 +285,16 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     petBubbleExpanded = false
   }
 
-  const setPetWindowMaterial = (expanded: boolean): void => {
+  const setPetWindowMaterial = (_expanded: boolean): void => {
     if (!petWindow || petWindow.isDestroyed()) return
     try {
-      // win32 不做 setBackgroundMaterial 切换：acrylic 切回 'none' 后透明窗口会被
-      // 合成器画成不可恢复的黑底（Electron 已知 bug），气泡观感靠 .pet-notice 自身的 CSS 玻璃态。
+      // BrowserWindow 本身必须保持透明，气泡观感由 .pet-notice 自身的 CSS 负责。
+      petWindow.setBackgroundColor('#00000000')
       if (process.platform === 'darwin') {
-        petWindow.setVibrancy(expanded ? 'hud' : null)
+        petWindow.setVibrancy(null)
       }
     } catch {
-      // 平台材质是通知气泡的增强项，失败时保持普通透明桌宠窗口。
+      // 透明窗口本身仍可用。
     }
   }
 
@@ -309,6 +323,68 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     const existingTray = ctx.getTray()
     if (existingTray) return existingTray
 
+    const focusMainWindow = (route?: string): BrowserWindow => manager.focusMainWindow(route)
+
+    const toggleMainWindow = () => {
+      const mainWindow = ctx.getMainWindow()
+      if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized()) {
+        mainWindow.hide()
+        return
+      }
+      focusMainWindow()
+    }
+
+    const togglePetWindow = () => {
+      const configService = ctx.getConfigService()
+      const enabled = Boolean(configService?.get('petDesktopEnabled')) && manager.isPetWindowOpen()
+      if (enabled) {
+        manager.closePetWindow()
+        configService?.set('petDesktopEnabled', false)
+        ctx.broadcastToWindows('config:changed', { key: 'petDesktopEnabled', value: false })
+        return
+      }
+
+      configService?.set('petDesktopEnabled', true)
+      ctx.broadcastToWindows('config:changed', { key: 'petDesktopEnabled', value: true })
+      const currentPet = configService?.get('petCurrent')
+      if (currentPet) manager.openPetWindow()
+    }
+
+    const showTrayMenu = async () => {
+      const tray = ctx.getTray()
+      if (!tray) return
+      const configService = ctx.getConfigService()
+      const petEnabled = Boolean(configService?.get('petDesktopEnabled')) && manager.isPetWindowOpen()
+      const mainWindow = ctx.getMainWindow()
+      const mainVisible = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible() && !mainWindow.isMinimized())
+
+      const contextMenu = Menu.buildFromTemplate([
+        {
+          label: mainVisible ? '隐藏主窗口' : '显示主窗口',
+          click: toggleMainWindow,
+        },
+        { type: 'separator' },
+        { label: 'AI 助手', click: () => focusMainWindow('/agent') },
+        { label: '导出', click: () => focusMainWindow('/export') },
+        {
+          label: '桌宠',
+          type: 'checkbox',
+          checked: petEnabled,
+          click: togglePetWindow,
+        },
+        { label: '设置', click: () => focusMainWindow('/settings') },
+        { type: 'separator' },
+        {
+          label: '退出',
+          click: () => {
+            ctx.appWithQuitFlag.isQuitting = true
+            app.quit()
+          },
+        },
+      ])
+      tray.popUpContextMenu(contextMenu)
+    }
+
     let tray: Tray
     try {
       tray = new Tray(getTrayImage(ctx))
@@ -323,33 +399,9 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       tray.setIgnoreDoubleClickEvents(true)
     }
 
-    const showMainWindow = () => {
-      const mainWindow = ctx.getMainWindow()
-      if (mainWindow) {
-        if (mainWindow.isMinimized()) mainWindow.restore()
-        mainWindow.show()
-        mainWindow.focus()
-      }
-    }
-
-    const contextMenu = Menu.buildFromTemplate([
-      {
-        label: '显示主窗口',
-        click: showMainWindow
-      },
-      { type: 'separator' },
-      {
-        label: '退出',
-        click: () => {
-          ctx.appWithQuitFlag.isQuitting = true
-          app.quit()
-        }
-      }
-    ])
-
     tray.setToolTip('密语 CipherTalk')
-    tray.setContextMenu(contextMenu)
-    tray.on('double-click', showMainWindow)
+    tray.on('click', () => { void showTrayMenu() })
+    tray.on('right-click', () => { void showTrayMenu() })
 
     return tray
   }
@@ -462,7 +514,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         resizable: false,
         skipTaskbar: true,
         hasShadow: false,
-        show: true,
+        show: false,
         webPreferences: {
           preload: join(__dirname, 'preload.js'),
           devTools: ctx.allowDevTools,
@@ -473,9 +525,14 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         backgroundColor: '#00000000'
       })
 
+      hideMacWindowControls(splash)
       attachWindowStartupDiagnostics(splash, 'splash')
       ctx.setSplashWindow(splash)
       splash.center()
+      splash.once('ready-to-show', () => {
+        hideMacWindowControls(splash)
+        splash.show()
+      })
 
       if (process.env.VITE_DEV_SERVER_URL) {
         splash.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/splash`).catch(() => undefined)
@@ -511,6 +568,32 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         tray.destroy()
         ctx.setTray(null)
       }
+    },
+
+    focusMainWindow(route?: string) {
+      const targetRoute = route && MAIN_WINDOW_ROUTES.has(route) ? route : undefined
+      let win = ctx.getMainWindow()
+      if (!win || win.isDestroyed()) {
+        win = manager.createMainWindow()
+      }
+
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+
+      if (targetRoute) {
+        const sendNavigate = () => {
+          if (!win || win.isDestroyed()) return
+          win.webContents.send('window:navigate', targetRoute)
+        }
+        if (win.webContents.isLoading()) {
+          win.webContents.once('did-finish-load', sendNavigate)
+        } else {
+          sendNavigate()
+        }
+      }
+
+      return win
     },
 
     setDockIcon() {
@@ -1051,6 +1134,45 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       return win
     },
 
+    openSkillPreviewWindow(skillName: string) {
+      const safeSkillName = String(skillName || '').trim()
+      const win = new BrowserWindow({
+        width: 1180,
+        height: 780,
+        minWidth: 760,
+        minHeight: 520,
+        ...getWindowIconOptions(ctx),
+        webPreferences: {
+          preload: join(__dirname, 'preload.js'),
+          devTools: ctx.allowDevTools,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: '#1a1a1a',
+          symbolColor: '#ffffff',
+          height: 36
+        },
+        show: false,
+        backgroundColor: '#ffffff',
+        title: `Skill Preview - ${safeSkillName}`
+      })
+
+      win.once('ready-to-show', () => win.show())
+      const queryParams = `${getThemeQueryParams(ctx)}&skill=${encodeURIComponent(safeSkillName)}`
+      if (process.env.VITE_DEV_SERVER_URL) {
+        win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/skill-preview-window?${queryParams}`)
+        setupDevToolsShortcut(win)
+      } else {
+        win.loadFile(join(__dirname, '../dist/index.html'), {
+          hash: `/skill-preview-window?${queryParams}`
+        })
+      }
+
+      return win
+    },
+
     completeWelcome() {
       if (welcomeWindow && !welcomeWindow.isDestroyed()) {
         welcomeWindow.close()
@@ -1081,6 +1203,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
 
     openPetWindow() {
       if (petWindow && !petWindow.isDestroyed()) {
+        hideMacWindowControls(petWindow)
         petWindow.show()
         return petWindow
       }
@@ -1096,6 +1219,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         y: workArea.y + workArea.height - height - 16,
         frame: false,
         transparent: true,
+        backgroundColor: '#00000000',
         resizable: false,
         maximizable: false,
         fullscreenable: false,
@@ -1112,8 +1236,13 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         }
       })
 
+      hideMacWindowControls(petWindow)
       petWindow.setAlwaysOnTop(true, 'screen-saver')
-      petWindow.once('ready-to-show', () => petWindow?.show())
+      petWindow.once('ready-to-show', () => {
+        if (!petWindow || petWindow.isDestroyed()) return
+        hideMacWindowControls(petWindow)
+        petWindow.show()
+      })
       loadWindowRoute(ctx, petWindow, '/pet-window')
 
       petWindow.on('system-context-menu', (event) => {

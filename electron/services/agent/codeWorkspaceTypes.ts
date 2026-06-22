@@ -37,6 +37,31 @@ export interface CodeWorkspaceListFilesResult {
   error?: string
 }
 
+export type CodeWorkspaceBrowserDiagnosticKind =
+  | 'console'
+  | 'page-error'
+  | 'load-failed'
+  | 'render-process-gone'
+  | 'navigation'
+
+export interface CodeWorkspaceBrowserDiagnostic {
+  kind: CodeWorkspaceBrowserDiagnosticKind
+  level?: 'debug' | 'info' | 'warning' | 'error'
+  message: string
+  source?: string
+  line?: number
+  url?: string
+  at: number
+}
+
+export interface CodeWorkspaceBrowserDiagnosticsResult {
+  success: boolean
+  url?: string
+  diagnostics?: CodeWorkspaceBrowserDiagnostic[]
+  hasErrors?: boolean
+  error?: string
+}
+
 export interface CodeWorkspaceApprovalRequest {
   requestId: string
   kind: CodeWorkspaceApprovalKind
@@ -50,12 +75,13 @@ export interface CodeWorkspaceApprovalRequest {
 }
 
 export interface CodeWorkspaceEvent {
-  type: 'state' | 'log' | 'preview-url' | 'approval-resolved'
+  type: 'state' | 'log' | 'preview-url' | 'approval-resolved' | 'files-changed'
   state?: CodeWorkspaceState
   log?: string
   previewUrl?: string
   requestId?: string
   decision?: CodeWorkspaceApprovalDecision
+  changedPaths?: string[]
   at: number
 }
 

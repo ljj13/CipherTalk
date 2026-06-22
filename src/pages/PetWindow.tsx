@@ -442,9 +442,15 @@ export default function PetWindow() {
     const off = window.electronAPI.pet.onAgentState((state) => {
       window.clearTimeout(doneTimer)
       if (state === 'done') {
+        window.clearTimeout(progressTimerRef.current)
+        setProgress(null)
         setAgentState('done')
         doneTimer = window.setTimeout(() => setAgentState('idle'), 2600)
         return
+      }
+      if (state === 'idle' || state === 'failed') {
+        window.clearTimeout(progressTimerRef.current)
+        setProgress(null)
       }
       if (state === 'running' || state === 'failed' || state === 'idle') {
         setAgentState(state)

@@ -54,6 +54,16 @@ export function createCodeWorkspaceTools(
       inputSchema: z.object({}),
       execute: async () => callCodeWorkspace(workspace, 'get_dev_server_logs'),
     }),
+
+    code_get_browser_diagnostics: tool({
+      description:
+        '打开当前本机预览 URL（或指定 localhost URL）并收集浏览器端 console error/warning、运行时异常、加载失败、渲染进程崩溃等诊断信息。前端页面改动后优先用它确认是否白屏或浏览器报错。',
+      inputSchema: z.object({
+        url: z.string().optional().describe('要诊断的 localhost/127.0.0.1 URL；省略则使用 code_start_dev_server 检测到的预览 URL'),
+        waitMs: z.number().int().min(1000).max(30000).default(1500).describe('页面加载后额外等待时间，默认 1500ms'),
+      }),
+      execute: async ({ url, waitMs }) => callCodeWorkspace(workspace, 'get_browser_diagnostics', { url, waitMs }),
+    }),
   }
 
   if (options.readOnly) return readTools

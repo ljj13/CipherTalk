@@ -185,6 +185,39 @@ export interface CodeWorkspaceListFilesResult {
   error?: string
 }
 
+export type CodeWorkspaceBrowserDiagnosticKind =
+  | 'console'
+  | 'page-error'
+  | 'load-failed'
+  | 'render-process-gone'
+  | 'navigation'
+
+export interface CodeWorkspaceBrowserDiagnostic {
+  kind: CodeWorkspaceBrowserDiagnosticKind
+  level?: 'debug' | 'info' | 'warning' | 'error'
+  message: string
+  source?: string
+  line?: number
+  url?: string
+  at: number
+}
+
+export interface CodeWorkspaceBrowserDiagnosticsResult {
+  success: boolean
+  url?: string
+  diagnostics?: CodeWorkspaceBrowserDiagnostic[]
+  hasErrors?: boolean
+  error?: string
+}
+
+export interface SkillFileItem {
+  path: string
+  name: string
+  type: 'file' | 'dir'
+  size?: number
+  children?: SkillFileItem[]
+}
+
 export interface CodeWorkspaceApprovalRequest {
   requestId: string
   kind: CodeWorkspaceApprovalKind
@@ -198,12 +231,13 @@ export interface CodeWorkspaceApprovalRequest {
 }
 
 export interface CodeWorkspaceEvent {
-  type: 'state' | 'log' | 'preview-url' | 'approval-resolved'
+  type: 'state' | 'log' | 'preview-url' | 'approval-resolved' | 'files-changed'
   state?: CodeWorkspaceState
   log?: string
   previewUrl?: string
   requestId?: string
   decision?: CodeWorkspaceApprovalDecision
+  changedPaths?: string[]
   at: number
 }
 
@@ -374,6 +408,7 @@ export interface ElectronAPI {
     openPersonaChatWindow: (sessionId: string) => Promise<boolean>
     openPosterStyleWindow: () => Promise<boolean>
     onMomentsFilterUser: (callback: (username: string) => void) => () => void
+    onNavigate: (callback: (route: string) => void) => () => void
     openAgreementWindow: () => Promise<boolean>
     openPurchaseWindow: () => Promise<boolean>
     openWelcomeWindow: (mode?: 'default' | 'add-account') => Promise<boolean>
@@ -389,6 +424,7 @@ export interface ElectronAPI {
     ) => Promise<void>
     openVideoPlayerWindow: (videoPath: string, videoWidth?: number, videoHeight?: number) => Promise<void>
     openBrowserWindow: (url: string, title?: string) => Promise<void>
+    openSkillPreviewWindow: (skillName: string) => Promise<boolean>
     resizeToFitVideo: (videoWidth: number, videoHeight: number) => Promise<void>
     openChatHistoryWindow: (sessionId: string, messageId: number) => Promise<boolean>
     onImageListUpdate: (callback: (data: { imageList: ImageListItem[], currentIndex: number }) => void) => () => void
@@ -449,6 +485,8 @@ export interface ElectronAPI {
   skillManager: {
     list: () => Promise<Array<{ name: string; version: string; description: string; builtin: boolean }>>
     readContent: (skillName: string) => Promise<{ success: boolean; content?: string; error?: string }>
+    listFiles: (skillName: string) => Promise<{ success: boolean; files?: SkillFileItem[]; truncated?: boolean; error?: string }>
+    readFile: (skillName: string, filePath: string) => Promise<{ success: boolean; path?: string; content?: string; size?: number; binary?: boolean; error?: string }>
     updateContent: (skillName: string, content: string) => Promise<{ success: boolean; error?: string }>
     exportZip: (skillName: string) => Promise<{ success: boolean; outputPath?: string; fileName?: string; version?: string; error?: string }>
     importZip: (zipPath: string) => Promise<{ success: boolean; skillName?: string; error?: string }>

@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import { BrowserWindow } from 'electron'
 import fs from 'fs'
 import path from 'path'
 import type { MainProcessContext } from '../../main/context'
@@ -10,6 +11,8 @@ import type {
   CodeWorkspaceApprovalPolicy,
   CodeWorkspaceApprovalRequest,
   CodeWorkspaceApprovalRisk,
+  CodeWorkspaceBrowserDiagnostic,
+  CodeWorkspaceBrowserDiagnosticsResult,
   CodeWorkspaceEvent,
   CodeWorkspaceFileItem,
   CodeWorkspaceListFilesResult,
@@ -29,6 +32,8 @@ const MAX_LOG_LINES = 600
 const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000
 const COMMAND_TIMEOUT_MS = 5 * 60 * 1000
 const DEV_SERVER_READY_TIMEOUT_MS = 8_000
+const BROWSER_DIAGNOSTICS_TIMEOUT_MS = 10_000
+const BROWSER_DIAGNOSTICS_IDLE_MS = 1_500
 
 const SKIP_DIRS = new Set([
   '.git',
@@ -198,6 +203,9 @@ export class CodeWorkspaceService {
   private devServerStartedAt = 0
   private devServerPreviewUrl = ''
   private logs: string[] = []
+  private workspaceWatcher: fs.FSWatcher | null = null
+  private workspaceWatchTimer: NodeJS.Timeout | null = null
+  private workspaceWatchPaths = new Set<string>()
 
   setContext(ctx: MainProcessContext): void {
     this.ctx = ctx
@@ -308,6 +316,8 @@ export class CodeWorkspaceService {
         return this.stopDevServer()
       case 'get_dev_server_logs':
         return { success: true, logs: this.logs.slice(-200), state: this.getState() }
+      case 'get_browser_diagnostics':
+        return this.getBrowserDiagnostics(args)
       default:
         return { success: false, error: `unknown code workspace method: ${call.method}` }
     }
@@ -384,6 +394,7 @@ export class CodeWorkspaceService {
     const realRoot = await fs.promises.realpath(root)
     const stat = await fs.promises.stat(realRoot)
     if (!stat.isDirectory()) throw new Error('工作区必须是目录')
+    this.stopWorkspaceWatcher()
     this.rejectAllApprovals()
     this.workspace = {
       id: createHash('sha1').update(realRoot).digest('hex').slice(0, 12),
@@ -392,6 +403,7 @@ export class CodeWorkspaceService {
     }
     this.writeConfiguredWorkspaceRoot(realRoot)
     this.appendLog(`[workspace] ${realRoot}`)
+    this.startWorkspaceWatcher(realRoot)
     this.broadcast({ type: 'state', state: this.getState(), at: Date.now() })
   }
 
@@ -510,6 +522,66 @@ export class CodeWorkspaceService {
 
   private broadcast(event: CodeWorkspaceEvent): void {
     this.ctx?.broadcastToWindows('agentWorkspace:event', event)
+  }
+
+  private startWorkspaceWatcher(root: string): void {
+    this.stopWorkspaceWatcher()
+    try {
+      this.workspaceWatcher = fs.watch(root, { recursive: true }, (_eventType, filename) => {
+        this.queueWorkspaceFileChange(root, filename ? String(filename) : '')
+      })
+      this.workspaceWatcher.on('error', (error) => {
+        this.appendLog(`[workspace watch error] ${error.message}`)
+        this.stopWorkspaceWatcher()
+      })
+    } catch (error: any) {
+      try {
+        this.workspaceWatcher = fs.watch(root, (_eventType, filename) => {
+          this.queueWorkspaceFileChange(root, filename ? String(filename) : '')
+        })
+      } catch (fallbackError: any) {
+        this.appendLog(`[workspace watch disabled] ${fallbackError?.message || error?.message || String(fallbackError || error)}`)
+      }
+    }
+  }
+
+  private stopWorkspaceWatcher(): void {
+    if (this.workspaceWatchTimer) {
+      clearTimeout(this.workspaceWatchTimer)
+      this.workspaceWatchTimer = null
+    }
+    this.workspaceWatchPaths.clear()
+    if (!this.workspaceWatcher) return
+    try {
+      this.workspaceWatcher.close()
+    } catch {
+      // ignore
+    }
+    this.workspaceWatcher = null
+  }
+
+  private queueWorkspaceFileChange(root: string, filename: string): void {
+    const normalized = filename.replace(/\\/g, '/')
+    if (this.shouldIgnoreWatchedPath(normalized)) return
+    this.workspaceWatchPaths.add(normalized || '.')
+    if (this.workspaceWatchTimer) clearTimeout(this.workspaceWatchTimer)
+    this.workspaceWatchTimer = setTimeout(() => {
+      this.workspaceWatchTimer = null
+      if (!this.workspace || normalizePathKey(this.workspace.root) !== normalizePathKey(root)) return
+      const changedPaths = Array.from(this.workspaceWatchPaths).slice(0, 80)
+      this.workspaceWatchPaths.clear()
+      this.broadcast({ type: 'files-changed', changedPaths, at: Date.now() })
+    }, 150)
+  }
+
+  private broadcastWorkspaceFileChange(displayPath: string): void {
+    if (this.shouldIgnoreWatchedPath(displayPath.replace(/\\/g, '/'))) return
+    this.broadcast({ type: 'files-changed', changedPaths: [displayPath || '.'], at: Date.now() })
+  }
+
+  private shouldIgnoreWatchedPath(relativePath: string): boolean {
+    if (!relativePath) return false
+    return relativePath.split('/').some((part) => SKIP_DIRS.has(part))
   }
 
   private appendLog(line: string): void {
@@ -631,6 +703,7 @@ export class CodeWorkspaceService {
       snapshotPath,
       outputPaths: [target.absPath],
     })
+    this.broadcastWorkspaceFileChange(target.displayPath)
     return { success: true, path: target.displayPath, diffPreview, operationId: audit.operationId }
   }
 
@@ -670,6 +743,7 @@ export class CodeWorkspaceService {
       snapshotPath,
       outputPaths: [target.absPath],
     })
+    this.broadcastWorkspaceFileChange(target.displayPath)
     return { success: true, path: target.displayPath, bytes: Buffer.byteLength(content), diffPreview, operationId: audit.operationId }
   }
 
@@ -706,6 +780,7 @@ export class CodeWorkspaceService {
       targetPath: target.absPath,
       snapshotPath,
     })
+    this.broadcastWorkspaceFileChange(target.displayPath)
     return { success: true, path: target.displayPath, operationId: audit.operationId }
   }
 
@@ -823,6 +898,130 @@ export class CodeWorkspaceService {
   private async stopDevServer(): Promise<unknown> {
     await this.stopDevServerInternal()
     return { success: true, state: this.getState(), logs: this.logs.slice(-80) }
+  }
+
+  private async getBrowserDiagnostics(args: Record<string, unknown>): Promise<CodeWorkspaceBrowserDiagnosticsResult> {
+    const workspace = this.requireWorkspace()
+    const requestedUrl = String(args.url || this.devServerPreviewUrl || '').trim()
+    if (!requestedUrl) return { success: false, error: '没有可诊断的预览 URL，请先启动 dev server' }
+    let parsed: URL
+    try {
+      parsed = new URL(requestedUrl)
+    } catch {
+      return { success: false, error: '预览 URL 无效', url: requestedUrl }
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || !['localhost', '127.0.0.1', '[::1]', '::1'].includes(parsed.hostname)) {
+      return { success: false, error: '只允许诊断本机 localhost / 127.0.0.1 预览', url: requestedUrl }
+    }
+
+    const waitMs = Math.max(1_000, Math.min(30_000, Number(args.waitMs || BROWSER_DIAGNOSTICS_IDLE_MS)))
+    const diagnostics: CodeWorkspaceBrowserDiagnostic[] = []
+    let debuggerAttached = false
+    const add = (entry: Omit<CodeWorkspaceBrowserDiagnostic, 'at'>) => {
+      diagnostics.push({ ...entry, at: Date.now() })
+      if (diagnostics.length > 120) diagnostics.splice(0, diagnostics.length - 120)
+    }
+
+    const win = new BrowserWindow({
+      width: 1280,
+      height: 900,
+      show: false,
+      webPreferences: {
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        webSecurity: true,
+      },
+    })
+
+    try {
+      try {
+        win.webContents.debugger.attach('1.3')
+        debuggerAttached = true
+        await win.webContents.debugger.sendCommand('Runtime.enable')
+        await win.webContents.debugger.sendCommand('Log.enable')
+        await win.webContents.debugger.sendCommand('Network.enable')
+        win.webContents.debugger.on('message', (_event, method, params: any) => {
+          if (method === 'Runtime.exceptionThrown') {
+            const details = params?.exceptionDetails
+            add({
+              kind: 'page-error',
+              level: 'error',
+              message: String(details?.exception?.description || details?.text || 'Runtime exception'),
+              source: details?.url,
+              line: typeof details?.lineNumber === 'number' ? details.lineNumber + 1 : undefined,
+              url: win.webContents.getURL(),
+            })
+          } else if (method === 'Log.entryAdded') {
+            const entry = params?.entry
+            if (entry?.level === 'error' || entry?.level === 'warning') {
+              add({
+                kind: 'console',
+                level: entry.level === 'error' ? 'error' : 'warning',
+                message: String(entry.text || ''),
+                source: entry.source,
+                line: entry.lineNumber,
+                url: entry.url || win.webContents.getURL(),
+              })
+            }
+          } else if (method === 'Network.loadingFailed') {
+            add({
+              kind: 'load-failed',
+              level: 'error',
+              message: String(params?.errorText || 'Network request failed'),
+              url: String(params?.requestId || win.webContents.getURL()),
+            })
+          }
+        })
+      } catch (debuggerError: any) {
+        add({ kind: 'console', level: 'warning', message: `DevTools diagnostics unavailable: ${debuggerError?.message || String(debuggerError)}`, url: parsed.toString() })
+      }
+      win.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+        const severity = level >= 3 ? 'error' : level === 2 ? 'warning' : level === 1 ? 'info' : 'debug'
+        add({ kind: 'console', level: severity, message, line, source: sourceId, url: win.webContents.getURL() })
+      })
+      win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+        add({
+          kind: 'load-failed',
+          level: 'error',
+          message: `${isMainFrame ? 'main frame' : 'subresource'} load failed ${errorCode}: ${errorDescription}`,
+          url: validatedURL,
+        })
+      })
+      win.webContents.on('render-process-gone', (_event, details) => {
+        add({
+          kind: 'render-process-gone',
+          level: 'error',
+          message: `${details.reason}${details.exitCode === undefined ? '' : ` exitCode=${details.exitCode}`}`,
+          url: win.webContents.getURL(),
+        })
+      })
+      win.webContents.on('did-navigate', (_event, url) => {
+        add({ kind: 'navigation', level: 'info', message: 'navigated', url })
+      })
+
+      await Promise.race([
+        win.webContents.loadURL(parsed.toString()),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('页面加载诊断超时')), BROWSER_DIAGNOSTICS_TIMEOUT_MS)),
+      ])
+      await new Promise((resolve) => setTimeout(resolve, waitMs))
+    } catch (error: any) {
+      add({ kind: 'load-failed', level: 'error', message: error?.message || String(error), url: parsed.toString() })
+    } finally {
+      if (debuggerAttached && win.webContents.debugger.isAttached()) {
+        try { win.webContents.debugger.detach() } catch { /* ignore */ }
+      }
+      if (!win.isDestroyed()) win.destroy()
+    }
+
+    const relevantDiagnostics = diagnostics.filter((item) => {
+      if (!item.source && !item.url) return true
+      const value = `${item.source || ''} ${item.url || ''}`
+      return !value.includes('favicon.ico') && !value.includes('/@vite/client')
+    })
+    const hasErrors = relevantDiagnostics.some((item) => item.level === 'error' || item.kind === 'load-failed' || item.kind === 'render-process-gone')
+    this.appendLog(`[browser diagnostics] ${workspace.root} ${parsed.toString()} errors=${hasErrors ? 'yes' : 'no'} items=${relevantDiagnostics.length}`)
+    return { success: true, url: parsed.toString(), diagnostics: relevantDiagnostics, hasErrors }
   }
 
   private async stopDevServerInternal(): Promise<void> {
