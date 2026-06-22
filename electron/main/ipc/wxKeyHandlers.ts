@@ -222,31 +222,52 @@ export function registerWxKeyHandlers(ctx: MainProcessContext): void {
         ].find(existsSync)
       }
 
-      // 轮询内存扫描，命中后用数据库验证，120s 超时
+      // 轮询内存扫描（自适应：默认不提权直接扫；若检测到一字节都读不到，
+      // 判定为权限不足，返回 needAdmin 让前端提示用管理员重开）。命中后数据库验证。
       event.sender.send('wxkey:status', { status: '微信启动中，正在扫描内存获取密钥...', level: 1 })
       const deadline = Date.now() + 120000
       let lastError = ''
+      let sawBytes = false
+      let rounds = 0
+      const needAdminResult = {
+        success: false,
+        needAdmin: true,
+        error: '无法读取微信内存（读到 0 字节），通常是权限不足。请用管理员身份重新打开密语后重试。'
+      }
       while (Date.now() < deadline) {
+        rounds++
         for (const wxid of wxids) {
           const contactDb = contactDbFor(wxid)
           if (!contactDb) continue
-          const key = wxKeyService.scanDbKey(contactDb)
-          if (!key) continue
-          event.sender.send('wxkey:status', { status: `已捕获候选密钥，正在验证账号: ${wxid}`, level: 1 })
-          const testResult = await wcdbService.testConnection(dbPath, key, wxid)
-          if (testResult.success) {
-            ctx.getLogService()?.info('WxKey', '内存扫描密钥获取成功', { wxid, keyLength: key.length })
-            return { success: true, key, validatedWxid: wxid }
+          const diag = wxKeyService.scanDbKeyDiag(contactDb)
+          if (!diag) continue
+          if (diag.bytes > 0) sawBytes = true
+          if (diag.key) {
+            event.sender.send('wxkey:status', { status: `已捕获候选密钥，正在验证账号: ${wxid}`, level: 1 })
+            const testResult = await wcdbService.testConnection(dbPath, diag.key, wxid)
+            if (testResult.success) {
+              ctx.getLogService()?.info('WxKey', '内存扫描密钥获取成功', { wxid, keyLength: diag.key.length })
+              return { success: true, key: diag.key, validatedWxid: wxid }
+            }
+            lastError = testResult.error || ''
           }
-          lastError = testResult.error || ''
+        }
+        // 连续多轮一字节都读不到 → 基本可判定权限不足，提前结束提示提权
+        if (rounds >= 8 && !sawBytes) {
+          ctx.getLogService()?.warn('WxKey', '内存读取为 0 字节，疑似权限不足')
+          return needAdminResult
         }
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
 
+      if (!sawBytes) {
+        ctx.getLogService()?.warn('WxKey', '内存读取始终为 0 字节，疑似权限不足')
+        return needAdminResult
+      }
       ctx.getLogService()?.warn('WxKey', '内存扫描超时未获取到密钥', { lastError })
       return {
         success: false,
-        error: lastError || '扫描超时未获取到密钥。请确认以管理员身份运行，且微信已完成登录，进入任意聊天触发数据库访问后重试。'
+        error: lastError || '扫描超时未获取到密钥。请确认微信已完成登录，进入任意聊天触发数据库访问后重试。'
       }
     } catch (e) {
       ctx.getLogService()?.error('WxKey', '获取密钥异常', { error: String(e) })

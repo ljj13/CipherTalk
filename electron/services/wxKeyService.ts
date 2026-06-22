@@ -4,11 +4,20 @@ import { app } from 'electron'
 import { existsSync, copyFileSync, readdirSync, unlinkSync, statSync } from 'fs'
 import * as crypto from 'crypto'
 
+/** 内存扫描诊断结果 */
+export interface WxScanDiag {
+  key: string | null
+  auth: boolean
+  dbOk: boolean
+  pids: number
+  opened: number
+  bytes: number
+  markers: number
+  candidates: number
+}
+
 export class WxKeyService {
   private lib: any = null
-  private pollingTimer: NodeJS.Timeout | null = null
-  private onKeyReceived: ((key: string) => void) | null = null
-  private onStatus: ((status: string, level: number) => void) | null = null
 
   /**
    * 获取 DLL 路径
@@ -244,177 +253,57 @@ export class WxKeyService {
   }
 
   /**
-   * 内存扫描获取数据库密钥（Ed25519 挑战-应答鉴权）。
-   * 流程：取挑战 → 私钥签名 → 验签通过后 DLL 扫描 crypt_key 邻域。
+   * 内存扫描获取数据库密钥（诊断版，Ed25519 挑战-应答鉴权）。
+   * 取挑战 → 私钥签名 → 验签通过后 DLL 扫描 crypt_key 邻域，返回密钥与读取诊断，
+   * 供调用方区分“权限不足读到 0 字节” vs “读到了但没找到密钥”。
    * @param contactDbPath contact.db 完整路径（决定校验用的 salt）
-   * @returns 64 位十六进制密钥，或 null
    */
-  scanDbKey(contactDbPath: string): string | null {
+  scanDbKeyDiag(contactDbPath: string): WxScanDiag | null {
     if (!this.initScanLib()) return null
     try {
       const koffi = require('koffi')
       const wktChallenge = this.scanLib.func('int wkt_challenge(uint8_t*, size_t)')
-      const wktScanAuth = this.scanLib.func('void* wkt_scan_key_auth(uint8_t*, size_t, str)')
+      const wktDiag = this.scanLib.func('void* wkt_scan_diag_auth(uint8_t*, size_t, str)')
       const wktFree = this.scanLib.func('void wkt_free(void*)')
 
       const nonce = Buffer.alloc(32)
       if (wktChallenge(nonce, 32) !== 32) return null
 
       const sig = crypto.sign(null, nonce, this.getScanPrivateKey()) // Ed25519，64 字节
-      const ptr = wktScanAuth(sig, sig.length, contactDbPath)
+      const ptr = wktDiag(sig, sig.length, contactDbPath)
       if (!ptr) return null
 
-      const key = koffi.decode(ptr, 'char', -1)
+      const jsonStr = koffi.decode(ptr, 'char', -1)
       wktFree(ptr)
 
-      const trimmed = String(key || '').replace(/\0/g, '').trim()
-      return trimmed.length === 64 ? trimmed : null
+      const d = JSON.parse(String(jsonStr || '{}').replace(/\0/g, ''))
+      const rawKey = typeof d.key === 'string' ? d.key.trim() : ''
+      return {
+        key: rawKey.length === 64 ? rawKey : null,
+        auth: d.auth !== false,
+        dbOk: d.db_ok !== false,
+        pids: Number(d.pids) || 0,
+        opened: Number(d.opened) || 0,
+        bytes: Number(d.bytes) || 0,
+        markers: Number(d.markers) || 0,
+        candidates: Number(d.candidates) || 0,
+      }
     } catch (e) {
       console.error('内存扫描获取密钥失败:', e)
       return null
     }
   }
 
-  /**
-   * 安装 Hook
-   */
-  installHook(
-    targetPid: number,
-    onKeyReceived: (key: string) => void,
-    onStatus?: (status: string, level: number) => void
-  ): boolean {
-    if (!this.lib) {
-      return false
-    }
-
-    try {
-      const koffi = require('koffi')
-
-      this.onKeyReceived = onKeyReceived
-      this.onStatus = onStatus || null
-
-      // 定义函数
-      const InitializeHook = this.lib.func('bool InitializeHook(uint32_t)')
-      const success = InitializeHook(targetPid)
-
-      if (success) {
-        this.startPolling()
-      }
-
-      return success
-    } catch (e) {
-      console.error('安装 Hook 失败:', e)
-      return false
-    }
+  /** 仅取密钥（诊断版的薄封装）。 */
+  scanDbKey(contactDbPath: string): string | null {
+    return this.scanDbKeyDiag(contactDbPath)?.key ?? null
   }
 
   /**
-   * 开始轮询
-   */
-  private startPolling(): void {
-    this.stopPolling()
-
-    this.pollingTimer = setInterval(() => {
-      this.pollData()
-    }, 100)
-  }
-
-  /**
-   * 停止轮询
-   */
-  private stopPolling(): void {
-    if (this.pollingTimer) {
-      clearInterval(this.pollingTimer)
-      this.pollingTimer = null
-    }
-  }
-
-  /**
-   * 轮询数据
-   */
-  private pollData(): void {
-    if (!this.lib) return
-
-    try {
-      const koffi = require('koffi')
-
-      // 定义函数
-      const PollKeyData = this.lib.func('bool PollKeyData(char*, int32_t)')
-      const GetStatusMessage = this.lib.func('bool GetStatusMessage(char*, int32_t, int32_t*)')
-
-      // 轮询密钥
-      const keyBuffer = Buffer.alloc(65)
-      if (PollKeyData(keyBuffer, 65)) {
-        const key = keyBuffer.toString('utf8').replace(/\0/g, '').trim()
-
-        if (key && this.onKeyReceived) {
-          this.onKeyReceived(key)
-        }
-      }
-
-      // 轮询状态消息
-      for (let i = 0; i < 5; i++) {
-        const statusBuffer = Buffer.alloc(256)
-        const levelBuffer = Buffer.alloc(4)
-
-        if (GetStatusMessage(statusBuffer, 256, levelBuffer)) {
-          const status = statusBuffer.toString('utf8').replace(/\0/g, '').trim()
-          const level = levelBuffer.readInt32LE(0)
-
-          if (this.onStatus) {
-            this.onStatus(status, level)
-          }
-        } else {
-          break
-        }
-      }
-    } catch (e) {
-      console.error('轮询数据失败:', e)
-    }
-  }
-
-  /**
-   * 卸载 Hook
-   */
-  uninstallHook(): boolean {
-    this.stopPolling()
-
-    if (!this.lib) {
-      return false
-    }
-
-    try {
-      const CleanupHook = this.lib.func('bool CleanupHook()')
-      return CleanupHook()
-    } catch {
-      return false
-    }
-  }
-
-  /**
-   * 获取最后错误信息
-   */
-  getLastError(): string {
-    if (!this.lib) {
-      return '未知错误'
-    }
-
-    try {
-      const GetLastErrorMsg = this.lib.func('const char* GetLastErrorMsg()')
-      return GetLastErrorMsg() || '无错误'
-    } catch {
-      return '获取错误信息失败'
-    }
-  }
-
-  /**
-   * 释放资源
+   * 释放资源（数据库密钥已改为内存扫描，不再有 Hook 需要卸载）
    */
   dispose(): void {
-    this.uninstallHook()
     this.lib = null
-    this.onKeyReceived = null
-    this.onStatus = null
   }
 
   /**
