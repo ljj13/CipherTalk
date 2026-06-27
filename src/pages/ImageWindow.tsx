@@ -5,6 +5,7 @@ import { Tooltip } from '@heroui/react'
 import { ZoomIn, ZoomOut, RotateCw, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react'
 import { LivePhotoIcon } from '../components/LivePhotoIcon'
 import type { ImageListItem } from '../types/electron'
+import { createLiquidGlassMap, type GlassFilterMap } from '../utils/liquidGlass'
 import './ImageWindow.css'
 
 type ViewportMeta = {
@@ -51,7 +52,9 @@ export default function ImageWindow() {
     const [isPlayingLive, setIsPlayingLive] = useState(false)
     const [isVideoVisible, setIsVideoVisible] = useState(false)
     const viewportRef = useRef<HTMLDivElement>(null)
+    const toolbarRef = useRef<HTMLDivElement>(null)
     const videoRef = useRef<HTMLVideoElement>(null)
+    const [glassFilterMap, setGlassFilterMap] = useState<GlassFilterMap | null>(null)
 
     // 使用 ref 存储拖动状态，避免闭包问题
     const dragStateRef = useRef({
@@ -203,6 +206,22 @@ export default function ImageWindow() {
             resizeObserver.disconnect()
             window.removeEventListener('resize', updateViewportSize)
         }
+    }, [])
+
+    useLayoutEffect(() => {
+        const toolbar = toolbarRef.current
+        if (!toolbar) return
+
+        const updateFilterMap = () => {
+            const rect = toolbar.getBoundingClientRect()
+            const next = createLiquidGlassMap(rect.width, rect.height)
+            if (next) setGlassFilterMap(next)
+        }
+
+        updateFilterMap()
+        const resizeObserver = new ResizeObserver(updateFilterMap)
+        resizeObserver.observe(toolbar)
+        return () => resizeObserver.disconnect()
     }, [])
 
     // 监听视口大小和图片原始尺寸变化，自动调整初始缩放比例
@@ -450,12 +469,47 @@ export default function ImageWindow() {
 
     return (
         <div className="image-window-container">
+            <svg className="glass-filter-defs" aria-hidden="true" focusable="false">
+                <filter
+                    id="image-window-liquid-refraction"
+                    filterUnits="userSpaceOnUse"
+                    colorInterpolationFilters="sRGB"
+                    x="0"
+                    y="0"
+                    width={glassFilterMap?.width || 1}
+                    height={glassFilterMap?.height || 1}
+                >
+                    <feImage
+                        id="image-window-liquid-refraction-map"
+                        href={glassFilterMap?.href || ''}
+                        xlinkHref={glassFilterMap?.href || ''}
+                        width={glassFilterMap?.width || 1}
+                        height={glassFilterMap?.height || 1}
+                        result="displacementMap"
+                    />
+                    <feDisplacementMap
+                        in="SourceGraphic"
+                        in2="displacementMap"
+                        scale={glassFilterMap?.scale || 0}
+                        xChannelSelector="R"
+                        yChannelSelector="G"
+                    />
+                </filter>
+            </svg>
+
             <div className="title-bar">
                 <div className="window-drag-area" aria-hidden="true"></div>
             </div>
 
             <div className="bottom-toolbar-shell">
-                <div className="bottom-toolbar">
+                <div
+                    className="bottom-toolbar"
+                    ref={toolbarRef}
+                    style={glassFilterMap ? {
+                        backdropFilter: 'url(#image-window-liquid-refraction) blur(3px) brightness(1.08) saturate(1.08)',
+                        WebkitBackdropFilter: 'url(#image-window-liquid-refraction) blur(3px) brightness(1.08) saturate(1.08)',
+                    } : undefined}
+                >
                     {hasLiveVideo && (
                         <>
                             <Tooltip delay={0} closeDelay={60}>
