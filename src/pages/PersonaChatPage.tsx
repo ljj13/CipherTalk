@@ -4,11 +4,11 @@
  * 等待回复时头部只显示「对方正在输入…」，不暴露内部检索过程。
  * 历史挂 agent 会话存储（scope kind='persona'），打开恢复、每轮保存。
  */
-import { AlertCircle, Bot, CheckCircle, Loader2, MessageSquareX, Mic2, PencilLine, RefreshCw, Trash2 } from 'lucide-react'
+import { AlertCircle, Bot, CheckCircle, Clock3, History, Loader2, MessageSquareX, Mic2, PencilLine, RefreshCw, SquarePen, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useChat } from '@ai-sdk/react'
-import { AlertDialog, Button, ProgressBar, Label, Modal, Skeleton, Tooltip } from '@heroui/react'
+import { AlertDialog, Button, ProgressBar, Dropdown, Header, Label, Modal, Skeleton, Tooltip } from '@heroui/react'
 import type { FileUIPart, UIMessage } from 'ai'
 import type { CSSProperties } from 'react'
 import {
@@ -34,6 +34,9 @@ import { parseWechatEmoji } from '../utils/wechatEmoji'
 import type { PersonaBuildProgressInfo, PersonaRecordInfo } from '../types/electron'
 
 type Phase = 'loading' | 'confirm' | 'building' | 'chat'
+
+/** 历史对话记录（含微信分身归档）：listConversations 返回的会话元数据子集。 */
+type PersonaConversationRecord = { id: number; title: string; source: string; updatedAt: number }
 
 type PersonaChatPageProps = {
   sessionId?: string
@@ -376,6 +379,10 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   const [speakingStyleError, setSpeakingStyleError] = useState('')
   /** 删除确认弹窗：删除分身画像 / 删除对话记录 */
   const [confirmAction, setConfirmAction] = useState<'deletePersona' | 'clearConversations' | null>(null)
+  /** 历史对话记录下拉：列表 + 待删除的单条记录 */
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyRecords, setHistoryRecords] = useState<PersonaConversationRecord[]>([])
+  const [recordPendingDelete, setRecordPendingDelete] = useState<PersonaConversationRecord | null>(null)
   /** 待发缓冲：真人不会秒回——发出的消息先挂着，停顿几秒没有新消息了才一起交给 AI 回一轮 */
   const [pendingTexts, setPendingTexts] = useState<string[]>([])
   const pendingRef = useRef<string[]>([])
@@ -510,6 +517,9 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
     setSpeakingStyleDraft(EMPTY_SPEAKING_STYLE_DRAFT)
     setSpeakingStyleError('')
     setConfirmAction(null)
+    setHistoryOpen(false)
+    setHistoryRecords([])
+    setRecordPendingDelete(null)
     setMessagesRef.current([])
   }, [clearScheduledScroll, sessionId])
 
@@ -842,6 +852,76 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
     }
   }
 
+  const refreshHistory = async () => {
+    const res = await window.electronAPI.agent.listConversations({ kind: 'persona', sessionId })
+    if (res.success && Array.isArray(res.conversations)) {
+      setHistoryRecords(res.conversations as PersonaConversationRecord[])
+    }
+  }
+
+  const handleHistoryOpenChange = (open: boolean) => {
+    setHistoryOpen(open)
+    if (open) void refreshHistory()
+  }
+
+  /** 把历史里某条对话（含微信分身归档）载入当前窗口继续聊。 */
+  const openConversation = async (id: number) => {
+    setHistoryOpen(false)
+    if (id === conversationId) return
+    if (busy) stop()
+    clearPending()
+    stopVoice()
+    const loaded = await window.electronAPI.agent.loadConversation(id)
+    const conv = loaded.success && loaded.conversation
+      ? (loaded.conversation as { id: number; messages: UIMessage[] })
+      : null
+    if (!conv) return
+    setConversationId(conv.id)
+    lastSavedCountRef.current = conv.messages.length
+    setMessages(conv.messages)
+    // 历史里的语音视为已听过：红点只给本次会话新收到的语音
+    const played = new Set<string>()
+    for (const message of conv.messages) {
+      if (message.role !== 'assistant') continue
+      messageTextParts(message).forEach((raw, index) => {
+        if (parseBubble(raw).isVoice) played.add(`${message.id}:${index}`)
+      })
+    }
+    setPlayedVoice(played)
+    setRevealedVoice(new Set())
+    setVisibleMessageCount(INITIAL_RENDERED_MESSAGE_COUNT)
+  }
+
+  /** 开启一段全新对话：清空当前消息，conversationId 留空，首次发送时再懒创建。 */
+  const startNewConversation = () => {
+    setHistoryOpen(false)
+    if (busy) stop()
+    clearPending()
+    stopVoice()
+    setMessages([])
+    setConversationId(null)
+    lastSavedCountRef.current = 0
+    setPlayedVoice(new Set())
+    setRevealedVoice(new Set())
+    setVisibleMessageCount(INITIAL_RENDERED_MESSAGE_COUNT)
+  }
+
+  const handleDeleteRecord = async (record: PersonaConversationRecord) => {
+    const res = await window.electronAPI.agent.deleteConversation(record.id)
+    if (!res.success) {
+      window.alert(res.error || '删除对话记录失败')
+      return
+    }
+    setHistoryRecords((prev) => prev.filter((item) => item.id !== record.id))
+    if (record.id === conversationId) {
+      setMessages([])
+      setConversationId(null)
+      lastSavedCountRef.current = 0
+      setPlayedVoice(new Set())
+      setRevealedVoice(new Set())
+    }
+  }
+
   const ensureConversation = async () => {
     inputValueRef.current = ''
     if (!conversationId) {
@@ -963,6 +1043,69 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1">
+          <Dropdown isOpen={historyOpen} onOpenChange={handleHistoryOpenChange}>
+            <Button isIconOnly size="sm" variant="ghost" aria-label="历史对话记录">
+              <History size={16} />
+            </Button>
+            <Dropdown.Popover className="w-[min(22rem,calc(100vw-2rem))]" placement="bottom end">
+              <Dropdown.Menu
+                className="max-h-[min(70vh,26rem)] overflow-y-auto"
+                selectedKeys={conversationId ? [String(conversationId)] : []}
+                selectionMode="single"
+                onAction={(key) => {
+                  const id = String(key)
+                  if (id === '__new__') { startNewConversation(); return }
+                  if (id === '__empty__') return
+                  const record = historyRecords.find((item) => String(item.id) === id)
+                  if (record) void openConversation(record.id)
+                }}
+              >
+                <Dropdown.Item id="__new__" key="__new__" textValue="开启新对话">
+                  <SquarePen className="size-4 shrink-0 text-muted" />
+                  <Label>开启新对话</Label>
+                </Dropdown.Item>
+                {historyRecords.length > 0 ? (
+                  <Dropdown.Section>
+                    <Header>历史对话</Header>
+                    {historyRecords.map((record) => (
+                      <Dropdown.Item className="min-h-14 gap-3 py-2.5" id={String(record.id)} key={record.id} textValue={record.title}>
+                        <Dropdown.ItemIndicator />
+                        <Clock3 className="size-4 shrink-0 text-muted" />
+                        <span className="min-w-0 flex-1">
+                          <Label className="block truncate text-sm font-medium">{record.title}</Label>
+                          <span className="block truncate text-xs text-muted">
+                            {record.source === 'wechat-persona' ? '微信 · ' : ''}
+                            {new Date(record.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                          </span>
+                        </span>
+                        <span
+                          className="ms-auto flex shrink-0"
+                          onClick={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onPointerDown={(event) => event.stopPropagation()}
+                        >
+                          <Button
+                            aria-label={`删除 ${record.title}`}
+                            className="size-8 p-0 text-muted hover:text-danger"
+                            isIconOnly
+                            size="sm"
+                            variant="ghost"
+                            onPress={() => { setRecordPendingDelete(record); setHistoryOpen(false) }}
+                          >
+                            <Trash2 className="size-4" />
+                          </Button>
+                        </span>
+                      </Dropdown.Item>
+                    ))}
+                  </Dropdown.Section>
+                ) : (
+                  <Dropdown.Item className="justify-center py-6 text-center text-sm text-muted" id="__empty__" key="__empty__" isDisabled textValue="暂无对话记录">
+                    暂无对话记录
+                  </Dropdown.Item>
+                )}
+              </Dropdown.Menu>
+            </Dropdown.Popover>
+          </Dropdown>
           <Tooltip delay={0}>
             <Tooltip.Trigger>
               <Button
@@ -1360,6 +1503,37 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
             <AlertDialog.Footer>
               <Button slot="close" variant="tertiary">取消</Button>
               <Button slot="close" variant="danger" onPress={() => void handleClearConversations()}>删除记录</Button>
+            </AlertDialog.Footer>
+          </AlertDialog.Dialog>
+        </AlertDialog.Container>
+      </AlertDialog.Backdrop>
+
+      {/* 删除单条历史对话确认 */}
+      <AlertDialog.Backdrop
+        isOpen={recordPendingDelete !== null}
+        onOpenChange={(open) => { if (!open) setRecordPendingDelete(null) }}
+      >
+        <AlertDialog.Container>
+          <AlertDialog.Dialog className="sm:max-w-100">
+            <AlertDialog.CloseTrigger />
+            <AlertDialog.Header>
+              <AlertDialog.Icon status="danger" />
+              <AlertDialog.Heading>删除这条对话记录？</AlertDialog.Heading>
+            </AlertDialog.Header>
+            <AlertDialog.Body>
+              <p className="text-sm text-muted">
+                「{recordPendingDelete?.title}」将被删除，此操作不可撤销。
+              </p>
+            </AlertDialog.Body>
+            <AlertDialog.Footer>
+              <Button slot="close" variant="tertiary">取消</Button>
+              <Button
+                slot="close"
+                variant="danger"
+                onPress={() => { const record = recordPendingDelete; if (record) void handleDeleteRecord(record) }}
+              >
+                删除记录
+              </Button>
             </AlertDialog.Footer>
           </AlertDialog.Dialog>
         </AlertDialog.Container>

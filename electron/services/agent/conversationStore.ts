@@ -191,6 +191,17 @@ export class AgentConversationStore {
       db.exec('ALTER TABLE agent_conversations ADD COLUMN external_id TEXT')
     }
     db.exec('CREATE INDEX IF NOT EXISTS idx_agent_conv_source ON agent_conversations(account_id, source, external_id)')
+
+    // 一次性迁移：旧的微信分身会话存成 global，按 external_id（from:sessionId）里的 sessionId 归入对应好友的 persona 历史
+    db.exec(`
+      UPDATE agent_conversations
+      SET scope_kind = 'persona',
+          session_id = substr(external_id, instr(external_id, ':') + 1)
+      WHERE source = 'wechat-persona'
+        AND scope_kind = 'global'
+        AND external_id LIKE '%:%'
+        AND session_id IS NULL
+    `)
   }
 
   private claimCompatibleAccountRows(db: Database.Database, identity: AccountIdentity): void {
@@ -297,8 +308,9 @@ export class AgentConversationStore {
     return this.loadMeta(Number(result.lastInsertRowid))
   }
 
-  /** 按来源+外部标识找会话，没有就新建（用于微信等外部接入按联系人归档）。 */
-  getOrCreateExternal(input: { source: string; externalId: string; title?: string }): AgentConversationRecord {
+  /** 按来源+外部标识找会话，没有就新建（用于微信等外部接入按联系人归档）。
+   *  传入 scope 时会把会话归入对应作用域（如微信分身→persona），并回填旧的 global 行。 */
+  getOrCreateExternal(input: { source: string; externalId: string; title?: string; scope?: AgentScope }): AgentConversationRecord {
     const db = this.getDb()
     const accountId = this.getAccountId()
     const row = db.prepare(`
@@ -307,13 +319,23 @@ export class AgentConversationStore {
       ORDER BY updated_at DESC, id DESC
       LIMIT 1
     `).get(accountId, input.source, input.externalId)
-    if (row) return this.mapConversation(row)
-    return this.create({ source: input.source, externalId: input.externalId, title: input.title })
+    if (row) {
+      const record = this.mapConversation(row)
+      // 回填 scope：把历史上存成 global 的外部会话归入对应好友的 persona/session 历史
+      if (input.scope && (input.scope.kind === 'persona' || input.scope.kind === 'session') && record.scope.kind !== input.scope.kind) {
+        const cols = scopeColumns(input.scope)
+        db.prepare('UPDATE agent_conversations SET scope_kind = ?, session_id = ?, display_name = ? WHERE id = ?')
+          .run(cols.kind, cols.sessionId, cols.displayName, record.id)
+        return this.loadMeta(record.id)
+      }
+      return record
+    }
+    return this.create({ source: input.source, externalId: input.externalId, title: input.title, scope: input.scope })
   }
 
   /** 显式开启一个新的外部来源会话；旧会话保留，后续 getOrCreateExternal 会取最新这条。 */
-  createExternal(input: { source: string; externalId: string; title?: string }): AgentConversationRecord {
-    return this.create({ source: input.source, externalId: input.externalId, title: input.title })
+  createExternal(input: { source: string; externalId: string; title?: string; scope?: AgentScope }): AgentConversationRecord {
+    return this.create({ source: input.source, externalId: input.externalId, title: input.title, scope: input.scope })
   }
 
   load(id: number): AgentConversationLoaded | null {

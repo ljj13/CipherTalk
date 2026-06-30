@@ -683,19 +683,26 @@ function buildSavedReplyBubbles(rawBubbles: string[], media: WechatBotMedia[], p
   return [...normalizeWechatTextBubbles(bubbles), ...summaries]
 }
 
-function getSavedAssistantText(reply: WechatBotReply): string {
+/** 落库用的分气泡数组：每个气泡存成独立 text part，桌面历史才能像微信一样分条显示。 */
+function getSavedAssistantBubbles(reply: WechatBotReply): string[] {
   const savedBubbles = reply.savedTextBubbles?.length ? normalizeWechatTextBubbles(reply.savedTextBubbles) : []
-  const savedText = (reply.savedText || savedBubbles.join('\n')).trim()
-  if (savedText) return savedText
+  if (savedBubbles.length) return savedBubbles
+
+  const savedText = reply.savedText?.trim()
+  if (savedText) return [savedText]
 
   const text = reply.text.trim()
-  if (text) return text
+  if (text) return normalizeWechatTextBubbles([text])
 
   const summaries = [
     ...reply.media.map(summarizeWechatMedia),
     ...reply.personaActions.map(summarizePersonaAction),
   ].filter(Boolean)
-  return summaries.join('\n') || '[微信回复已处理]'
+  return summaries.length ? summaries : ['[微信回复已处理]']
+}
+
+function getSavedAssistantText(reply: WechatBotReply): string {
+  return getSavedAssistantBubbles(reply).join('\n')
 }
 
 async function extractMediaDirectives(text: string): Promise<{ text: string; media: WechatBotMedia[] }> {
@@ -1257,6 +1264,7 @@ class WeixinBotService {
           source: 'wechat-persona',
           externalId: `${from}:${mode.sessionId}`,
           title: `微信分身 · ${mode.displayName}`,
+          scope: { kind: 'persona', sessionId: mode.sessionId, displayName: mode.displayName },
         })
         await sendText(session, from, '好，我们从这儿重新聊。', contextToken)
       } else {
@@ -1497,6 +1505,7 @@ class WeixinBotService {
         source: 'wechat-persona',
         externalId: `${from}:${mode.sessionId}`,
         title: `微信分身 · ${mode.displayName}`,
+        scope: { kind: 'persona', sessionId: mode.sessionId, displayName: mode.displayName },
       })
       queue = {
         from,
@@ -1558,13 +1567,21 @@ class WeixinBotService {
           source: 'wechat-persona',
           externalId: `${queue.from}:${queue.mode.sessionId}`,
           title: `微信分身 · ${queue.mode.displayName}`,
+          scope: { kind: 'persona', sessionId: queue.mode.sessionId, displayName: queue.mode.displayName },
         })
         : agentConversationStore.getOrCreateExternal({
           source: 'wechat-persona',
           externalId: `${queue.from}:${queue.mode.sessionId}`,
           title: `微信分身 · ${queue.mode.displayName}`,
+          scope: { kind: 'persona', sessionId: queue.mode.sessionId, displayName: queue.mode.displayName },
         })
-      const userMsg: UIMessage = { id: `wxp-u-${Date.now()}`, role: 'user', parts: [{ type: 'text', text: combinedText }] }
+      // 微信里分条发的每条消息存成独立 text part，桌面历史才能像微信一样分条显示（而非挤进一个气泡）
+      const userParts = texts.map((t) => t.trim()).filter(Boolean).map((text) => ({ type: 'text' as const, text }))
+      const userMsg: UIMessage = {
+        id: `wxp-u-${Date.now()}`,
+        role: 'user',
+        parts: userParts.length ? userParts : [{ type: 'text', text: combinedText }],
+      }
       agentConversationStore.append(conv.id, [userMsg])
 
       const history = agentConversationStore.load(conv.id)?.messages ?? [userMsg]
@@ -1607,7 +1624,7 @@ class WeixinBotService {
       agentConversationStore.append(conv.id, [{
         id: `wxp-a-${Date.now()}`,
         role: 'assistant',
-        parts: [{ type: 'text', text: getSavedAssistantText(reply) }],
+        parts: getSavedAssistantBubbles(reply).map((text) => ({ type: 'text' as const, text })),
       }])
       if (forceVoice || streamedBubbleCount === 0) {
         if (reply.text) await this.sendTextBubbles(queue.from, getReplyTextBubbles(reply), contextToken)
