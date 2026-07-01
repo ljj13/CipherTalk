@@ -3,7 +3,7 @@ import { motion } from 'framer-motion'
 import { useLocation, useNavigate } from 'react-router-dom'
 import {
   Home, MessageSquare, Database, Settings,
-  Download, Aperture, Boxes,
+  Download, Aperture, Boxes, Bot, UserRoundPlus, BookOpen, PawPrint,
   type LucideIcon
 } from 'lucide-react'
 import MacOSDock, { type DockApp } from '@/components/ui/mac-os-dock'
@@ -16,29 +16,23 @@ const HIDE_DELAY = 2500
 const EDGE_TRIGGER_PX = 8
 const WECHAT_LOGO_SRC = './微信logo.png'
 
-interface AppIconProps {
-  Icon: LucideIcon
-  gradient: string
-}
-
-function AppIcon({ Icon, gradient }: AppIconProps) {
+// 无背景图标：白色线条 + 细黑描边（四向 drop-shadow 叠出黑边），在玻璃上仍有对比
+function AppIcon({ Icon }: { Icon: LucideIcon }) {
   return (
-    <div
-      className="w-full h-full flex items-center justify-center"
-      style={{
-        background: gradient,
-        borderRadius: '28%',
-        boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.25), inset 0 -1px 0 rgba(0,0,0,0.15)'
-      }}
-    >
-      <Icon className="w-[58%] h-[58%] text-white" strokeWidth={2} />
+    <div className="w-full h-full flex items-center justify-center">
+      <Icon
+        className="w-[76%] h-[76%] text-white"
+        strokeWidth={2}
+        style={{
+          filter:
+            'drop-shadow(0 1px 0 rgba(0,0,0,0.75)) drop-shadow(0 -1px 0 rgba(0,0,0,0.55)) drop-shadow(1px 0 0 rgba(0,0,0,0.55)) drop-shadow(-1px 0 0 rgba(0,0,0,0.55))'
+        }}
+      />
     </div>
   )
 }
 
-const makeIcon = (Icon: LucideIcon, gradient: string): ReactNode => (
-  <AppIcon Icon={Icon} gradient={gradient} />
-)
+const makeIcon = (Icon: LucideIcon): ReactNode => <AppIcon Icon={Icon} />
 
 function BottomDock() {
   const navigate = useNavigate()
@@ -49,7 +43,20 @@ function BottomDock() {
   const autoHide = autoHideSetting && location.pathname !== '/home'
   const [visible, setVisible] = useState(true)
   const [deviceConnectOpen, setDeviceConnectOpen] = useState(false)
+  const [diaryEnabled, setDiaryEnabled] = useState(true)
   const hideTimerRef = useRef<number | undefined>(undefined)
+
+  // 与侧边栏一致：日记项受 diaryEnabled 配置控制，关闭时不显示
+  useEffect(() => {
+    let mounted = true
+    window.electronAPI.config.get('diaryEnabled')
+      .then((value) => { if (mounted) setDiaryEnabled(value !== false) })
+      .catch(() => undefined)
+    const off = window.electronAPI.config.onChanged(({ key, value }) => {
+      if (key === 'diaryEnabled') setDiaryEnabled(value !== false)
+    })
+    return () => { mounted = false; off() }
+  }, [])
 
   const clearHideTimer = useCallback(() => {
     if (hideTimerRef.current !== undefined) {
@@ -109,25 +116,35 @@ function BottomDock() {
     catch (e) { console.error('打开朋友圈窗口失败:', e) }
   }
 
-  const apps: DockApp[] = [
-    { id: 'home', name: '首页', icon: makeIcon(Home, 'linear-gradient(135deg, #4A90E2 0%, #2E6BC9 100%)') },
-    { id: 'chat', name: '聊天查看', icon: makeIcon(MessageSquare, 'linear-gradient(135deg, #2ECC71 0%, #27AE60 100%)') },
-    { id: 'moments', name: '朋友圈', icon: makeIcon(Aperture, 'linear-gradient(135deg, #FF7AA2 0%, #E84B7E 100%)') },
-    { id: 'device-connect', name: '设备连接', icon: (
+  // 顺序与侧边栏导航一致（Sidebar.tsx navItems + 底部 ClawLink/设置）
+  const allApps: DockApp[] = [
+    { id: 'home', name: '首页', icon: makeIcon(Home) },
+    { id: 'agent', name: 'CT-Agent', icon: makeIcon(Bot) },
+    { id: 'personas', name: 'AI 克隆', icon: makeIcon(UserRoundPlus) },
+    { id: 'diary', name: '日记', icon: makeIcon(BookOpen) },
+    { id: 'pets', name: 'AI 宠物', icon: makeIcon(PawPrint) },
+    { id: 'chat', name: '聊天查看', icon: makeIcon(MessageSquare) },
+    { id: 'moments', name: '朋友圈', icon: makeIcon(Aperture) },
+    { id: 'export', name: '导出数据', icon: makeIcon(Download) },
+    { id: 'data-management', name: '数据管理', icon: makeIcon(Database) },
+    { id: 'mcp', name: 'MCP & Skills', icon: makeIcon(Boxes) },
+    { id: 'settings', name: '设置', icon: makeIcon(Settings) },
+    { id: 'device-connect', name: 'ClawLink', icon: (
       <div className="relative w-full h-full p-1">
         <img src={WECHAT_LOGO_SRC} alt="微信" className="h-full w-full object-contain" />
         <DeviceConnectStatusDot status={deviceStatus} className="absolute right-[4%] top-[4%] size-[26%] ring-2 ring-white" />
       </div>
     ) },
-    { id: 'export', name: '导出数据', icon: makeIcon(Download, 'linear-gradient(135deg, #1ABC9C 0%, #16A085 100%)') },
-    { id: 'data-management', name: '数据管理', icon: makeIcon(Database, 'linear-gradient(135deg, #607D8B 0%, #455A64 100%)') },
-    { id: 'mcp', name: 'MCP & Skills', icon: makeIcon(Boxes, 'linear-gradient(135deg, #EC407A 0%, #C2185B 100%)') },
-    { id: 'settings', name: '设置', icon: makeIcon(Settings, 'linear-gradient(135deg, #6E7B85 0%, #424A52 100%)') },
   ]
+  const apps = diaryEnabled ? allApps : allApps.filter(app => app.id !== 'diary')
 
   const handleAppClick = (appId: string) => {
     switch (appId) {
       case 'home': navigate('/home'); break
+      case 'agent': navigate('/agent'); break
+      case 'personas': navigate('/personas'); break
+      case 'diary': navigate('/diary'); break
+      case 'pets': navigate('/pets'); break
       case 'chat': void openChatWindow(); break
       case 'moments': void openMomentsWindow(); break
       case 'device-connect': setDeviceConnectOpen(true); break

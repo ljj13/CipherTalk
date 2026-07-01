@@ -1,4 +1,9 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react'
+import { createLiquidGlassMap, type GlassFilterMap } from '@/utils/liquidGlass'
+
+// 液态玻璃折射：宽胶囊。缩小实心中心(halfX/halfY)+加大 feather 让折射带更宽、覆盖面更大。
+const DOCK_GLASS = { halfX: 0.24, halfY: 0.14, radius: 0.7, edge: 0.18, feather: 1.1, strength: 1.5 }
+const DOCK_GLASS_FILTER_ID = 'dock-liquid-glass'
 
 export interface DockApp {
   id: string
@@ -20,6 +25,7 @@ const MacOSDock: React.FC<MacOSDockProps> = ({
   className = ''
 }) => {
   const [mouseX, setMouseX] = useState<number | null>(null)
+  const [glassMap, setGlassMap] = useState<GlassFilterMap | null>(null)
   const [currentScales, setCurrentScales] = useState<number[]>(apps.map(() => 1))
   const [currentPositions, setCurrentPositions] = useState<number[]>([])
   const dockRef = useRef<HTMLDivElement>(null)
@@ -64,7 +70,7 @@ const MacOSDock: React.FC<MacOSDockProps> = ({
   const [config, setConfig] = useState(getResponsiveConfig)
   const { baseIconSize, maxScale, effectWidth } = config
   const minScale = 1.0
-  const baseSpacing = Math.max(10, baseIconSize * 0.22)
+  const baseSpacing = Math.max(14, baseIconSize * 0.3)
 
   useEffect(() => {
     const handleResize = () => {
@@ -171,8 +177,8 @@ const MacOSDock: React.FC<MacOSDockProps> = ({
 
     if (dockRef.current) {
       const rect = dockRef.current.getBoundingClientRect()
-      const padding = Math.max(8, baseIconSize * 0.12)
-      setMouseX(e.clientX - rect.left - padding)
+      const padX = Math.max(24, baseIconSize * 0.5)
+      setMouseX(e.clientX - rect.left - padX)
     }
   }, [baseIconSize])
 
@@ -204,26 +210,63 @@ const MacOSDock: React.FC<MacOSDockProps> = ({
       ))
     : (apps.length * (baseIconSize + baseSpacing)) - baseSpacing
 
-  const padding = Math.max(8, baseIconSize * 0.12)
+  // 竖向 padding 小（控制条高，圆角=半高的胶囊不至于太高），横向 padding 大（两端留白，不拥挤）
+  const padY = Math.max(10, baseIconSize * 0.22)
+  const padX = Math.max(24, baseIconSize * 0.5)
+
+  // 液态玻璃位移贴图：贴图尺寸固定，胶囊宽度随磁化放大而变。宽度按 8px 分桶，避免逐帧重建 canvas；
+  // ponytail: 悬停放大瞬间贴图与胶囊最多差 8px，几乎不可见，静止态像素对齐。宽度真要求分毫不差再上逐帧。
+  const glassHeight = Math.round(baseIconSize + padY * 2)
+  const glassWidth = Math.max(glassHeight, Math.round((contentWidth + padX * 2) / 8) * 8)
+
+  useEffect(() => {
+    setGlassMap(createLiquidGlassMap(glassWidth, glassHeight, DOCK_GLASS))
+  }, [glassWidth, glassHeight])
+
+  // 折射要放在 blur 之前且 blur 要轻，否则位移会被糊掉，看不出液态玻璃的镜片折弯。
+  const glassBackdrop = glassMap
+    ? `url(#${DOCK_GLASS_FILTER_ID}) blur(1px) saturate(180%) brightness(1.06)`
+    : 'blur(28px) saturate(180%)'
 
   return (
+    <>
+      {glassMap && (
+        <svg
+          aria-hidden="true"
+          focusable="false"
+          style={{ position: 'absolute', width: 0, height: 0, pointerEvents: 'none' }}
+        >
+          <filter
+            id={DOCK_GLASS_FILTER_ID}
+            colorInterpolationFilters="sRGB"
+            filterUnits="userSpaceOnUse"
+            x="0"
+            y="0"
+            width={glassMap.width}
+            height={glassMap.height}
+          >
+            <feImage href={glassMap.href} xlinkHref={glassMap.href} width={glassMap.width} height={glassMap.height} result="displacementMap" />
+            <feDisplacementMap in="SourceGraphic" in2="displacementMap" scale={glassMap.scale} xChannelSelector="R" yChannelSelector="G" />
+          </filter>
+        </svg>
+      )}
     <div
       ref={dockRef}
-      className={className}
+      // 圆角曲率
+      className={`${className} [corner-shape:superellipse(1.5)]`.trim()}
       style={{
-        width: `${contentWidth + padding * 2}px`,
-        background: 'rgba(255, 255, 255, 0.16)',
-        backdropFilter: 'blur(28px) saturate(180%)',
-        WebkitBackdropFilter: 'blur(28px) saturate(180%)',
-        borderRadius: `${Math.max(16, baseIconSize * 0.5)}px`,
-        border: '1px solid rgba(255, 255, 255, 0.22)',
+        width: `${contentWidth + padX * 2}px`,
+        background: 'rgba(255, 255, 255, 0.03)',
+        backdropFilter: glassBackdrop,
+        WebkitBackdropFilter: glassBackdrop,
+        // 圆角值
+        borderRadius: '24px',
+        border: '1px solid rgba(255, 255, 255, 0.28)',
         boxShadow: `
           0 ${Math.max(6, baseIconSize * 0.12)}px ${Math.max(24, baseIconSize * 0.5)}px rgba(0, 0, 0, 0.22),
-          0 ${Math.max(2, baseIconSize * 0.04)}px ${Math.max(6, baseIconSize * 0.15)}px rgba(0, 0, 0, 0.12),
-          inset 0 1px 0 rgba(255, 255, 255, 0.3),
-          inset 0 -1px 0 rgba(255, 255, 255, 0.05)
+          0 ${Math.max(2, baseIconSize * 0.04)}px ${Math.max(6, baseIconSize * 0.15)}px rgba(0, 0, 0, 0.12)
         `,
-        padding: `${padding}px`
+        padding: `${padY}px ${padX}px`
       }}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
@@ -338,6 +381,7 @@ const MacOSDock: React.FC<MacOSDockProps> = ({
         })}
       </div>
     </div>
+    </>
   )
 }
 

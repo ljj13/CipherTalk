@@ -55,6 +55,8 @@ export default function ImageWindow() {
     const toolbarRef = useRef<HTMLDivElement>(null)
     const videoRef = useRef<HTMLVideoElement>(null)
     const [glassFilterMap, setGlassFilterMap] = useState<GlassFilterMap | null>(null)
+    // 上一张/下一张按钮：固定 44px 圆形，一次生成液态玻璃圆形位移贴图
+    const [navGlassMap, setNavGlassMap] = useState<GlassFilterMap | null>(null)
 
     // 使用 ref 存储拖动状态，避免闭包问题
     const dragStateRef = useRef({
@@ -222,6 +224,10 @@ export default function ImageWindow() {
         const resizeObserver = new ResizeObserver(updateFilterMap)
         resizeObserver.observe(toolbar)
         return () => resizeObserver.disconnect()
+    }, [])
+
+    useEffect(() => {
+        setNavGlassMap(createLiquidGlassMap(44, 44, { halfX: 0.18, halfY: 0.18, radius: 0.18, edge: 0.02, feather: 0.4, strength: 3 }))
     }, [])
 
     // 监听视口大小和图片原始尺寸变化，自动调整初始缩放比例
@@ -468,7 +474,7 @@ export default function ImageWindow() {
     // 注意：如果旋转了，宽高判断会变。暂不处理旋转后的复杂bbox calculations。
 
     return (
-        <div className="image-window-container">
+        <div className={`image-window-container${navGlassMap ? ' nav-glass-ready' : ''}`}>
             <svg className="glass-filter-defs" aria-hidden="true" focusable="false">
                 <filter
                     id="image-window-liquid-refraction"
@@ -495,6 +501,20 @@ export default function ImageWindow() {
                         yChannelSelector="G"
                     />
                 </filter>
+                {navGlassMap && (
+                    <filter
+                        id="image-window-nav-glass"
+                        filterUnits="userSpaceOnUse"
+                        colorInterpolationFilters="sRGB"
+                        x="0"
+                        y="0"
+                        width={navGlassMap.width}
+                        height={navGlassMap.height}
+                    >
+                        <feImage href={navGlassMap.href} xlinkHref={navGlassMap.href} width={navGlassMap.width} height={navGlassMap.height} result="navDisplacementMap" />
+                        <feDisplacementMap in="SourceGraphic" in2="navDisplacementMap" scale={navGlassMap.scale} xChannelSelector="R" yChannelSelector="G" />
+                    </filter>
+                )}
             </svg>
 
             <div className="title-bar">

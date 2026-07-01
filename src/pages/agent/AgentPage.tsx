@@ -91,6 +91,7 @@ import { AgentShareCard, buildAgentSharePreviewData, formatAgentShareFileDate, s
 import { AGENT_PENDING_TITLE, ModelWaitingLine, SubAgentProgressPanel, mergeSubAgentProgress, shouldDisplayAgentProgress } from './AgentSubAgentProgress'
 import { ModelItem, type AgentModelItem } from './AgentMessageBlocks'
 import { AgentMessageItem } from './AgentMessageItem'
+import { AgentRecordsMenu } from './AgentRecordsMenu'
 
 // 没有图片/文件附件时给输入框更高的最小高度，避免空状态输入框过矮。
 function AgentPromptTextarea({ workspaceReferenceCount }: { workspaceReferenceCount: number }) {
@@ -1651,85 +1652,17 @@ export default function AgentPage() {
               state={codeWorkspaceState}
             />
             <div className="flex items-center gap-1.5">
-              <Dropdown isOpen={recordsOpen} onOpenChange={handleRecordsOpenChange}>
-                <HeroButton
-                  aria-label="对话记录"
-                  className="group relative size-9 overflow-visible p-0"
-                  isIconOnly
-                  render={(buttonProps) => <button {...buttonProps} title="对话记录" />}
-                  size="md"
-                  variant="tertiary"
-                >
-                  <History className="size-4.5" />
-                  <span
-                    aria-hidden
-                    className="pointer-events-none absolute top-[calc(100%+0.375rem)] right-0 z-50 whitespace-nowrap rounded-(--agent-radius,12px) border border-border bg-popover px-2 py-1 text-popover-foreground text-xs opacity-0 shadow-lg transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
-                  >
-                    对话记录
-                  </span>
-                </HeroButton>
-                <Dropdown.Popover className="w-[min(28rem,calc(100vw-2rem))]" placement="bottom end">
-                  <Dropdown.Menu
-                    disabledKeys={conversationRecords.length > 0 ? undefined : ['empty-conversation-records']}
-                    selectedKeys={conversationId ? [conversationId] : []}
-                    selectionMode="single"
-                    className="max-h-[min(70vh,32rem)] overflow-y-auto"
-                    onAction={(key) => {
-                      const record = conversationRecords.find((item) => String(item.id) === String(key))
-                      if (record) handleOpenRecord(record)
-                    }}
-                  >
-                    {conversationRecords.length > 0 ? conversationRecords.map((record) => {
-                      return (
-                        <Dropdown.Item
-                          className="min-h-14 gap-3 py-2.5"
-                          id={record.id}
-                          key={record.id}
-                          textValue={record.title}
-                        >
-                          <Dropdown.ItemIndicator />
-                          <Clock3 className="size-4 shrink-0 text-muted" />
-                          <span className="min-w-0 flex-1">
-                            <Label className="block truncate font-medium text-sm">{record.title}</Label>
-                            <span className="block truncate text-muted-foreground text-xs">
-                              {new Date(record.updatedAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                            </span>
-                          </span>
-                          <span
-                            className="ms-auto flex shrink-0"
-                            onClick={(event) => event.stopPropagation()}
-                            onMouseDown={(event) => event.stopPropagation()}
-                            onPointerDown={(event) => event.stopPropagation()}
-                          >
-                            <HeroButton
-                              aria-label={`删除 ${record.title}`}
-                              className="size-8 p-0 text-muted-foreground hover:text-danger"
-                              isIconOnly
-                              size="sm"
-                              variant="ghost"
-                              onPress={() => {
-                                setRecordPendingDelete(record)
-                                setRecordsOpen(false)
-                              }}
-                            >
-                              <Trash2 className="size-4" />
-                            </HeroButton>
-                          </span>
-                        </Dropdown.Item>
-                      )
-                    }) : (
-                      <Dropdown.Item
-                        className="min-h-20 justify-center py-6 text-center text-muted-foreground text-sm"
-                        id="empty-conversation-records"
-                        key="empty-conversation-records"
-                        textValue="暂无对话记录"
-                      >
-                        暂无对话记录
-                      </Dropdown.Item>
-                    )}
-                  </Dropdown.Menu>
-                </Dropdown.Popover>
-              </Dropdown>
+              <AgentRecordsMenu
+                isOpen={recordsOpen}
+                onOpenChange={handleRecordsOpenChange}
+                records={conversationRecords}
+                selectedId={conversationId}
+                onOpenRecord={handleOpenRecord}
+                onDeleteRecord={(record) => {
+                  setRecordPendingDelete(record)
+                  setRecordsOpen(false)
+                }}
+              />
               <Tooltip delay={0}>
                 <HeroButton
                   aria-label="分享对话"

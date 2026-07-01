@@ -4,6 +4,8 @@ import { useAppStore } from '../stores/appStore'
 import { getHomeBackgroundPresetSrc, useThemeStore } from '../stores/themeStore'
 import WhatsNewModal from '../components/WhatsNewModal'
 import { RandomMomentBubble } from '../features/home/RandomMomentBubble'
+import { LiquidGlassBubble } from '../features/home/LiquidGlassBubble'
+import { LiquidGlassBall } from '../features/home/LiquidGlassBall'
 import {
   loadRandomMomentSnippet,
   MOMENT_EMOJI_TYPE,
@@ -177,6 +179,7 @@ function HomePage() {
         />
       )}
       <div className="home-background-tint" aria-hidden="true" />
+      <LiquidGlassBall size={120} />
       <button
         className="whats-new-btn"
         aria-label="打开开发者愿景"
@@ -232,9 +235,9 @@ function HomePage() {
                         <RandomMomentBubble sessionId={randomSnippet.sessionId} message={randomSnippet.message} />
                       </div>
                     ) : isTextBubble ? (
-                      <blockquote className="random-message-body">
+                      <LiquidGlassBubble>
                         <RandomMomentBubble sessionId={randomSnippet.sessionId} message={randomSnippet.message} />
-                      </blockquote>
+                      </LiquidGlassBubble>
                     ) : (
                       <div className="random-message-body random-message-body--media">
                         <RandomMomentBubble sessionId={randomSnippet.sessionId} message={randomSnippet.message} />
