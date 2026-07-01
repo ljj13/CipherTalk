@@ -28,6 +28,7 @@ import {
   PromptInputProvider,
   PromptInputTextarea,
   PromptInputTools,
+  usePromptInputController,
   type PromptInputMessage,
   type PromptInputControllerProps,
 } from '@/components/ai-elements/prompt-input'
@@ -63,6 +64,7 @@ import {
   type MentionTarget,
 } from './AgentMentions'
 import { extractSources, getPersonaControlOutput, toolProgressKey } from './agentMessageHelpers'
+import { createLiquidGlassMap, type GlassFilterMap } from '@/utils/liquidGlass'
 import {
   buildFallbackConversationTitle,
   finiteNumber,
@@ -90,12 +92,60 @@ import { AGENT_PENDING_TITLE, ModelWaitingLine, SubAgentProgressPanel, mergeSubA
 import { ModelItem, type AgentModelItem } from './AgentMessageBlocks'
 import { AgentMessageItem } from './AgentMessageItem'
 
+// 没有图片/文件附件时给输入框更高的最小高度，避免空状态输入框过矮。
+function AgentPromptTextarea({ workspaceReferenceCount }: { workspaceReferenceCount: number }) {
+  const { attachments } = usePromptInputController()
+  const hasAssets = attachments.files.length > 0 || workspaceReferenceCount > 0
+  return (
+    <PromptInputTextarea
+      className={hasAssets ? 'min-h-10 max-h-40 py-2 text-sm leading-5' : 'min-h-14 max-h-40 py-2 text-sm leading-5'}
+      placeholder="问问你的聊天记录，Enter 发送，Shift + Enter 换行…"
+    />
+  )
+}
+
+// 滚动到底部按钮的液态玻璃折射滤镜：圆形按钮 36px，复用朋友圈图标的位移贴图参数。
+// 贴图生成完成后 onReady 触发 .agent-glass-ready，CSS 再叠加 url(#agent-glass-36) 折射。
+const AGENT_SCROLL_GLASS_SIZE = 36
+const GLASS_CIRCLE = { halfX: 0.18, halfY: 0.18, radius: 0.18, edge: 0.02, feather: 0.35, strength: 3 }
+
+function AgentGlassDefs({ onReady }: { onReady: () => void }) {
+  const [map, setMap] = useState<GlassFilterMap | null>(null)
+  useEffect(() => {
+    const m = createLiquidGlassMap(AGENT_SCROLL_GLASS_SIZE, AGENT_SCROLL_GLASS_SIZE, GLASS_CIRCLE)
+    if (m) {
+      setMap(m)
+      onReady()
+    }
+  }, [onReady])
+  if (!map) return null
+  return (
+    <svg className="agent-glass-defs" aria-hidden="true" focusable="false">
+      <filter
+        id="agent-glass-36"
+        colorInterpolationFilters="sRGB"
+        filterUnits="userSpaceOnUse"
+        width={map.width}
+        height={map.height}
+        x="0"
+        y="0"
+      >
+        <feImage href={map.href} xlinkHref={map.href} width={map.width} height={map.height} result="displacementMap" />
+        <feDisplacementMap in="SourceGraphic" in2="displacementMap" scale={map.scale} xChannelSelector="R" yChannelSelector="G" />
+      </filter>
+    </svg>
+  )
+}
+
 export default function AgentPage() {
   const [presets, setPresets] = useState<configService.AiConfigPreset[]>([])
   const [providersInfo, setProvidersInfo] = useState<AIProviderInfo[]>([])
   const [selectedPresetId, setSelectedPresetId] = useState('current')
   const [reasoningEffort, setReasoningEffort] = useState<AgentReasoningEffort>('auto')
   const [generatedImagePreview, setGeneratedImagePreview] = useState<{ src: string; originRect?: ImagePreviewOriginRect } | null>(null)
+  // 滚动到底部按钮液态玻璃：位移贴图就绪后给根容器加 .agent-glass-ready
+  const [agentGlassReady, setAgentGlassReady] = useState(false)
+  const handleAgentGlassReady = useCallback(() => setAgentGlassReady(true), [])
   // 计划模式：开启后本轮只出执行计划、不下结论，等用户点"开始执行"再跑（参考 ClaudeCode/Codex）
   const [planMode, setPlanMode] = useState(false)
   const planModeRef = useRef(planMode)
@@ -1524,10 +1574,11 @@ export default function AgentPage() {
 
   return (
     <Surface
-      className="relative flex h-full min-h-0 flex-col overflow-hidden"
+      className={`relative flex h-full min-h-0 flex-col overflow-hidden${agentGlassReady ? ' agent-glass-ready' : ''}`}
       style={{ '--agent-radius': '12px' } as CSSProperties}
       variant="transparent"
     >
+      <AgentGlassDefs onReady={handleAgentGlassReady} />
       <div className="relative flex h-14 shrink-0 items-center justify-center border-b border-border/60 px-3">
         <div className="absolute left-3 top-1/2 flex -translate-y-1/2 items-center">
           <Tooltip delay={0}>
@@ -1785,9 +1836,9 @@ export default function AgentPage() {
               {agentNotice}
             </div>
           )}
-          {busy && subAgentProgress.length > 0 && !lastAssistantMessageHasDelegateTool && <SubAgentProgressPanel events={subAgentProgress} />}
+         {busy && subAgentProgress.length > 0 && !lastAssistantMessageHasDelegateTool && <SubAgentProgressPanel events={subAgentProgress} />}
         </ConversationContent>
-        <ConversationScrollButton className="bottom-36" />
+        <ConversationScrollButton className="bottom-36 z-30 agent-scroll-glass" />
       </Conversation>
 
       <div className="pointer-events-none absolute right-0 bottom-0 left-0 h-44">

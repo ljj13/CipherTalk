@@ -205,6 +205,45 @@ img {
   box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.05) !important;
 }
 
+/* 滚动到底部按钮液态玻璃折射质感：圆形 36px，复用朋友圈媒体按钮的位移贴图参数。
+   贴图由 AgentGlassDefs 运行时生成，注入 #agent-glass-36；就绪后用位移折射替换普通模糊。 */
+.agent-glass-defs {
+  position: absolute;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+
+.agent-scroll-glass {
+  background: rgba(255, 255, 255, 0.16);
+  backdrop-filter: blur(3px) saturate(180%);
+  -webkit-backdrop-filter: blur(1px) saturate(180%);
+  border: none;
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.22),
+    inset 0 -6px 14px rgba(0, 0, 0, 0.12);
+  isolation: isolate;
+  transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.18s ease;
+}
+
+.agent-scroll-glass:hover {
+  background: rgba(255, 255, 255, 0.24);
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.26),
+    inset 0 -6px 14px rgba(0, 0, 0, 0.14);
+  transform: translateY(-1px);
+}
+
+.agent-scroll-glass svg {
+  color: #fff;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.55));
+}
+
+.agent-glass-ready .agent-scroll-glass {
+  backdrop-filter: url(#agent-glass-36) blur(1px) brightness(1.06) saturate(1.5);
+  -webkit-backdrop-filter: url(#agent-glass-36) blur(1px) brightness(1.06) saturate(1.5);
+}
+
 .pet-glass-filter-defs {
   position: absolute;
   width: 0;
