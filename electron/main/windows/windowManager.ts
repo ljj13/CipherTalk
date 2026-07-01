@@ -18,7 +18,7 @@ import { LogService } from '../../services/logService'
 import { appUpdateService } from '../../services/appUpdateService'
 import { mcpProxyService } from '../../services/mcp/proxyService'
 import { voiceTranscribeServiceWhisper } from '../../services/voiceTranscribeServiceWhisper'
-import { attachWindowStartupDiagnostics, markStartupMilestone } from '../startupDiagnostics'
+import { attachWindowStartupDiagnostics, markStartupMilestone, logStartupError } from '../startupDiagnostics'
 import type { ImageViewerOpenOptions, MainProcessContext, WindowManager } from '../context'
 
 type ReleaseAnnouncementPayload = {
@@ -546,15 +546,40 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       attachWindowStartupDiagnostics(splash, 'splash')
       ctx.setSplashWindow(splash)
       splash.center()
-      splash.once('ready-to-show', () => {
+
+      const showSplash = (via: string) => {
+        if (splash.isDestroyed() || splash.isVisible()) return
         hideMacWindowControls(splash)
         splash.show()
+        markStartupMilestone('splash:show-called', {
+          via,
+          visible: splash.isVisible(),
+          bounds: splash.getBounds()
+        })
+      }
+
+      splash.once('ready-to-show', () => {
+        markStartupMilestone('splash:ready-to-show')
+        showSplash('ready-to-show')
       })
 
+      // 兜底：Windows 透明窗口偶发不触发 ready-to-show，导致 show() 永不调用、窗口不可见。
+      splash.webContents.once('did-finish-load', () => showSplash('did-finish-load'))
+      setTimeout(() => showSplash('timeout-2s'), 2000)
+
+      const splashUrl = process.env.VITE_DEV_SERVER_URL
+        ? `${process.env.VITE_DEV_SERVER_URL}#/splash`
+        : `file://${join(__dirname, '../dist/index.html')}#/splash`
+      markStartupMilestone('splash:load-start', { url: splashUrl })
+
       if (process.env.VITE_DEV_SERVER_URL) {
-        splash.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/splash`).catch(() => undefined)
+        splash.loadURL(`${process.env.VITE_DEV_SERVER_URL}#/splash`).catch((e) => {
+          logStartupError('splash:load-failed', e, { url: splashUrl })
+        })
       } else {
-        splash.loadFile(join(__dirname, '../dist/index.html'), { hash: '/splash' }).catch(() => undefined)
+        splash.loadFile(join(__dirname, '../dist/index.html'), { hash: '/splash' }).catch((e) => {
+          logStartupError('splash:load-failed', e, { url: splashUrl })
+        })
       }
 
       return splash

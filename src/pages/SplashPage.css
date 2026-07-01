@@ -28,4 +28,11 @@ body,
   -webkit-user-select: none;
   user-select: none;
   -webkit-user-drag: none;
+  /* 入场淡入：兼作强制重绘，避免 Windows 透明窗口首帧不合成导致纯图不显示 */
+  animation: splash-in 0.4s ease-out both;
+}
+
+@keyframes splash-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }

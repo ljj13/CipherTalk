@@ -63,7 +63,7 @@ function SplashPage() {
     <div className={`splash-page${fadeOut ? ' splash-page--out' : ''}`}>
       <img
         className="splash-img"
-        src="./牛马密语.jpg"
+        src="./qdp.jpg"
         alt="密语 CipherTalk"
         style={{ clipPath: `path('${squirclePath()}')` }}
       />
