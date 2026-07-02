@@ -1,48 +1,77 @@
 import { ipcMain } from 'electron'
-import { exportService, type ExportOptions, type MomentsExportOptions } from '../../services/exportService'
-import { databaseExportService } from '../../services/databaseExportService'
+import { exportProcessService } from '../../services/exportProcessService'
+import type { ExportOptions, MomentsExportOptions } from '../../services/exportService'
 import type { MainProcessContext } from '../context'
 
 /**
- * 导出 IPC。
- * export:progress 是长任务进度事件，必须绑定到发起导出的 renderer。
+ * 导出 IPC —— 薄转发层。
+ *
+ * 全部导出执行都在 exportProcessService 持有的独立 utilityProcess 内完成，
+ * 主进程只接收 renderer 请求 → 转发 worker → 把进度回传给原发起 renderer。
+ * silk-wasm 解码、fs 同步写盘、JSON.stringify 大对象都不再阻塞主进程事件循环。
+ * channel 名/参数顺序/返回形状/preload 全部不变，renderer 零改动。
  */
+function genRequestId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 export function registerExportHandlers(ctx: MainProcessContext): void {
   ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions) => {
-    return exportService.exportSessions(sessionIds, outputDir, options, (progress) => {
-      event.sender.send('export:progress', progress)
-    })
+    const requestId = genRequestId('sessions')
+    return exportProcessService.exportSessions(
+      requestId,
+      sessionIds,
+      outputDir,
+      options,
+      (progress) => event.sender.send('export:progress', progress),
+    )
   })
 
   ipcMain.handle('export:exportSession', async (event, sessionId: string, outputPath: string, options: ExportOptions) => {
-    return exportService.exportSessionToChatLab(sessionId, outputPath, options, (progress) => {
-      event.sender.send('export:progress', progress)
-    })
+    const requestId = genRequestId('session')
+    return exportProcessService.exportSession(
+      requestId,
+      sessionId,
+      outputPath,
+      options,
+      (progress) => event.sender.send('export:progress', progress),
+    )
   })
 
   ipcMain.handle('export:exportContacts', async (event, outputDir: string, options: any) => {
-    return exportService.exportContacts(outputDir, options, (progress) => {
-      event.sender.send('export:progress', progress)
-    })
+    const requestId = genRequestId('contacts')
+    return exportProcessService.exportContacts(
+      requestId,
+      outputDir,
+      options,
+      (progress) => event.sender.send('export:progress', progress),
+    )
   })
 
   ipcMain.handle('export:exportMoments', async (event, outputDir: string, options: MomentsExportOptions) => {
-    return exportService.exportMoments(outputDir, options, (progress) => {
-      event.sender.send('export:progress', progress)
-    })
+    const requestId = genRequestId('moments')
+    return exportProcessService.exportMoments(
+      requestId,
+      outputDir,
+      options,
+      (progress) => event.sender.send('export:progress', progress),
+    )
   })
 
   // 数据库导出（解密落地）
   ipcMain.handle('export:scanDatabases', async () => {
-    return databaseExportService.scanDatabases()
+    return exportProcessService.scanDatabases()
   })
 
   ipcMain.handle('export:exportDatabases', async (event, selectedPaths: string[], outputDir: string) => {
-    return databaseExportService.exportDatabases(selectedPaths, outputDir, (progress) => {
-      event.sender.send('export:progress', progress)
-    })
+    const requestId = genRequestId('databases')
+    return exportProcessService.exportDatabases(
+      requestId,
+      selectedPaths,
+      outputDir,
+      (progress) => event.sender.send('export:progress', progress),
+    )
   })
 
   // 数据分析相关
-
 }

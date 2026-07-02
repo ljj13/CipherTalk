@@ -12,6 +12,14 @@ import { ConfigService } from './config'
 import { getDefaultCachePath as getPlatformDefaultCachePath } from './platformService'
 import { getDocumentsPath, getUserDataPath } from './runtimePaths'
 import { decryptDatViaNative, nativeAddonLocation, nativeAddonMetadata, nativeDecryptEnabled } from './nativeImageDecrypt'
+import {
+  asciiKey16 as asciiKey16Core,
+  decryptDatLegacy as decryptDatLegacyCore,
+  detectImageExtension as detectImageExtensionCore,
+  getDatVersion as getDatVersionCore,
+  looksLikeNativeImagePayload as looksLikeNativeImagePayloadCore
+} from './datDecryptCore'
+import { imageDecryptWorkerPool } from './imageDecryptWorkerPool'
 
 const execFileAsync = promisify(execFile)
 
@@ -97,7 +105,6 @@ export class ImageDecryptService {
   private sessionDatRootCache = new Map<string, string>()
   private pending = new Map<string, Promise<DecryptResult>>()
   private noLiveSet = new Set<string>()
-  private readonly defaultV1AesKey = 'cfcd208495d565ef'
   private cacheIndexed = false
   private cacheIndexing: Promise<void> | null = null
   private updateFlags = new Map<string, boolean>()
@@ -109,6 +116,12 @@ export class ImageDecryptService {
   private datPathIndexWriteTimer: ReturnType<typeof setTimeout> | null = null
   private prewarmKeys = new Set<string>()
   private readonly datPathIndexMaxEntries = 20_000
+  // msg/attach 全量 dat 索引（normalizeDatBase → 路径列表）：
+  // 兜底搜索从"每次未命中全盘 BFS(~10s)"改为"首次建索引一次，之后 O(1)"
+  private fullDatIndex: Map<string, string[]> | null = null
+  private fullDatIndexPromise: Promise<Map<string, string[]>> | null = null
+  private fullDatIndexRoot = ''
+  private fullDatIndexBuiltAt = 0
 
   async resolveCachedImage(payload: ImageLookupPayload): Promise<DecryptResult & { hasUpdate?: boolean }> {
     // 不再等待缓存索引，直接查找
@@ -1511,11 +1524,85 @@ export class ImageDecryptService {
       return fastHit
     }
 
-    // 优化2：兜底扫描 (异步非阻塞)
-    const found = await this.walkForDatInWorker(root, datName.toLowerCase(), 8, allowThumbnail, thumbOnly)
+    // 优化2：兜底查全量索引（首次构建一次，之后 O(1)；替代原每次未命中的全盘 BFS）
+    let index = await this.ensureFullDatIndex(root)
+    let found = this.lookupFullDatIndex(index, datName, allowThumbnail, thumbOnly)
+    if (!found && Date.now() - this.fullDatIndexBuiltAt > 60_000) {
+      // 未命中且索引超过 60s：可能是索引建成后新落盘的文件，重建一次再查
+      index = await this.rebuildFullDatIndex(root)
+      found = this.lookupFullDatIndex(index, datName, allowThumbnail, thumbOnly)
+    }
     if (found) {
       this.resolvedCache.set(key, found)
       return found
+    }
+    return null
+  }
+
+  private ensureFullDatIndex(root: string): Promise<Map<string, string[]>> {
+    if (this.fullDatIndex && this.fullDatIndexRoot === root) {
+      return Promise.resolve(this.fullDatIndex)
+    }
+    if (!this.fullDatIndexPromise || this.fullDatIndexRoot !== root) {
+      this.fullDatIndexRoot = root
+      this.fullDatIndexPromise = this.buildFullDatIndex(root).then((idx) => {
+        this.fullDatIndex = idx
+        this.fullDatIndexBuiltAt = Date.now()
+        return idx
+      })
+    }
+    return this.fullDatIndexPromise
+  }
+
+  private rebuildFullDatIndex(root: string): Promise<Map<string, string[]>> {
+    this.fullDatIndex = null
+    this.fullDatIndexPromise = null
+    return this.ensureFullDatIndex(root)
+  }
+
+  private async buildFullDatIndex(root: string): Promise<Map<string, string[]>> {
+    const { promises: fsp } = require('fs')
+    const { join } = require('path')
+    const started = Date.now()
+    const index = new Map<string, string[]>()
+    let fileCount = 0
+    const queue: string[] = [root]
+    while (queue.length > 0) {
+      const batch = queue.splice(0, 16)
+      await Promise.all(batch.map(async (dir: string) => {
+        let entries: any[] = []
+        try { entries = await fsp.readdir(dir, { withFileTypes: true }) } catch { return }
+        for (const entry of entries) {
+          const full = join(dir, entry.name)
+          if (entry.isDirectory()) {
+            queue.push(full)
+          } else if (entry.name.toLowerCase().endsWith('.dat')) {
+            fileCount++
+            const base = this.normalizeDatBase(entry.name)
+            const list = index.get(base)
+            if (list) list.push(full)
+            else index.set(base, [full])
+          }
+        }
+      }))
+    }
+    console.log(`[ImageDecrypt] 全量 dat 索引构建完成: ${fileCount} 个文件 / ${index.size} 个基名, 耗时 ${Date.now() - started}ms`)
+    return index
+  }
+
+  private lookupFullDatIndex(
+    index: Map<string, string[]>,
+    datName: string,
+    allowThumbnail: boolean,
+    thumbOnly: boolean
+  ): string | null {
+    const candidates = index.get(this.normalizeDatBase(datName)) || []
+    for (const p of candidates) {
+      const name = basename(p)
+      const isThumb = this.isThumbnailDat(name.toLowerCase())
+      if (thumbOnly && !isThumb) continue
+      if (!allowThumbnail && isThumb) continue
+      if (this.matchesDatName(name, datName) && existsSync(p)) return p
     }
     return null
   }
@@ -2716,6 +2803,17 @@ export class ImageDecryptService {
     aesKey: Buffer | null,
     aesKeyText?: string
   ): Promise<DatDecryptOutcome> {
+    // 优先走 worker 线程池：读盘 + AES + XOR 离开当前线程，多核真并行
+    const pooled = imageDecryptWorkerPool.decrypt(datPath, xorKey, aesKeyText || '', aesKey)
+    if (pooled) {
+      try {
+        return await pooled
+      } catch (e: any) {
+        // worker 侧失败（解密异常或线程崩溃）：回退当前线程原地解密，保持原行为
+        console.warn(`[ImageDecryptPool] worker 解密失败，回退主线程: ${datPath} - ${e?.message || String(e)}`)
+      }
+    }
+
     const nativeResult = this.tryDecryptDatWithNative(datPath, xorKey, aesKeyText)
     if (nativeResult && this.looksLikeNativeImagePayload(nativeResult.data)) {
       return { data: nativeResult.data, source: 'native' }
@@ -2733,21 +2831,7 @@ export class ImageDecryptService {
   }
 
   public getDatVersion(inputPath: string): number {
-    if (!existsSync(inputPath)) {
-      throw new Error('文件不存在')
-    }
-    const bytes = readFileSync(inputPath)
-    if (bytes.length < 6) {
-      return 0
-    }
-    const signature = bytes.subarray(0, 6)
-    if (this.compareBytes(signature, Buffer.from([0x07, 0x08, 0x56, 0x31, 0x08, 0x07]))) {
-      return 1
-    }
-    if (this.compareBytes(signature, Buffer.from([0x07, 0x08, 0x56, 0x32, 0x08, 0x07]))) {
-      return 2
-    }
-    return 0
+    return getDatVersionCore(inputPath)
   }
 
   private decryptDatFileInternal(inputPath: string, xorKey: number, aesKey: Buffer | null, aesKeyText?: string): Buffer {
@@ -2768,18 +2852,7 @@ export class ImageDecryptService {
     aesKey: Buffer | null,
     fallbackReason?: string
   ): DatDecryptOutcome {
-    const version = this.getDatVersion(inputPath)
-    if (version === 0) {
-      return { data: this.decryptDatV3(inputPath, xorKey), source: 'ts', fallbackReason }
-    }
-    if (version === 1) {
-      const key = this.asciiKey16(this.defaultV1AesKey)
-      return { data: this.decryptDatV4(inputPath, xorKey, key), source: 'ts', fallbackReason }
-    }
-    if (!aesKey || aesKey.length !== 16) {
-      throw new Error('请到设置配置图片解密密钥')
-    }
-    return { data: this.decryptDatV4(inputPath, xorKey, aesKey), source: 'ts', fallbackReason }
+    return decryptDatLegacyCore(inputPath, xorKey, aesKey, fallbackReason)
   }
 
   private normalizeAesKeyInput(aesKey?: Buffer | string): { buffer: Buffer | null; text: string } {
@@ -2834,109 +2907,11 @@ export class ImageDecryptService {
   }
 
   private looksLikeNativeImagePayload(data: Buffer): boolean {
-    if (!Buffer.isBuffer(data) || data.length < 4) return false
-    if (data.length >= 20 &&
-      data[0] === 0x77 && data[1] === 0x78 &&
-      data[2] === 0x67 && data[3] === 0x66) {
-      return true
-    }
-    return this.detectImageExtension(data) !== null
-  }
-
-  private decryptDatV3(inputPath: string, xorKey: number): Buffer {
-    const data = readFileSync(inputPath)
-    const out = Buffer.alloc(data.length)
-    for (let i = 0; i < data.length; i += 1) {
-      out[i] = data[i] ^ xorKey
-    }
-    return out
-  }
-
-  private decryptDatV4(inputPath: string, xorKey: number, aesKey: Buffer): Buffer {
-    const bytes = readFileSync(inputPath)
-    if (bytes.length < 0x0f) {
-      throw new Error('文件太小，无法解析')
-    }
-
-    const header = bytes.subarray(0, 0x0f)
-    const data = bytes.subarray(0x0f)
-    const aesSize = this.bytesToInt32(header.subarray(6, 10))
-    const xorSize = this.bytesToInt32(header.subarray(10, 14))
-
-    // AES 数据需要对齐到 16 字节（PKCS7 填充）
-    // 当 aesSize % 16 === 0 时，仍需要额外 16 字节的填充
-    const remainder = ((aesSize % 16) + 16) % 16
-    const alignedAesSize = aesSize + (16 - remainder)
-
-    if (alignedAesSize > data.length) {
-      throw new Error('文件格式异常：AES 数据长度超过文件实际长度')
-    }
-
-    const aesData = data.subarray(0, alignedAesSize)
-    let unpadded: Buffer = Buffer.alloc(0)
-    if (aesData.length > 0) {
-      const decipher = crypto.createDecipheriv('aes-128-ecb', aesKey, null)
-      decipher.setAutoPadding(false)
-      const decrypted = Buffer.concat([decipher.update(aesData), decipher.final()])
-
-      // 使用 PKCS7 填充移除
-      unpadded = this.strictRemovePadding(decrypted)
-    }
-
-    const remaining = data.subarray(alignedAesSize)
-    if (xorSize < 0 || xorSize > remaining.length) {
-      throw new Error('文件格式异常：XOR 数据长度不合法')
-    }
-
-    let rawData = Buffer.alloc(0)
-    let xoredData = Buffer.alloc(0)
-    if (xorSize > 0) {
-      const rawLength = remaining.length - xorSize
-      if (rawLength < 0) {
-        throw new Error('文件格式异常：原始数据长度小于XOR长度')
-      }
-      rawData = remaining.subarray(0, rawLength)
-      const xorData = remaining.subarray(rawLength)
-      xoredData = Buffer.alloc(xorData.length)
-      for (let i = 0; i < xorData.length; i += 1) {
-        xoredData[i] = xorData[i] ^ xorKey
-      }
-    } else {
-      rawData = remaining
-      xoredData = Buffer.alloc(0)
-    }
-
-    return Buffer.concat([unpadded, rawData, xoredData])
-  }
-
-  private bytesToInt32(bytes: Buffer): number {
-    if (bytes.length !== 4) {
-      throw new Error('需要4个字节')
-    }
-    return bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24)
+    return looksLikeNativeImagePayloadCore(data)
   }
 
   asciiKey16(keyString: string): Buffer {
-    if (keyString.length < 16) {
-      throw new Error('AES密钥至少需要16个字符')
-    }
-    return Buffer.from(keyString, 'ascii').subarray(0, 16)
-  }
-
-  private strictRemovePadding(data: Buffer): Buffer {
-    if (!data.length) {
-      throw new Error('解密结果为空，填充非法')
-    }
-    const paddingLength = data[data.length - 1]
-    if (paddingLength === 0 || paddingLength > 16 || paddingLength > data.length) {
-      throw new Error('PKCS7 填充长度非法')
-    }
-    for (let i = data.length - paddingLength; i < data.length; i += 1) {
-      if (data[i] !== paddingLength) {
-        throw new Error('PKCS7 填充内容非法')
-      }
-    }
-    return data.subarray(0, data.length - paddingLength)
+    return asciiKey16Core(keyString)
   }
 
   /**
@@ -3243,40 +3218,7 @@ export class ImageDecryptService {
   }
 
   private detectImageExtension(buffer: Buffer): string | null {
-    if (buffer.length < 12) return null
-
-    // 检查是否是 wxgf 格式，如果是则跳过头部再检测
-    if (buffer[0] === 0x77 && buffer[1] === 0x78 && buffer[2] === 0x67 && buffer[3] === 0x66) {
-      // wxgf 格式，尝试在不同偏移位置查找图片签名
-      const offsets = [0x10, 0x12, 0x14, 0x18, 0x20, 0xd0, 0x100]
-      for (const offset of offsets) {
-        if (buffer.length > offset + 12) {
-          const ext = this.detectImageExtensionAt(buffer, offset)
-          if (ext) return ext
-        }
-      }
-      // 暴力搜索 JPG 签名 (ff d8 ff)
-      for (let i = 4; i < Math.min(buffer.length - 3, 512); i++) {
-        if (buffer[i] === 0xff && buffer[i + 1] === 0xd8 && buffer[i + 2] === 0xff) {
-          return '.jpg'
-        }
-      }
-      return null
-    }
-
-    return this.detectImageExtensionAt(buffer, 0)
-  }
-
-  private detectImageExtensionAt(buffer: Buffer, offset: number): string | null {
-    if (buffer.length < offset + 12) return null
-    if (buffer[offset] === 0x47 && buffer[offset + 1] === 0x49 && buffer[offset + 2] === 0x46) return '.gif'
-    if (buffer[offset] === 0x89 && buffer[offset + 1] === 0x50 && buffer[offset + 2] === 0x4e && buffer[offset + 3] === 0x47) return '.png'
-    if (buffer[offset] === 0xff && buffer[offset + 1] === 0xd8 && buffer[offset + 2] === 0xff) return '.jpg'
-    if (buffer[offset] === 0x52 && buffer[offset + 1] === 0x49 && buffer[offset + 2] === 0x46 && buffer[offset + 3] === 0x46 &&
-      buffer[offset + 8] === 0x57 && buffer[offset + 9] === 0x45 && buffer[offset + 10] === 0x42 && buffer[offset + 11] === 0x50) {
-      return '.webp'
-    }
-    return null
+    return detectImageExtensionCore(buffer)
   }
 
   /**

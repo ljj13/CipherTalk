@@ -92,6 +92,15 @@ export default defineConfig(async () => {
           }
         },
         {
+          entry: 'electron/imageDecryptWorker.ts',
+          vite: {
+            build: {
+              outDir: 'dist-electron',
+              rollupOptions: { external }
+            }
+          }
+        },
+        {
           entry: 'electron/wcdbUtilityProcess.ts',
           vite: {
             build: {
@@ -111,6 +120,15 @@ export default defineConfig(async () => {
         },
         {
           entry: 'electron/aiExportUtilityProcess.ts',
+          vite: {
+            build: {
+              outDir: 'dist-electron',
+              rollupOptions: { external }
+            }
+          }
+        },
+        {
+          entry: 'electron/exportUtilityProcess.ts',
           vite: {
             build: {
               outDir: 'dist-electron',

@@ -73,6 +73,37 @@ export interface ChatLabExport {
 }
 
 // 消息类型映射：微信 localType -> ChatLab type
+// ===== 导出诊断日志 =====
+// expStep 只做变量赋值可高频调用；看门狗每 10s 检查，同一步骤停留 >10s 打"疑似卡住"，
+// 卡死时日志直接指向具体消息/下载。日志经 utility process stdout 转发到主进程控制台。
+let __expStep = ''
+let __expStepAt = 0
+let __expWatchdog: ReturnType<typeof setInterval> | null = null
+
+function expStep(step: string): void {
+  __expStep = step
+  __expStepAt = Date.now()
+}
+
+function expLog(msg: string): void {
+  console.log(`[Export] ${msg}`)
+}
+
+function expWatchdogStart(): void {
+  if (__expWatchdog) return
+  expStep('开始导出')
+  __expWatchdog = setInterval(() => {
+    const stuckMs = Date.now() - __expStepAt
+    if (stuckMs > 10_000) {
+      expLog(`⚠ 疑似卡住: "${__expStep}" 已停留 ${Math.round(stuckMs / 1000)}s`)
+    }
+  }, 10_000)
+}
+
+function expWatchdogStop(): void {
+  if (__expWatchdog) { clearInterval(__expWatchdog); __expWatchdog = null }
+}
+
 const MESSAGE_TYPE_MAP: Record<number, number> = {
   1: 0,      // 文本 -> TEXT
   3: 1,      // 图片 -> IMAGE
@@ -1886,7 +1917,10 @@ class ExportService {
       const memberSet = new Map<string, any>()
 
       // 读取+解码在 wcdb 子进程内完成（列裁剪/时间下推/keyset 分批），主进程只收紧凑行
+      expStep('HTML: 读取会话消息(首页)')
+      const __tRead = Date.now()
       for await (const rows of this.readMessagesFast(dbTablePairs, options.dateRange)) {
+          expStep(`HTML: 解析消息行 (已 ${allMessages.length} 条)`)
           for (const row of rows) {
             const createTime = row.create_time || 0
 
@@ -1990,7 +2024,9 @@ class ExportService {
               }
             }
           }
+          expStep('HTML: 读取会话消息(下一页)')
       }
+      expLog(`HTML: 消息读取完成 ${allMessages.length} 条，耗时 ${((Date.now() - __tRead) / 1000).toFixed(1)}s`)
 
       if (allMessages.length === 0) {
         return { success: false, error: '没有消息可导出' }
@@ -2023,7 +2059,11 @@ class ExportService {
         fs.mkdirSync(outputDir, { recursive: true })
       }
 
-      fs.writeFileSync(outputPath, HtmlExportGenerator.generateHtmlWithData(exportData), 'utf-8')
+      expStep('HTML: 生成并写入文件')
+      const __tGen = Date.now()
+      const htmlContent = HtmlExportGenerator.generateHtmlWithData(exportData)
+      fs.writeFileSync(outputPath, htmlContent, 'utf-8')
+      expLog(`HTML: 生成+写盘完成 ${(htmlContent.length / 1024 / 1024).toFixed(1)}MB，耗时 ${((Date.now() - __tGen) / 1000).toFixed(1)}s`)
 
       return { success: true }
     } catch (e) {
@@ -2344,6 +2384,7 @@ class ExportService {
     let failCount = 0
     const outputPathSet = new Set<string>()
 
+    expWatchdogStart()
     try {
       if (!this.dbDir) {
         const connectResult = await this.connect()
@@ -2386,18 +2427,21 @@ class ExportService {
 
         const outputPath = path.join(sessionOutputDir, `${safeName}${ext}`)
 
+        expLog(`会话 ${i + 1}/${sessionIds.length} "${safeName}" 开始导出 (format=${options.format}, media=${hasMedia})`)
+
         // 先导出媒体文件，收集路径映射表
         let mediaPathMap: Map<number, string> | undefined
         let voicePathMap: Map<number, string> | undefined
+        const __tMedia = Date.now()
         if (hasMedia) {
           try {
             const mediaResult = await this.exportMediaFiles(sessionId, safeName, sessionOutputDir, options, (fraction, detail) => {
-              // 媒体阶段在本会话内推进 [i, i+1)，让单会话导出时进度条也实时走动
+              // 统一总进度：每个会话占 1/N，会话内媒体 fraction 填充该会话的贡献
               onProgress?.({
                 current: i + Math.min(Math.max(fraction, 0), 0.999),
                 total: sessionIds.length,
                 currentSession: sessionInfo.displayName,
-                phase: 'writing',
+                phase: 'exporting',
                 detail
               })
             })
@@ -2416,7 +2460,13 @@ class ExportService {
           ? { ...options, ...(mediaPathMap ? { mediaPathMap } : {}), ...(voicePathMap ? { voicePathMap } : {}) }
           : options
 
+        if (hasMedia) {
+          expLog(`媒体阶段结束，耗时 ${((Date.now() - __tMedia) / 1000).toFixed(1)}s`)
+        }
+
         let result: { success: boolean; error?: string }
+        expStep(`写出 ${options.format} 文件`)
+        const __tWrite = Date.now()
 
         // 根据格式选择导出方法
         if (options.format === 'json') {
@@ -2432,6 +2482,8 @@ class ExportService {
         } else {
           result = { success: false, error: `不支持的格式: ${options.format}` }
         }
+
+        expLog(`${options.format} 文件写出${result.success ? '完成' : `失败: ${result.error}`}，耗时 ${((Date.now() - __tWrite) / 1000).toFixed(1)}s`)
 
         if (result.success) {
           successCount++
@@ -2464,6 +2516,8 @@ class ExportService {
       return { success: true, successCount, failCount, outputPaths: Array.from(outputPathSet) }
     } catch (e) {
       return { success: false, successCount, failCount, error: String(e), outputPaths: Array.from(outputPathSet) }
+    } finally {
+      expWatchdogStop()
     }
   }
 
@@ -2730,12 +2784,19 @@ class ExportService {
     let imageCount = 0
     let videoCount = 0
     let emojiCount = 0
+    // 表情按 cacheKey 去重下载（缓存 Promise，失败也记住）：
+    // 输出文件名带 createTime，同一表情发 N 次 destPath 全 miss，
+    // 死链 CDN 每次要等 15s×2 超时，不去重会把整场导出拖死
+    const emojiFetchCache = new Map<string, Promise<string | null>>()
 
     // 是否需要处理图片/视频/表情
     const needMedia = options.exportImages || options.exportVideos || options.exportEmojis
 
     // 进度分母：图片/视频/表情按扫描到的消息行推进；启用语音时给语音留后 15% 区间
+    expStep('统计消息总数')
+    const __tCount = Date.now()
     const totalMsgs = await this.countMessages(dbTablePairs, options.dateRange)
+    expLog(`媒体阶段开始: 消息总数 ${totalMsgs} (统计耗时 ${Date.now() - __tCount}ms)`)
     const mediaWeight = needMedia ? (options.exportVoices ? 0.85 : 1.0) : 0
     let mediaScanned = 0
     const reportMedia = (extra: number) => {
@@ -2749,17 +2810,24 @@ class ExportService {
       onProgress?.(0, '正在导出媒体...')
       // 流式分批读取媒体消息行：每批 2000 行、批内 MEDIA_CONCURRENCY 路并发，
       // 处理完即释放，避免一次性吞整表导致 OOM。图片/视频/表情解密下载都是 I/O 密集，并发收益最大。
-      const MEDIA_CONCURRENCY = 6
+      // 图片解密以 wcdb 代理 IPC + 磁盘 IO 为主，12 路仍吃不满 CPU
+      const MEDIA_CONCURRENCY = 12
       // 媒体行同样走子进程快速通道；packed_info 系列列透传给 parseImageDatName
+      expStep('读取媒体消息(首页)')
+      let __tPage = Date.now()
       for await (const pageRows of this.readMessagesFast(dbTablePairs, options.dateRange, [
         'packed_info_data', 'packed_info', 'packedInfoData', 'packedInfo',
         'PackedInfoData', 'PackedInfo',
         'WCDB_CT_packed_info_data', 'WCDB_CT_packed_info',
         'WCDB_CT_PackedInfoData', 'WCDB_CT_PackedInfo'
       ])) {
-          for (let __mediaStart = 0; __mediaStart < pageRows.length; __mediaStart += MEDIA_CONCURRENCY) {
-            const __mediaSlice = pageRows.slice(__mediaStart, __mediaStart + MEDIA_CONCURRENCY)
-            await Promise.all(__mediaSlice.map((row: any) => (async () => {
+          // 工作池代替按组 Promise.all 栅栏：单个慢项（如触发索引构建的图片）不再拖住同组其余通道
+          let __mediaCursor = 0
+          let __mediaDone = 0
+          const __mediaWorker = async () => {
+            while (__mediaCursor < pageRows.length) {
+              const row: any = pageRows[__mediaCursor++]
+              await (async () => {
         try {
           {
             const createTime = row.create_time || 0
@@ -2786,12 +2854,16 @@ class ExportService {
                 const imageDatName = this.parseImageDatName(row)
 
                 if (imageMd5 || imageDatName) {
+                  expStep(`图片解密 ${imageMd5 || imageDatName} (localId=${row.local_id})`)
+                  const __tImg = Date.now()
                   const cacheResult = await imageDecryptService.decryptImage({
                     sessionId,
                     imageMd5,
                     imageDatName,
                     createTime
                   })
+                  const __dtImg = Date.now() - __tImg
+                  if (__dtImg > 1000) expLog(`慢图片 ${imageMd5 || imageDatName}: ${__dtImg}ms (success=${cacheResult.success})`)
 
                   if (cacheResult.success && cacheResult.localPath) {
                     // localPath 是 file:///path?v=xxx 格式，转为本地路径
@@ -2825,7 +2897,11 @@ class ExportService {
               try {
                 const videoMd5 = videoService.parseVideoMd5(content)
                 if (videoMd5) {
+                  expStep(`视频查找 ${videoMd5} (localId=${row.local_id})`)
+                  const __tVid = Date.now()
                   const videoInfo = await videoService.getVideoInfo(videoMd5, content)
+                  const __dtVid = Date.now() - __tVid
+                  if (__dtVid > 1000) expLog(`慢视频 ${videoMd5}: ${__dtVid}ms (exists=${videoInfo.exists})`)
                   if (videoInfo.exists && videoInfo.videoUrl) {
                     const videoPath = videoInfo.videoUrl.replace(/^file:\/\/\//i, '').replace(/\//g, path.sep)
                     if (fs.existsSync(videoPath)) {
@@ -2877,18 +2953,28 @@ class ExportService {
                   const destPath = path.join(dayDir, fileName)
 
                   if (!fs.existsSync(destPath)) {
-                    // 1. 先检查本地缓存（cachePath/Emojis/）
-                    let sourceFile = this.findLocalEmoji(cacheKey)
-
-                    // 2. 找不到就从 CDN 下载
-                    if (!sourceFile && cdnUrl) {
-                      sourceFile = await this.downloadEmojiFile(cdnUrl, cacheKey)
+                    // 本地缓存 → CDN 下载 → encryptUrl+AES，整链按 cacheKey 去重，同一表情只走一次
+                    let fetchTask = emojiFetchCache.get(cacheKey)
+                    if (!fetchTask) {
+                      fetchTask = (async () => {
+                        const __tEmoji = Date.now()
+                        let f = this.findLocalEmoji(cacheKey)
+                        let src = f ? '本地缓存' : ''
+                        if (!f && cdnUrl) {
+                          f = await this.downloadEmojiFile(cdnUrl, cacheKey)
+                          if (f) src = 'CDN'
+                        }
+                        if (!f && encryptUrl && aesKey) {
+                          f = await this.downloadAndDecryptEmoji(encryptUrl, aesKey, cacheKey)
+                          if (f) src = 'encryptUrl'
+                        }
+                        expLog(`表情 ${cacheKey}: ${f ? src : '全部失败'} ${Date.now() - __tEmoji}ms`)
+                        return f
+                      })()
+                      emojiFetchCache.set(cacheKey, fetchTask)
                     }
-
-                    // 3. CDN 失败，尝试 encryptUrl + AES 解密
-                    if (!sourceFile && encryptUrl && aesKey) {
-                      sourceFile = await this.downloadAndDecryptEmoji(encryptUrl, aesKey, cacheKey)
-                    }
+                    expStep(`表情下载 ${cacheKey}`)
+                    const sourceFile = await fetchTask
 
                     if (sourceFile && fs.existsSync(sourceFile)) {
                       fs.copyFileSync(sourceFile, destPath)
@@ -2907,11 +2993,23 @@ class ExportService {
         } catch (e) {
           // 跳过单行消息的错误
         }
-            })()))
-            reportMedia(__mediaStart + __mediaSlice.length)
-            await new Promise(resolve => setImmediate(resolve))
+              })()
+              __mediaDone++
+              if ((__mediaDone & 31) === 0) {
+                reportMedia(__mediaDone)
+                await new Promise(resolve => setImmediate(resolve))
+              }
+            }
           }
+          await Promise.all(Array.from(
+            { length: Math.min(MEDIA_CONCURRENCY, pageRows.length) },
+            () => __mediaWorker()
+          ))
+          reportMedia(pageRows.length)
           mediaScanned += pageRows.length
+          expLog(`媒体扫描 ${mediaScanned}/${totalMsgs} · 图${imageCount} 视${videoCount} 表${emojiCount} · 本页 ${pageRows.length} 行耗时 ${((Date.now() - __tPage) / 1000).toFixed(1)}s`)
+          expStep('读取媒体消息(下一页)')
+          __tPage = Date.now()
       }
     } // 结束 needMedia
 
@@ -2924,6 +3022,8 @@ class ExportService {
       }
 
       onProgress?.(mediaWeight, '正在导出语音消息...')
+      expStep('收集语音消息')
+      const __tVoiceCollect = Date.now()
 
       // 1. 收集所有语音消息（createTime + localId + serverId，按 localId 升序以稳定同时间戳顺序）
       interface VoiceMsgRef {
@@ -2956,9 +3056,14 @@ class ExportService {
         if (!g.has(m.localId)) g.set(m.localId, g.size)
       }
 
+      expLog(`语音消息收集完成: ${voiceMessages.length} 条，耗时 ${((Date.now() - __tVoiceCollect) / 1000).toFixed(1)}s`)
+
       if (voiceMessages.length > 0) {
         // 2. 查找 MediaDb
+        expStep('枚举 MediaDb (递归扫描 db_storage)')
+        const __tFindDb = Date.now()
         const mediaDbs = this.findMediaDbs()
+        expLog(`MediaDb 枚举: ${mediaDbs.length} 个，耗时 ${Date.now() - __tFindDb}ms`)
 
         if (mediaDbs.length > 0) {
           // 3. 只初始化一次 silk-wasm
@@ -2982,6 +3087,8 @@ class ExportService {
             }
             const voiceDbs: VoiceDbInfo[] = []
 
+            expStep('探测 VoiceInfo 表结构')
+            const __tProbe = Date.now()
             for (const dbPath of mediaDbs) {
               try {
                 const tables = await dbAdapter.all<any>(
@@ -3017,6 +3124,7 @@ class ExportService {
                 voiceDbs.push({ dbPath, voiceTable, dataColumn, timeColumn, chatNameIdColumn, svrIdColumn, name2IdTable })
               } catch { }
             }
+            expLog(`VoiceInfo 表探测: ${voiceDbs.length}/${mediaDbs.length} 个可用，耗时 ${Date.now() - __tProbe}ms`)
 
             // 5. 3 路并发处理语音：I/O（MediaDb 查询、writeFileSync）与 WASM 解码错开重叠；
             //    silk-wasm 每次调用新建实例且同步阻塞事件循环，无 CPU 并行——并发仅获 I/O 重叠收益。
@@ -3031,8 +3139,10 @@ class ExportService {
             for (let start = 0; start < total; start += VOICE_CONCURRENCY) {
               const slice = voiceMessages.slice(start, start + VOICE_CONCURRENCY)
               await Promise.all(slice.map((m) => (async () => {
+                const __tVoiceItem = Date.now()
                 try {
                   const { createTime, localId, serverId } = m
+                  expStep(`语音查找 localId=${localId}`)
                   const fileName = localId > 0 ? `${createTime}_${localId}.wav` : `${createTime}.wav`
                   const df = this.dateFolder(createTime)
                   const dayDir = path.join(voiceOutDir, df)
@@ -3128,6 +3238,7 @@ class ExportService {
 
                   try {
                     // SILK → PCM → WAV
+                    expStep(`语音解码 localId=${m.localId}`)
                     const result = await silkWasm.decode(silkData, 24000)
                     silkData = null // 释放 SILK 数据
                     if (!result?.data) return
@@ -3141,6 +3252,8 @@ class ExportService {
                     }
                   } catch { }
                 } finally {
+                  const __dtVoice = Date.now() - __tVoiceItem
+                  if (__dtVoice > 2000) expLog(`慢语音 localId=${m.localId}: ${__dtVoice}ms`)
                   // 进度：语音占 [mediaWeight, 1] 区间
                   // finally 确保跳过/异常也计数，done 单调推进到 total（修复原串行版本跳过项导致进度卡 <100%）
                   const n = ++done
@@ -3350,7 +3463,7 @@ class ExportService {
         'Accept': '*/*',
       },
       rejectUnauthorized: false,
-      timeout: 15000
+      timeout: 8000
     }, (res) => {
       if ((res.statusCode === 301 || res.statusCode === 302 || res.statusCode === 307) && res.headers.location) {
         const loc = res.headers.location.startsWith('http') ? res.headers.location : new URL(res.headers.location, url).href
@@ -3367,7 +3480,7 @@ class ExportService {
       res.on('error', () => callback(null))
     })
     req.on('error', () => callback(null))
-    req.setTimeout(15000, () => { req.destroy(); callback(null) })
+    req.setTimeout(8000, () => { req.destroy(); callback(null) })
   }
 
   private detectEmojiExt(buf: Buffer): string {

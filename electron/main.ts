@@ -321,4 +321,9 @@ app.on('before-quit', () => {
 
   // 销毁托盘
   ctx.getWindowManager().destroyTray()
+
+  // 终止导出 utility process（如有）
+  void import('./services/exportProcessService').then(({ exportProcessService }) => {
+    exportProcessService.shutdown()
+  })
 })
