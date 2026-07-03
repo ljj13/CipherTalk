@@ -1215,6 +1215,42 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       return win
     },
 
+    openPluginWindow(pluginId: string, viewId: string, opts?: { width?: number; height?: number; title?: string }) {
+      const win = new BrowserWindow({
+        width: Math.min(Math.max(opts?.width ?? 960, 360), 1920),
+        height: Math.min(Math.max(opts?.height ?? 680, 240), 1200),
+        minWidth: 360,
+        minHeight: 240,
+        ...getWindowIconOptions(ctx),
+        webPreferences: {
+          preload: join(__dirname, 'preload.js'),
+          devTools: ctx.allowDevTools,
+          contextIsolation: true,
+          nodeIntegration: false,
+        },
+        titleBarStyle: 'hidden',
+        titleBarOverlay: {
+          color: '#1a1a1a',
+          symbolColor: '#ffffff',
+          height: 36
+        },
+        show: false,
+        backgroundColor: '#ffffff',
+        title: opts?.title || '插件'
+      })
+
+      win.once('ready-to-show', () => win.show())
+      const hash = `/plugin-window/${encodeURIComponent(pluginId)}/${encodeURIComponent(viewId)}?${getThemeQueryParams(ctx)}`
+      if (process.env.VITE_DEV_SERVER_URL) {
+        win.loadURL(`${process.env.VITE_DEV_SERVER_URL}#${hash}`)
+        setupDevToolsShortcut(win)
+      } else {
+        win.loadFile(join(__dirname, '../dist/index.html'), { hash })
+      }
+
+      return win
+    },
+
     completeWelcome() {
       if (welcomeWindow && !welcomeWindow.isDestroyed()) {
         welcomeWindow.close()
