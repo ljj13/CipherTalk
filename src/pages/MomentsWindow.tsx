@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Button, Card } from '@heroui/react'
-import { Loader2, RefreshCw, Search, Calendar, User, X, Filter, AlertTriangle, Play, Download, Heart, Copy, Link, Music, FileDown, ArrowUp, ChevronLeft, ChevronRight, Newspaper } from 'lucide-react'
+import { ArrowDownToLine, ArrowUp, ArrowsRotateLeft, Calendar, ChevronLeft, ChevronRight, CircleDashed, Copy, FileArrowDown, Funnel, HeartFill, Link, Magnifier, MusicNote, Person, Play, SquareArticle, TriangleExclamation, Xmark } from '@gravity-ui/icons'
 import { ImagePreview } from '../components/ImagePreview'
 import { LivePhotoIcon } from '../components/LivePhotoIcon'
 import { parseWechatEmoji, parseWechatEmojiHtml } from '../utils/wechatEmoji'
@@ -519,7 +519,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview }: { media: any; isSin
         style={skeletonStyle}
       >
         <div className="media-placeholder error-state">
-          <AlertTriangle size={24} className="error-icon" />
+          <TriangleExclamation width={24} height={24} className="error-icon" />
           <span>加载失败</span>
           <button className="media-retry-btn" onClick={handleRetry}>重试</button>
         </div>
@@ -547,7 +547,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview }: { media: any; isSin
         />
       ) : error ? (
         <div className="media-placeholder error-state">
-          <AlertTriangle size={24} className="error-icon" />
+          <TriangleExclamation width={24} height={24} className="error-icon" />
           <span>加载失败</span>
         </div>
       ) : (
@@ -557,7 +557,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview }: { media: any; isSin
 
       {isVisible && isVideo && !isDecrypting && (
         <div className="video-play-icon">
-          <Play size={24} fill="white" stroke="white" />
+          <Play width={24} height={24} fill="white" stroke="white" />
         </div>
       )}
 
@@ -569,7 +569,7 @@ const MediaItem = ({ media, isSingle, allMedia, onPreview }: { media: any; isSin
 
       {isVisible && (
         <button className="download-btn-overlay" onClick={handleDownload} title="下载原图">
-          <Download size={18} />
+          <ArrowDownToLine width={18} height={18} />
         </button>
       )}
     </div>
@@ -623,7 +623,7 @@ const ShareThumb = ({ shareInfo }: { shareInfo: SnsShareInfo }) => {
   if (failed) {
     return (
       <div className="share-placeholder">
-        {isMusic ? <Music size={24} color="#888" /> : <Link size={24} color="#888" />}
+        {isMusic ? <MusicNote width={24} height={24} color="#888" /> : <Link width={24} height={24} color="#888" />}
       </div>
     )
   }
@@ -648,13 +648,13 @@ const ShareThumb = ({ shareInfo }: { shareInfo: SnsShareInfo }) => {
         ? <img src={imgSrc} alt="" referrerPolicy="no-referrer" onError={handleImageError} />
         : (
           <div className="share-placeholder">
-            <Loader2 size={18} className="spin" />
+            <CircleDashed width={18} height={18} className="spin" />
           </div>
         )
       }
       {shareInfo.appName?.includes('音乐') && (
         <div className="music-play-overlay">
-          <Play size={12} fill="white" stroke="white" />
+          <Play width={12} height={12} fill="white" stroke="white" />
         </div>
       )}
     </>
@@ -1637,7 +1637,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
           <div className="sidebar-toolbar">
             {isSidebarOpen && (
               <div className="sidebar-toolbar-title">
-                <Filter size={14} />
+                <Funnel width={14} height={14} />
                 <span>筛选</span>
               </div>
             )}
@@ -1651,7 +1651,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                 onPress={() => setIsSidebarOpen(!isSidebarOpen)}
                 aria-label={isSidebarOpen ? '收起筛选' : '展开筛选'}
               >
-                {isSidebarOpen ? <ChevronLeft size={16} /> : <ChevronRight size={16} />}
+                {isSidebarOpen ? <ChevronLeft width={16} height={16} /> : <ChevronRight width={16} height={16} />}
               </Button>
             </div>
           </div>
@@ -1662,7 +1662,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                 {/* 1. 日期 */}
                 <div className="filter-card jump-date-card">
                   <div className="filter-section">
-                    <label><Calendar size={14} /> 时间跳转</label>
+                    <label><Calendar width={14} height={14} /> 时间跳转</label>
                     <Button
                       type="button"
                       className="jump-date-btn"
@@ -1674,7 +1674,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                       <span className="text">
                         {jumpTargetDate ? jumpTargetDate.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }) : '选择跳转日期...'}
                       </span>
-                      <Calendar size={14} className="icon" />
+                      <Calendar width={14} height={14} className="icon" />
                     </Button>
                     {jumpTargetDate && (
                       <button className="clear-jump-date-inline" onClick={() => setJumpTargetDate(undefined)}>
@@ -1688,7 +1688,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                 <div className="filter-card contact-card">
                   <div className="contact-filter-section">
                     <div className="section-header">
-                      <label><User size={14} /> 联系人</label>
+                      <label><Person width={14} height={14} /> 联系人</label>
                       <div className="header-actions">
                         {selectedUsernames.length > 0 && (
                           <button className="clear-selection-btn" onClick={() => setSelectedUsernames([])}>清除</button>
@@ -1699,7 +1699,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                       </div>
                     </div>
                     <div className="contact-search">
-                      <Search size={12} className="search-icon" />
+                      <Magnifier width={12} height={12} className="search-icon" />
                       <input
                         type="text"
                         placeholder="搜索好友..."
@@ -1707,7 +1707,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                         onChange={e => setContactSearch(e.target.value)}
                       />
                       {contactSearch && (
-                        <X size={12} className="clear-search-icon" onClick={() => setContactSearch('')} />
+                        <Xmark width={12} height={12} className="clear-search-icon" onClick={() => setContactSearch('')} />
                       )}
                     </div>
                     <div className="contact-list custom-scrollbar">
@@ -1741,7 +1741,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                   fullWidth
                   onPress={clearFilters}
                 >
-                  <RefreshCw size={14} />
+                  <ArrowsRotateLeft width={14} height={14} />
                   重置所有筛选
                 </Button>
               </div>
@@ -1767,7 +1767,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
               isDisabled={isLoading}
               aria-label="刷新朋友圈"
             >
-              <RefreshCw size={16} className={isLoading ? 'spinning' : ''} />
+              <ArrowsRotateLeft width={16} height={16} className={isLoading ? 'spinning' : ''} />
             </Button>
             <Button
               type="button"
@@ -1777,14 +1777,14 @@ document.querySelectorAll('.vi video').forEach(function(v) {
               onPress={() => setShowExportOptions(true)}
               aria-label="导出"
             >
-              <FileDown size={16} />
+              <FileArrowDown width={16} height={16} />
             </Button>
           </div>
           <div className="moments-content-wrapper">
             <div className="moments-content custom-scrollbar" ref={scrollContainerRef} onScroll={handleScroll}>
               {isLoading ? (
                 <div className="moments-loading">
-                  <Loader2 className="spin" size={32} />
+                  <CircleDashed className="spin" width={32} height={32} />
                   <p>加载中...</p>
                 </div>
               ) : error ? (
@@ -1794,7 +1794,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                 </div>
               ) : posts.length === 0 ? (
                 <div className="moments-placeholder">
-                  <Search size={64} opacity={0.3} />
+                  <Magnifier width={64} height={64} opacity={0.3} />
                   <p>暂无朋友圈动态</p>
                   {(selectedUsernames.length > 0 || jumpTargetDate) && (
                     <button onClick={clearFilters} style={{ marginTop: 10 }}>重置筛选条件</button>
@@ -1804,7 +1804,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                 <div className="posts-list">
                   {loadingNewer && (
                     <div className="loading-more">
-                      <Loader2 className="spin" size={20} />
+                      <CircleDashed className="spin" width={20} height={20} />
                       <span>正在检查更新...</span>
                     </div>
                   )}
@@ -1892,7 +1892,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                             )}
                             <div className="share-footer">
                               <span className="share-type-badge">
-                                {isMusicShare(post.shareInfo) ? <Music size={11} /> : <Newspaper size={11} />}
+                                {isMusicShare(post.shareInfo) ? <MusicNote width={11} height={11} /> : <SquareArticle width={11} height={11} />}
                                 <span>{getShareBadge(post.shareInfo)}</span>
                               </span>
                               {post.shareInfo.appName && (
@@ -1910,7 +1910,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                         <div className="post-interactions">
                           {post.likes.length > 0 && (
                             <div className="post-likes">
-                              <Heart size={14} className="like-icon-svg" fill="#ff4d4f" color="#ff4d4f" />
+                              <HeartFill width={14} height={14} className="like-icon-svg" fill="#ff4d4f" color="#ff4d4f" />
                               <span className="like-list">
                                 {post.likes.join('，')}
                               </span>
@@ -1965,7 +1965,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
               onPress={scrollToTop}
               aria-label="返回顶部"
             >
-              <ArrowUp size={20} />
+              <ArrowUp width={20} height={20} />
             </Button>
           )}
         </div>
@@ -2006,10 +2006,10 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                     }}
                     title="复制内容"
                   >
-                    {copySuccess ? '已复制' : <Copy size={16} />}
+                    {copySuccess ? '已复制' : <Copy width={16} height={16} />}
                   </button>
                   <button className="close-btn" onClick={() => setDebugPost(null)}>
-                    <X size={20} />
+                    <Xmark width={20} height={20} />
                   </button>
                 </div>
               </div>
@@ -2040,14 +2040,14 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                     onPress={() => setShowExportOptions(false)}
                     aria-label="关闭导出弹框"
                   >
-                    <X size={20} />
+                    <Xmark width={20} height={20} />
                   </Button>
                 )}
               </Card.Header>
               <Card.Content className="export-modal-body">
                 {exporting ? (
                   <div className="exporting-view">
-                    <Loader2 size={36} className="spin progress-icon" />
+                    <CircleDashed width={36} height={36} className="spin progress-icon" />
                     <div className="progress-text">{exportProgress.status}</div>
                     {exportProgress.total > 0 && (
                       <div className="progress-track">
@@ -2090,7 +2090,7 @@ document.querySelectorAll('.vi video').forEach(function(v) {
                 <Card.Footer className="export-modal-footer">
                   <Button type="button" variant="tertiary" onPress={() => setShowExportOptions(false)}>取消</Button>
                   <Button type="button" onPress={handleExport}>
-                    <FileDown size={14} /> 开始导出
+                    <FileArrowDown width={14} height={14} /> 开始导出
                   </Button>
                 </Card.Footer>
               )}
