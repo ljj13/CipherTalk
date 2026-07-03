@@ -1,19 +1,19 @@
 import * as React from "react"
 import { motion, type Variants } from "framer-motion"
 import { cn } from "@/lib/utils"
-import { LucideIcon } from "lucide-react"
+import type { IconComponent } from "@/types/icon"
 
 interface DockProps {
   className?: string
   items: {
-    icon: LucideIcon
+    icon: IconComponent
     label: string
     onClick?: () => void
   }[]
 }
 
 interface DockIconButtonProps {
-  icon: LucideIcon
+  icon: IconComponent
   label: string
   onClick?: () => void
   className?: string

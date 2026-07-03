@@ -1,7 +1,7 @@
 ﻿import { useEffect, useState, type ReactElement, type CSSProperties, type Key } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { Avatar, Button, ScrollShadow, Separator, Tabs, Tooltip } from '@heroui/react'
-import { Home, MessageSquare, Database, Settings, SquareChevronLeft, SquareChevronRight, Download, Aperture, Bot, PawPrint, BookOpen, UserRoundPlus } from 'lucide-react'
+import { House, Comment, Database, Gear, ChevronLeft, ChevronRight, ArrowDownToLine, Aperture, FaceRobot, Ghost, BookOpen, PersonPlus } from '@gravity-ui/icons'
 import { MCP } from '@lobehub/icons'
 import packageJson from '../../package.json'
 import { useAppStore } from '../stores/appStore'
@@ -85,15 +85,15 @@ function Sidebar({ autoCollapse = false }: { autoCollapse?: boolean }) {
   }
 
   const navItems: NavItemConfig[] = [
-    { key: 'home', label: '首页', icon: <Home size={NAV_ICON_SIZE} />, type: 'route', path: '/home' },
-    { key: 'agent', label: 'CT-Agent', icon: <Bot size={NAV_ICON_SIZE} />, type: 'route', path: '/agent' },
-    { key: 'personas', label: 'AI 克隆', icon: <UserRoundPlus size={NAV_ICON_SIZE} />, type: 'route', path: '/personas' },
-    { key: 'diary', label: '日记', icon: <BookOpen size={NAV_ICON_SIZE} />, type: 'route', path: '/diary' },
-    { key: 'pets', label: 'AI 宠物', icon: <PawPrint size={NAV_ICON_SIZE} />, type: 'route', path: '/pets' },
-    { key: 'chat', label: '聊天查看', icon: <MessageSquare size={NAV_ICON_SIZE} />, type: 'action', onClick: openChatWindow },
-    { key: 'moments', label: '朋友圈', icon: <Aperture size={NAV_ICON_SIZE} />, type: 'action', onClick: openMomentsWindow },
-    { key: 'export', label: '导出数据', icon: <Download size={NAV_ICON_SIZE} />, type: 'route', path: '/export' },
-    { key: 'data-management', label: '数据管理', icon: <Database size={NAV_ICON_SIZE} />, type: 'route', path: '/data-management' },
+    { key: 'home', label: '首页', icon: <House width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/home' },
+    { key: 'agent', label: 'CT-Agent', icon: <FaceRobot width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/agent' },
+    { key: 'personas', label: 'AI 克隆', icon: <PersonPlus width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/personas' },
+    { key: 'diary', label: '日记', icon: <BookOpen width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/diary' },
+    { key: 'pets', label: 'AI 宠物', icon: <Ghost width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/pets' },
+    { key: 'chat', label: '聊天查看', icon: <Comment width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'action', onClick: openChatWindow },
+    { key: 'moments', label: '朋友圈', icon: <Aperture width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'action', onClick: openMomentsWindow },
+    { key: 'export', label: '导出数据', icon: <ArrowDownToLine width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/export' },
+    { key: 'data-management', label: '数据管理', icon: <Database width={NAV_ICON_SIZE} height={NAV_ICON_SIZE} />, type: 'route', path: '/data-management' },
     { key: 'mcp', label: 'MCP & Skills', icon: <MCP size={NAV_ICON_SIZE} />, type: 'route', path: '/mcp' },
  ]
 
@@ -280,13 +280,13 @@ function Sidebar({ autoCollapse = false }: { autoCollapse?: boolean }) {
           })}
           {renderNavButton({
             label: '设置',
-            icon: <Settings size={SIDEBAR_ACTION_ICON_SIZE} />,
+            icon: <Gear width={SIDEBAR_ACTION_ICON_SIZE} height={SIDEBAR_ACTION_ICON_SIZE} />,
             active: isActive('/settings'),
             onPress: () => navigate('/settings'),
           })}
           {renderNavButton({
             label: collapsed ? '展开' : '收回',
-            icon: collapsed ? <SquareChevronRight size={SIDEBAR_ACTION_ICON_SIZE} /> : <SquareChevronLeft size={SIDEBAR_ACTION_ICON_SIZE} />,
+            icon: collapsed ? <ChevronRight width={SIDEBAR_ACTION_ICON_SIZE} height={SIDEBAR_ACTION_ICON_SIZE} /> : <ChevronLeft width={SIDEBAR_ACTION_ICON_SIZE} height={SIDEBAR_ACTION_ICON_SIZE} />,
             onPress: () => setCollapsed(!collapsed),
           })}
         </div>

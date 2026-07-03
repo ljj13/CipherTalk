@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import { useLocation, useNavigate } from 'react-router-dom'
-import {
-  Home, MessageSquare, Database, Settings,
-  Download, Aperture, Boxes, Bot, UserRoundPlus, BookOpen, PawPrint,
-  type LucideIcon
-} from 'lucide-react'
+import { House, Comment, Database, Gear, ArrowDownToLine, Aperture, Boxes3, FaceRobot, PersonPlus, BookOpen, Ghost } from '@gravity-ui/icons'
+import type { IconComponent } from '@/types/icon'
 import MacOSDock, { type DockApp } from '@/components/ui/mac-os-dock'
 import { useThemeStore } from '@/stores/themeStore'
 import { useDeviceConnectStatus } from '@/hooks/useDeviceConnectStatus'
@@ -17,7 +14,7 @@ const EDGE_TRIGGER_PX = 8
 const WECHAT_LOGO_SRC = './微信logo.png'
 
 // 无背景图标：白色线条 + 细黑描边（四向 drop-shadow 叠出黑边），在玻璃上仍有对比
-function AppIcon({ Icon }: { Icon: LucideIcon }) {
+function AppIcon({ Icon }: { Icon: IconComponent }) {
   return (
     <div className="w-full h-full flex items-center justify-center">
       <Icon
@@ -32,7 +29,7 @@ function AppIcon({ Icon }: { Icon: LucideIcon }) {
   )
 }
 
-const makeIcon = (Icon: LucideIcon): ReactNode => <AppIcon Icon={Icon} />
+const makeIcon = (Icon: IconComponent): ReactNode => <AppIcon Icon={Icon} />
 
 function BottomDock() {
   const navigate = useNavigate()
@@ -118,17 +115,17 @@ function BottomDock() {
 
   // 顺序与侧边栏导航一致（Sidebar.tsx navItems + 底部 ClawLink/设置）
   const allApps: DockApp[] = [
-    { id: 'home', name: '首页', icon: makeIcon(Home) },
-    { id: 'agent', name: 'CT-Agent', icon: makeIcon(Bot) },
-    { id: 'personas', name: 'AI 克隆', icon: makeIcon(UserRoundPlus) },
+    { id: 'home', name: '首页', icon: makeIcon(House) },
+    { id: 'agent', name: 'CT-Agent', icon: makeIcon(FaceRobot) },
+    { id: 'personas', name: 'AI 克隆', icon: makeIcon(PersonPlus) },
     { id: 'diary', name: '日记', icon: makeIcon(BookOpen) },
-    { id: 'pets', name: 'AI 宠物', icon: makeIcon(PawPrint) },
-    { id: 'chat', name: '聊天查看', icon: makeIcon(MessageSquare) },
+    { id: 'pets', name: 'AI 宠物', icon: makeIcon(Ghost) },
+    { id: 'chat', name: '聊天查看', icon: makeIcon(Comment) },
     { id: 'moments', name: '朋友圈', icon: makeIcon(Aperture) },
-    { id: 'export', name: '导出数据', icon: makeIcon(Download) },
+    { id: 'export', name: '导出数据', icon: makeIcon(ArrowDownToLine) },
     { id: 'data-management', name: '数据管理', icon: makeIcon(Database) },
-    { id: 'mcp', name: 'MCP & Skills', icon: makeIcon(Boxes) },
-    { id: 'settings', name: '设置', icon: makeIcon(Settings) },
+    { id: 'mcp', name: 'MCP & Skills', icon: makeIcon(Boxes3) },
+    { id: 'settings', name: '设置', icon: makeIcon(Gear) },
     { id: 'device-connect', name: 'ClawLink', icon: (
       <div className="relative w-full h-full p-1">
         <img src={WECHAT_LOGO_SRC} alt="微信" className="h-full w-full object-contain" />
