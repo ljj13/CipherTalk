@@ -48,6 +48,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     rescan: () => ipcRenderer.invoke('plugin:rescan') as Promise<{ success: boolean }>,
     setDevMode: (enabled: boolean) => ipcRenderer.invoke('plugin:setDevMode', enabled) as Promise<{ success: boolean }>,
     addDevPlugin: (dir: string) => ipcRenderer.invoke('plugin:addDevPlugin', dir) as Promise<{ success: boolean; error?: string }>,
+    installFromFile: () => ipcRenderer.invoke('plugin:installFromFile') as Promise<{ success: boolean; canceled?: boolean; pluginId?: string; name?: string; error?: string }>,
     getViewUrl: (pluginId: string, viewId: string) => ipcRenderer.invoke('plugin:getViewUrl', pluginId, viewId) as Promise<string | null>,
     invoke: (pluginId: string, method: string, args?: Record<string, unknown>) =>
       ipcRenderer.invoke('plugin:invoke', pluginId, method, args) as Promise<{ success: boolean; data?: unknown; error?: string }>,

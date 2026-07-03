@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Button, Chip, Switch } from '@heroui/react'
-import { FolderOpen, Puzzle, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
+import { FolderOpen, PackagePlus, Puzzle, RefreshCw, ShieldCheck, Trash2 } from 'lucide-react'
 import { usePluginStore, ensurePluginStoreSubscribed } from '../../../stores/pluginStore'
 import type { PluginInfo } from '../../../types/electron'
 import { dialog } from '../../../services/ipc'
@@ -99,6 +99,14 @@ function PluginsTab({ showMessage }: { showMessage: (text: string, success: bool
     showMessage('已重新扫描插件目录', true)
   }
 
+  const handleInstall = async () => {
+    const result = await window.electronAPI.plugin.installFromFile()
+    if (result.canceled) return
+    if (result.success) showMessage(`已安装「${result.name}」，启用前请确认权限`, true)
+    else showMessage(result.error || '安装失败', false)
+    await refresh()
+  }
+
   return (
     <div className="tab-content">
       <div className="mb-4 flex items-center justify-between">
@@ -106,9 +114,14 @@ function PluginsTab({ showMessage }: { showMessage: (text: string, success: bool
           <h3 className="text-lg font-semibold">插件</h3>
           <p className="text-sm text-foreground-500">插件在隔离沙箱中运行，仅能使用你授予的权限</p>
         </div>
-        <Button variant="ghost" onPress={() => { void handleRescan() }} aria-label="重新扫描">
-          <RefreshCw size={16} /> 重新扫描
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="secondary" onPress={() => { void handleInstall() }} aria-label="安装插件">
+            <PackagePlus size={16} /> 安装插件
+          </Button>
+          <Button variant="ghost" onPress={() => { void handleRescan() }} aria-label="重新扫描">
+            <RefreshCw size={16} /> 重新扫描
+          </Button>
+        </div>
       </div>
 
       {plugins.length === 0 && (

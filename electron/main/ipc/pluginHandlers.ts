@@ -655,6 +655,16 @@ export function registerPluginHandlers(ctx: MainProcessContext): void {
     return { success: true }
   })
   ipcMain.handle('plugin:addDevPlugin', (_, dir: string) => pluginManagerService.addDevPlugin(String(dir)))
+  ipcMain.handle('plugin:installFromFile', async () => {
+    const picked = await dialog.showOpenDialog({
+      title: '选择插件安装包',
+      properties: ['openFile'],
+      filters: [{ name: 'CipherTalk 插件', extensions: ['ctplugin', 'zip'] }],
+    })
+    const zipPath = picked.filePaths[0]
+    if (picked.canceled || !zipPath) return { success: false, canceled: true }
+    return pluginManagerService.installFromZip(zipPath)
+  })
   ipcMain.handle('plugin:getViewUrl', (_, pluginId: string, viewId: string) => {
     return pluginManagerService.getViewUrl(String(pluginId), String(viewId))
   })

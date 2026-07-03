@@ -464,6 +464,7 @@ export interface ElectronAPI {
     rescan: () => Promise<{ success: boolean }>
     setDevMode: (enabled: boolean) => Promise<{ success: boolean }>
     addDevPlugin: (dir: string) => Promise<{ success: boolean; error?: string }>
+    installFromFile: () => Promise<{ success: boolean; canceled?: boolean; pluginId?: string; name?: string; error?: string }>
     getViewUrl: (pluginId: string, viewId: string) => Promise<string | null>
     invoke: (pluginId: string, method: string, args?: Record<string, unknown>) => Promise<{ success: boolean; data?: unknown; error?: string }>
     onChanged: (callback: () => void) => () => void

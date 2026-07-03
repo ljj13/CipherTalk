@@ -8,6 +8,7 @@
  *
  * 插件代码不在主进程执行；本服务只处理元数据与文件路径。
  */
+import AdmZip from 'adm-zip'
 import { EventEmitter } from 'events'
 import fs from 'fs'
 import path from 'path'
@@ -317,6 +318,77 @@ export class PluginManagerService extends EventEmitter {
     this.state.devModeEnabled = enabled
     this.saveState()
     this.rescan()
+  }
+
+  /**
+   * 从 .ctplugin（zip）安装插件：校验 manifest → 解压到插件目录。
+   * - 防 zip-slip：拒绝含 .. / 绝对路径的条目
+   * - 兼容"单层根目录包裹"的打包习惯（自动剥离前缀）
+   * - 覆盖安装已启用插件时，若权限声明有新增则自动禁用，用户须重新确认授权
+   */
+  installFromZip(zipPath: string): { success: boolean; pluginId?: string; name?: string; error?: string } {
+    let zip: AdmZip
+    try {
+      zip = new AdmZip(zipPath)
+    } catch (e) {
+      return { success: false, error: `无法读取插件包:${String(e)}` }
+    }
+
+    const entries = zip.getEntries().filter((entry) => !entry.isDirectory)
+    if (entries.length === 0) return { success: false, error: '插件包为空' }
+
+    for (const entry of entries) {
+      const name = entry.entryName.replace(/\\/g, '/')
+      if (path.isAbsolute(name) || name.split('/').includes('..')) {
+        return { success: false, error: `插件包含非法路径:${entry.entryName}` }
+      }
+    }
+
+    // manifest.json 在根，或所有文件都在同一个顶层目录里（剥掉这层前缀）
+    let prefix = ''
+    if (!entries.some((entry) => entry.entryName.replace(/\\/g, '/') === 'manifest.json')) {
+      const tops = new Set(entries.map((entry) => entry.entryName.replace(/\\/g, '/').split('/')[0]))
+      const top = tops.size === 1 ? [...tops][0] : null
+      if (!top || !entries.some((entry) => entry.entryName.replace(/\\/g, '/') === `${top}/manifest.json`)) {
+        return { success: false, error: '插件包根目录缺少 manifest.json' }
+      }
+      prefix = `${top}/`
+    }
+
+    let raw: unknown
+    try {
+      raw = JSON.parse(zip.readAsText(`${prefix}manifest.json`))
+    } catch (e) {
+      return { success: false, error: `manifest.json 解析失败:${String(e)}` }
+    }
+    const { manifest, error } = validateManifest(raw)
+    if (!manifest) return { success: false, error }
+
+    const targetDir = path.join(this.getPluginsRoot(), manifest.id)
+    const existing = this.plugins.get(manifest.id)
+    if (existing?.isDev) {
+      return { success: false, error: `同 id 插件正以开发者模式加载（${existing.dir}），请先移除` }
+    }
+
+    // 覆盖安装：清空旧目录；若声明的权限超出已授予集合，禁用待用户重新确认
+    fs.rmSync(targetDir, { recursive: true, force: true })
+    fs.mkdirSync(targetDir, { recursive: true })
+    for (const entry of entries) {
+      const rel = entry.entryName.replace(/\\/g, '/').slice(prefix.length)
+      if (!rel) continue
+      const dest = path.join(targetDir, rel)
+      fs.mkdirSync(path.dirname(dest), { recursive: true })
+      fs.writeFileSync(dest, entry.getData())
+    }
+
+    const granted = this.state.granted[manifest.id]
+    if (granted && (manifest.permissions ?? []).some((p) => !granted.includes(p))) {
+      this.state.enabled[manifest.id] = false
+      this.saveState()
+    }
+
+    this.rescan()
+    return { success: true, pluginId: manifest.id, name: manifest.name }
   }
 
   addDevPlugin(dir: string): { success: boolean; error?: string } {
