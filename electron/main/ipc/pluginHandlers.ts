@@ -656,20 +656,54 @@ function serializePlugin(plugin: InstalledPlugin) {
 }
 
 export function registerPluginHandlers(ctx: MainProcessContext): void {
-  // 新消息事件桥：节流后广播给渲染层 PluginHost（按权限过滤后再进 iframe）
-  const lastNewMessagesBroadcast = new Map<string, number>()
-  chatService.on('new-messages', (data: { sessionId?: string; messages?: unknown[] }) => {
-    const sessionId = String(data?.sessionId || '')
-    if (!sessionId) return
-    const now = Date.now()
-    if (now - (lastNewMessagesBroadcast.get(sessionId) ?? 0) < 500) return
-    lastNewMessagesBroadcast.set(sessionId, now)
-    ctx.broadcastToWindows('plugin:event', {
-      pluginId: null,
-      requiredPermission: 'messages:read',
-      event: 'newMessages',
-      payload: { sessionId, count: Array.isArray(data?.messages) ? data.messages.length : undefined },
-    })
+  // 新消息事件桥：宿主实时变更走 chatService 'dbChange'（monitorBridge 推送），
+  // 但 dbChange 只带 table、不带具体会话，需对比会话快照才能定位「哪个会话来新消息」。
+  // 与 notifyService 同款判定（时间线前进 + 有未读），再广播 newMessages{sessionId,count}，
+  // PluginHost 按 messages:read 权限过滤后转发进 iframe。
+  const sessionSnapshot = new Map<string, { lastTs: number; unread: number }>()
+  let newMsgTimer: NodeJS.Timeout | null = null
+  let checkingNewMsg = false
+
+  const anyPluginWantsMessages = () =>
+    pluginManagerService.list().some((p) => p.enabled && p.grantedPermissions.includes('messages:read'))
+
+  const checkNewMessagesForPlugins = async () => {
+    if (checkingNewMsg) return
+    checkingNewMsg = true
+    try {
+      const result = await chatService.getSessions(0, 200)
+      if (!result.success || !Array.isArray(result.sessions)) return
+      for (const s of result.sessions) {
+        const sessionId = String(s.username || '')
+        if (!sessionId) continue
+        const cur = {
+          lastTs: Number(s.lastTimestamp || s.sortTimestamp || 0),
+          unread: Number(s.unreadCount || 0),
+        }
+        const prev = sessionSnapshot.get(sessionId)
+        sessionSnapshot.set(sessionId, cur)
+        if (!prev) continue // 首轮播种：不补广播历史
+        if (cur.lastTs <= prev.lastTs || cur.unread <= 0) continue
+        ctx.broadcastToWindows('plugin:event', {
+          pluginId: null,
+          requiredPermission: 'messages:read',
+          event: 'newMessages',
+          payload: { sessionId, count: cur.unread },
+        })
+      }
+    } catch (e) {
+      ctx.getLogService()?.warn('Plugin', 'newMessages 检查失败', { error: String(e) })
+    } finally {
+      checkingNewMsg = false
+    }
+  }
+
+  chatService.on('dbChange', (payload: { table?: string }) => {
+    const table = String(payload?.table || '')
+    if (table !== 'Message' && table !== 'Session') return
+    if (!anyPluginWantsMessages()) return // 没有插件订阅：零开销
+    if (newMsgTimer) clearTimeout(newMsgTimer)
+    newMsgTimer = setTimeout(() => { newMsgTimer = null; void checkNewMessagesForPlugins() }, 500)
   })
 
   // ========= 二期：导出（export:use，异步任务 + 事件回报进度） =========

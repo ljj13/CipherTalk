@@ -91,4 +91,37 @@ hostPort.postMessage({ type: 'event', event: 'newMessages', payload: { sessionId
 await tick()
 assert.strictEqual(received, null, '退订后不应再收到')
 
+// iterate：懒加载迭代器自动翻页直到耗尽（offset 与 cursor 两种分页）
+const listCalls = []
+hostPort.onmessage = (e) => {
+  const m = e.data
+  if (m.type !== 'invoke') return
+  let data
+  if (m.method === 'data.sessions.list') {
+    listCalls.push(m.args)
+    data = m.args.offset === 0
+      ? { sessions: [{ sessionId: 'a' }, { sessionId: 'b' }], hasMore: true }
+      : { sessions: [{ sessionId: 'c' }], hasMore: false }
+  } else if (m.method === 'data.messages.query') {
+    data = m.args.cursor == null
+      ? { rows: [{ localId: 1 }, { localId: 2 }], nextCursor: 'c1' }
+      : { rows: [{ localId: 3 }] }
+  }
+  hostPort.postMessage({ type: 'result', id: m.id, ok: true, data })
+}
+
+const seen = []
+for await (const s of api.data.sessions.iterate({ limit: 2 })) seen.push(s.sessionId)
+assert.deepStrictEqual(seen, ['a', 'b', 'c'], 'sessions.iterate 应跨页取全')
+assert.strictEqual(listCalls[1].offset, 2, '第二页 offset 应按已取条数推进')
+
+const ids = []
+for await (const msg of api.data.messages.iterate({ sessionId: 's1' })) ids.push(msg.localId)
+assert.deepStrictEqual(ids, [1, 2, 3], 'messages.iterate 应跟进 nextCursor 到耗尽')
+
+// 中途 break 不再继续拉取（懒加载语义）
+let firstOnly = null
+for await (const s of api.data.sessions.iterate({ limit: 2 })) { firstOnly = s.sessionId; break }
+assert.strictEqual(firstOnly, 'a', 'iterate 支持提前 break')
+
 console.log('✅ SDK 运行时 smoke 全部通过')

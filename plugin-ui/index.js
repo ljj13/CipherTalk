@@ -14,10 +14,10 @@
  * 不使用 React 的插件：直接写 `<button class="ct-btn ct-btn-primary">` 等语义化
  * HTML + `.ct-*` 类，无需本包。
  */
-import { createElement as h, useEffect, useRef, useState } from 'react'
+import { createElement as h, Fragment, useEffect, useRef, useState } from 'react'
 
 /** SDK 版本对齐用；组件不依赖具体 API 版本 */
-export const UI_VERSION = '1.0.0'
+export const UI_VERSION = '1.1.0'
 
 function cx(...parts) {
   return parts.filter(Boolean).join(' ')
@@ -143,6 +143,64 @@ export function ListItem({ className, children, ...rest }) {
 }
 export function Empty({ className, children }) {
   return h('div', { className: cx('ct-empty', className) }, children)
+}
+
+/**
+ * 懒加载列表：滚动到底自动取下一批，开发者不用管翻页。
+ *   <LazyList source={() => api.data.sessions.iterate()}
+ *             renderItem={(s) => <ListItem>{s.displayName}</ListItem>} />
+ * source: 返回异步迭代器的函数（推荐，重挂载可重新遍历），或直接传迭代器。
+ * batchSize: 每次滚动到底追加的条数，默认 50。
+ */
+export function LazyList({ source, renderItem, batchSize = 50, className, emptyText = '暂无数据' }) {
+  const [items, setItems] = useState([])
+  const [done, setDone] = useState(false)
+  const sentinelRef = useRef(null)
+
+  useEffect(() => {
+    const iterator = typeof source === 'function' ? source() : source
+    const st = { loading: false, done: !iterator, alive: true }
+    setItems([])
+    setDone(st.done)
+    const el = sentinelRef.current
+    if (!el || st.done) return
+
+    const loadMore = async () => {
+      st.loading = true
+      const batch = []
+      try {
+        for (let i = 0; i < batchSize; i++) {
+          const { value, done } = await iterator.next()
+          if (done) { st.done = true; break }
+          batch.push(value)
+        }
+      } catch {
+        st.done = true
+      }
+      st.loading = false
+      if (!st.alive) return
+      if (batch.length) setItems((prev) => [...prev, ...batch])
+      if (st.done) setDone(true)
+    }
+
+    const io = new IntersectionObserver(async (entries) => {
+      if (!entries.some((e) => e.isIntersecting) || st.loading || st.done) return
+      await loadMore()
+      // 首屏没铺满时不会再触发回调，重新 observe 拿一次当前相交状态续拉
+      if (st.alive && !st.done) { io.unobserve(el); io.observe(el) }
+    })
+    io.observe(el)
+    return () => { st.alive = false; io.disconnect() }
+  }, [source, batchSize])
+
+  return h(
+    'div',
+    { className: cx('ct-list', className) },
+    items.length === 0 && done
+      ? h(Empty, null, emptyText)
+      : items.map((item, i) => h(Fragment, { key: i }, renderItem ? renderItem(item, i) : h(ListItem, null, String(item)))),
+    !done ? h('div', { ref: sentinelRef, style: { display: 'flex', justifyContent: 'center', padding: 8 } }, h(Spinner)) : null,
+  )
 }
 
 // ========= Tabs（受控） =========

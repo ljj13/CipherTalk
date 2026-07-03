@@ -43,7 +43,18 @@ function App() {
 | 表单 | `Button` `Input` `Textarea` `Select` `Switch` `Checkbox` |
 | 展示 | `Card` `Divider` `Chip` `Badge` `Dot` `Code` `Spinner` `Skeleton` `Progress` `List` `ListItem` `Empty` |
 | 交互 | `Tabs` `Menu` `MenuItem` `Dialog` |
-| 数据 | `DataTable`（排序 + 可选分页）`BarChart`（柱状图） |
+| 数据 | `LazyList`（滚动懒加载）`DataTable`（排序 + 可选分页）`BarChart`（柱状图） |
+
+### LazyList
+
+配合 SDK 的 `iterate()`，列表默认懒加载——滚动到底自动取下一批，不用管翻页：
+
+```jsx
+<LazyList
+  source={() => api.data.sessions.iterate()}
+  renderItem={(s) => <ListItem key={s.sessionId}>{s.displayName}</ListItem>}
+/>
+```
 
 ### DataTable
 

@@ -68,6 +68,27 @@ export interface ThemePayload {
   isDark: boolean
 }
 
+export interface SnsTimelineOptions {
+  limit?: number
+  offset?: number
+  usernames?: string[]
+  keyword?: string
+  startTime?: number
+  endTime?: number
+}
+
+export interface SnsPost {
+  id: string
+  username: string
+  nickname: string
+  createTime: number
+  content: string
+  type?: number
+  media: Array<{ url: string; thumbUrl: string; width?: number; height?: number }>
+  likes: string[]
+  comments: Array<{ nickname: string; content: string; refNickname?: string }>
+}
+
 /** 本 SDK 实现的插件 API 主版本 */
 export const API_VERSION: 1
 /** SDK 语义化版本 */
@@ -87,15 +108,21 @@ export interface CipherTalkAPI {
   data: {
     sessions: {
       list(opts?: { limit?: number; offset?: number }): Promise<{ sessions: SessionSummary[]; hasMore?: boolean }>
+      /** 懒加载遍历全部会话，自动翻页；limit 为每页大小（默认 200） */
+      iterate(opts?: { limit?: number; offset?: number }): AsyncGenerator<SessionSummary>
     }
     contacts: {
       list(opts?: { limit?: number; offset?: number }): Promise<{ contacts: ContactSummary[]; hasMore?: boolean }>
+      /** 懒加载遍历全部联系人，自动翻页；limit 为每页大小（默认 200） */
+      iterate(opts?: { limit?: number; offset?: number }): AsyncGenerator<ContactSummary>
       get(username: string): Promise<ContactSummary | null>
       getAvatar(username: string): Promise<{ avatarUrl?: string; displayName?: string } | null>
       getGroupMembers(chatroomId: string): Promise<Array<{ username: string; displayName: string; avatarUrl?: string }>>
     }
     messages: {
       query(opts: MessageQueryOptions): Promise<MessageQueryResult>
+      /** 懒加载遍历消息（最新→旧），自动跟进 nextCursor；参数同 query，limit 为每页扫描量 */
+      iterate(opts: MessageQueryOptions): AsyncGenerator<PluginMessage>
       get(sessionId: string, localId: number): Promise<PluginMessage | null>
       getDatesWithMessages(sessionId: string, year: number, month: number): Promise<string[]>
     }
@@ -151,20 +178,9 @@ export interface CipherTalkAPI {
   }
   /** 需 sns:read。媒体 URL 为微信 CDN 地址，加载图片本体需 network 权限 */
   sns: {
-    getTimeline(opts?: {
-      limit?: number; offset?: number
-      usernames?: string[]; keyword?: string
-      startTime?: number; endTime?: number
-    }): Promise<{
-      posts: Array<{
-        id: string; username: string; nickname: string; createTime: number
-        content: string; type?: number
-        media: Array<{ url: string; thumbUrl: string; width?: number; height?: number }>
-        likes: string[]
-        comments: Array<{ nickname: string; content: string; refNickname?: string }>
-      }>
-      hasMore: boolean
-    }>
+    getTimeline(opts?: SnsTimelineOptions): Promise<{ posts: SnsPost[]; hasMore: boolean }>
+    /** 懒加载遍历朋友圈时间线，自动翻页；limit 为每页大小（默认 200） */
+    iterate(opts?: SnsTimelineOptions): AsyncGenerator<SnsPost>
   }
   /**
    * 需 ai:use。走用户在宿主里配置的模型与 API Key（key 对插件不可见）。

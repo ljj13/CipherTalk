@@ -1,6 +1,6 @@
 {
   "name": "ciphertalk-plugin-ui",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "CipherTalk（密语）插件 UI 组件库 —— 宿主 .ct-* 样式类的 React 薄封装，观感与宿主一致、随主题切换暗色，含 DataTable / BarChart",
   "keywords": ["ciphertalk", "密语", "plugin", "ui", "react", "components"],
   "license": "CC-BY-NC-SA-4.0",

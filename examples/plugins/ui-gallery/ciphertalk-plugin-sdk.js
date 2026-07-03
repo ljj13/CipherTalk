@@ -15,7 +15,38 @@
 /** 本 SDK 实现的插件 API 主版本；须与 manifest.apiVersion 一致 */
 export const API_VERSION = 1
 /** SDK 语义化版本，便于开发者日志/上报 */
-export const SDK_VERSION = '1.0.0'
+export const SDK_VERSION = '1.1.0'
+
+/**
+ * offset 翻页 → 异步迭代器：按需逐页取数，消费多少拉多少（懒加载）。
+ * opts.limit 作为每页大小，其余参数透传给宿主。
+ */
+function iterateByOffset(fetchPage, pickItems, opts = {}) {
+  const { limit = 200, offset: start = 0, ...rest } = opts
+  return (async function* () {
+    let offset = start
+    for (;;) {
+      const res = await fetchPage({ ...rest, limit, offset })
+      const items = pickItems(res) ?? []
+      yield* items
+      if (!res?.hasMore || items.length === 0) return
+      offset += items.length
+    }
+  })()
+}
+
+/** 游标翻页 → 异步迭代器（消息查询用），带过滤时也会翻到 nextCursor 耗尽为止 */
+function iterateByCursor(fetchPage, pickItems, opts = {}) {
+  return (async function* () {
+    let cursor = opts.cursor
+    for (;;) {
+      const res = await fetchPage({ ...opts, cursor })
+      yield* pickItems(res) ?? []
+      cursor = res?.nextCursor
+      if (!cursor) return
+    }
+  })()
+}
 
 /** 把宿主主题 tokens 应用到插件页 :root，观感与宿主一致 */
 function applyTheme(theme) {
@@ -155,15 +186,21 @@ export function connect() {
         data: {
           sessions: {
             list: (opts) => invoke('data.sessions.list', opts),
+            /** 懒加载遍历全部会话：for await (const s of api.data.sessions.iterate()) */
+            iterate: (opts) => iterateByOffset((a) => invoke('data.sessions.list', a), (r) => r?.sessions, opts),
           },
           contacts: {
             list: (opts) => invoke('data.contacts.list', opts),
+            /** 懒加载遍历全部联系人，自动翻页 */
+            iterate: (opts) => iterateByOffset((a) => invoke('data.contacts.list', a), (r) => r?.contacts, opts),
             get: (username) => invoke('data.contacts.get', { username }),
             getAvatar: (username) => invoke('data.contacts.getAvatar', { username }),
             getGroupMembers: (chatroomId) => invoke('data.contacts.getGroupMembers', { chatroomId }),
           },
           messages: {
             query: (opts) => invoke('data.messages.query', opts),
+            /** 懒加载遍历消息（最新→旧），自动跟进 nextCursor；参数同 query */
+            iterate: (opts) => iterateByCursor((a) => invoke('data.messages.query', a), (r) => r?.rows, opts),
             get: (sessionId, localId) => invoke('data.messages.get', { sessionId, localId }),
             getDatesWithMessages: (sessionId, year, month) =>
               invoke('data.messages.getDatesWithMessages', { sessionId, year, month }),
@@ -216,6 +253,8 @@ export function connect() {
         },
         sns: {
           getTimeline: (opts) => invoke('sns.getTimeline', opts),
+          /** 懒加载遍历朋友圈时间线，自动翻页；参数同 getTimeline */
+          iterate: (opts) => iterateByOffset((a) => invoke('sns.getTimeline', a), (r) => r?.posts, opts),
         },
         ai: {
           complete: (opts) => invoke('ai.complete', opts),

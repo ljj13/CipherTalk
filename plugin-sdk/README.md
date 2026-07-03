@@ -29,6 +29,11 @@ import { connect } from 'ciphertalk-plugin-sdk'
 const api = await connect()
 const { sessions } = await api.data.sessions.list({ limit: 20 })
 console.log(`共 ${sessions.length} 个会话`)
+
+// 列表默认懒加载：iterate() 自动翻页，遍历多少拉多少，无需管 offset/cursor
+for await (const msg of api.data.messages.iterate({ sessionId, keyword: '合同' })) {
+  console.log(msg.content)
+}
 ```
 
 ## CLI

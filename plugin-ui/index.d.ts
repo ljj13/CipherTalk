@@ -53,6 +53,18 @@ export function List(props: HTMLAttributes<HTMLDivElement> & { children?: ReactN
 export function ListItem(props: HTMLAttributes<HTMLDivElement> & { children?: ReactNode }): JSX.Element
 export function Empty(props: { className?: string; children?: ReactNode }): JSX.Element
 
+export interface LazyListProps<Item = unknown> {
+  /** 返回异步迭代器的函数（推荐，如 () => api.data.sessions.iterate()），或直接传迭代器 */
+  source: (() => AsyncIterator<Item> & { [Symbol.asyncIterator]?(): AsyncIterator<Item> }) | AsyncIterator<Item>
+  renderItem?: (item: Item, index: number) => ReactNode
+  /** 每次滚动到底追加的条数，默认 50 */
+  batchSize?: number
+  className?: string
+  emptyText?: string
+}
+/** 懒加载列表：滚动到底自动从 source 取下一批，无需处理翻页 */
+export function LazyList<Item = unknown>(props: LazyListProps<Item>): JSX.Element
+
 export interface TabItem { value: string; label: ReactNode }
 export function Tabs(props: { tabs: TabItem[]; value: string; onChange?: (value: string) => void; className?: string }): JSX.Element
 

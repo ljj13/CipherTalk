@@ -212,6 +212,19 @@ await api.capabilities()      // string[]，宿主支持的方法名集合——
 
 ### 数据（data）
 
+**列表默认用懒加载**：每个列表接口都配有 `iterate()`，返回异步迭代器，
+自动翻页、遍历多少拉多少——通常不需要自己碰 `offset` / `cursor`：
+
+```ts
+for await (const s of api.data.sessions.iterate()) render(s)      // 会话
+for await (const c of api.data.contacts.iterate()) render(c)      // 联系人
+for await (const m of api.data.messages.iterate({ sessionId })) … // 消息（最新→旧）
+for await (const p of api.sns.iterate()) …                        // 朋友圈
+// 参数与对应 list/query/getTimeline 相同，limit 作为每页大小；随时 break 停止拉取
+```
+
+底层的分页接口仍然可用（需要精确控制单页时）：
+
 ```ts
 // 会话列表（sessions:read）
 await api.data.sessions.list({ limit?: number /*≤2000*/, offset?: number })
@@ -244,13 +257,8 @@ await api.data.messages.query({
 //                  fileName?, fileSize? }
 //
 // ⚠ 分页约定：带过滤条件时单页返回可能少于 limit（本页扫完了但命中少），
-//   只要有 nextCursor 就应继续翻页：
-let cursor
-do {
-  const { rows, nextCursor } = await api.data.messages.query({ sessionId, keyword, cursor })
-  handle(rows)
-  cursor = nextCursor
-} while (cursor)
+//   只要有 nextCursor 就还有数据。`iterate()` 已内置这套翻页逻辑，
+//   手动 query 时才需要自己循环 cursor。
 
 await api.data.messages.get(sessionId, localId)                    // 单条
 await api.data.messages.getDatesWithMessages(sessionId, year, month) // → ['2026-07-01', ...]
@@ -352,16 +360,46 @@ await api.storage.set(key, value)   // value 须可 JSON 序列化
 await api.storage.delete(key)
 ```
 
+### 实时事件（events）
+
+宿主用**推送**告知插件「有变化」，不是插件轮询。要点：事件只带**信号**、
+**不含消息内容**——收到后自己再拉最新数据。这样既实时，又不会把全部数据
+无差别推给每个插件。
+
+```ts
+// 订阅，返回退订函数
+const off = api.events.on('newMessages', ({ sessionId, count }) => { /* … */ })
+off()                                          // 退订
+
+api.events.on('exportProgress', (p) => {})     // { taskId, ... }，仅发给发起导出的插件
+api.events.on('exportDone', (p) => {})         // { taskId, success?, outputPath?, error? }
+api.onThemeChanged((theme) => {})              // 主题变化（SDK 已自动应用，通常无需监听）
+```
+
+**`newMessages`**（需 `messages:read`）：某会话时间线前进且有未读时推送，payload
+`{ sessionId, count }`（`count` 为该会话当前未读数），同一会话约 500ms 合并一次。
+事件是**全局**的，自己按 `sessionId` 筛。**收到后要用 `messages.query` 拉最新内容**——
+典型「来消息就处理」写法（防抖，避免连发重复触发）：
+
+```ts
+let timer
+api.events.on('newMessages', ({ sessionId }) => {
+  if (sessionId !== targetSession) return       // 事件是全局的，先筛出自己关心的会话
+  clearTimeout(timer)
+  timer = setTimeout(async () => {
+    const { rows } = await api.data.messages.query({ sessionId, limit: 20 })
+    const lastFromFriend = [...rows].reverse().find((m) => !m.isSend)
+    if (lastFromFriend) handle(lastFromFriend)   // 拉到的才是真正的新内容
+  }, 3000)                                        // 静默 3 秒再处理
+})
+```
+
 ### 其它
 
 ```ts
 await api.clipboard.write(text)                          // 需 clipboard:write
 await api.notify.send(title, body)                       // 需 notify:send
 await api.window.open(viewId, { width?, height? })       // 需 window:create
-const off = api.events.on(event, handler); off()         // 退订
-// 事件：newMessages（需 messages:read，{ sessionId, count? }，500ms 节流）
-//       exportProgress / exportDone（仅发给发起导出的插件）
-api.onThemeChanged((theme) => {})                         // 主题变化（SDK 已自动应用，通常无需监听）
 ```
 
 ## 6. 统一 UI 组件
@@ -446,8 +484,8 @@ api.onThemeChanged((theme) => {})                         // 主题变化（SDK 
 ### 6.1 React 组件库（ciphertalk-plugin-ui）
 
 用 React 写插件时，不必手拼 `.ct-*` 类——装 `ciphertalk-plugin-ui`，它是这些类的
-**薄封装**（不自带 CSS，观感仍由宿主注入），并额外提供 `DataTable`（排序 + 分页）
-与 `BarChart`：
+**薄封装**（不自带 CSS，观感仍由宿主注入），并额外提供 `LazyList`（滚动懒加载）、
+`DataTable`（排序 + 分页）与 `BarChart`：
 
 ```bash
 npm i ciphertalk-plugin-ui
@@ -455,12 +493,15 @@ npm i ciphertalk-plugin-ui
 
 ```jsx
 import { connect } from 'ciphertalk-plugin-sdk'
-import { Button, Card, DataTable, BarChart } from 'ciphertalk-plugin-ui'
+import { Button, Card, LazyList, ListItem, DataTable, BarChart } from 'ciphertalk-plugin-ui'
 
 const api = await connect()           // connect 负责注入 .ct-* 样式
 
 <Card>
   <Button variant="primary" onClick={() => api.ui.toast('已保存')}>保存</Button>
+  {/* 列表默认懒加载：接上 SDK 的 iterate()，滚动到底自动取下一批 */}
+  <LazyList source={() => api.data.sessions.iterate()}
+            renderItem={(s) => <ListItem key={s.sessionId}>{s.displayName}</ListItem>} />
   <DataTable pageSize={10} columns={[
     { key: 'name', title: '联系人', sortable: true },
     { key: 'count', title: '消息数', sortable: true, align: 'right' },
