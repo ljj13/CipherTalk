@@ -1,4 +1,4 @@
-import { AlertCircle, Image as ImageIcon, Loader2 } from 'lucide-react'
+import { CircleDashed, CircleExclamation, Picture } from '@gravity-ui/icons'
 import { Button, Checkbox, Label, Modal, ProgressBar } from '@heroui/react'
 import type { BatchImageMessage } from '../types'
 import { formatBatchDateLabel } from '../utils/time'
@@ -43,7 +43,7 @@ export function BatchDecryptModal({
             <Modal.CloseTrigger />
             <Modal.Header>
               <Modal.Icon className="bg-default text-foreground">
-                <ImageIcon className="size-5" />
+                <Picture className="size-5" />
               </Modal.Icon>
               <Modal.Heading>批量解密图片</Modal.Heading>
             </Modal.Header>
@@ -86,14 +86,14 @@ export function BatchDecryptModal({
               </div>
 
               <div className="mt-3 flex items-start gap-2 rounded-lg bg-warning-soft p-3 text-sm text-warning-soft-foreground">
-                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <CircleExclamation width={16} height={16} className="mt-0.5 shrink-0" />
                 <span>批量解密可能需要较长时间，解密过程中可以继续使用其他功能。已解密过的图片会自动跳过。</span>
               </div>
             </Modal.Body>
             <Modal.Footer>
               <Button slot="close" variant="secondary">取消</Button>
               <Button onPress={onConfirm}>
-                <ImageIcon className="size-4" />
+                <Picture className="size-4" />
                 开始解密
               </Button>
             </Modal.Footer>
@@ -106,7 +106,7 @@ export function BatchDecryptModal({
           <Modal.Dialog className="sm:max-w-90">
             <Modal.Header>
               <Modal.Icon className="bg-default text-foreground">
-                <Loader2 className="size-5 animate-spin" />
+                <CircleDashed className="size-5 animate-spin" />
               </Modal.Icon>
               <Modal.Heading>正在解密图片...</Modal.Heading>
             </Modal.Header>

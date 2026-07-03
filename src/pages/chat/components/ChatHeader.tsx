@@ -1,4 +1,4 @@
-import { Aperture, Bell, BellOff, Bot, Download, FileText, Image as ImageIcon, Info, Layers, Loader2, Mic, RefreshCw, Sparkles } from 'lucide-react'
+import { Aperture, ArrowDownToLine, ArrowsRotateLeft, Bell, BellSlash, CircleDashed, CircleInfo, FaceRobot, FileText, Layers, Microphone, Picture, Sparkles } from '@gravity-ui/icons'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Drawer, Dropdown, Label, Tooltip } from '@heroui/react'
 import { DateJumpPicker } from './DateJumpPicker'
@@ -439,7 +439,7 @@ export function ChatHeader({
               onPress={onRefreshMessages}
               isDisabled={isRefreshingMessages || isLoadingMessages}
             >
-              <RefreshCw size={18} className={isRefreshingMessages || isUpdating ? 'animate-spin' : ''} />
+              <ArrowsRotateLeft width={18} height={18} className={isRefreshingMessages || isUpdating ? 'animate-spin' : ''} />
             </Button>
           </Tooltip.Trigger>
           <Tooltip.Content placement="bottom">刷新消息</Tooltip.Content>
@@ -454,8 +454,8 @@ export function ChatHeader({
             isDisabled={vecDisabled}
           >
             {vecBuilding
-              ? <Loader2 size={18} className="animate-spin" />
-              : <Sparkles size={18} className={(vecStatus && (vecStatus.count > 0 || vecStatus.mediaCount > 0)) ? 'text-primary' : ''} />}
+              ? <CircleDashed width={18} height={18} className="animate-spin" />
+              : <Sparkles width={18} height={18} className={(vecStatus && (vecStatus.count > 0 || vecStatus.mediaCount > 0)) ? 'text-primary' : ''} />}
           </Button>
           <Dropdown.Popover className="min-w-64" placement="bottom end">
             <Dropdown.Menu
@@ -468,7 +468,7 @@ export function ChatHeader({
                 <span className="ml-auto text-muted-foreground text-xs">{vecStore?.count ?? vecStatus?.count ?? 0} 段</span>
               </Dropdown.Item>
               <Dropdown.Item id="image" textValue="向量化图片">
-                <ImageIcon className="size-4 shrink-0 text-muted" />
+                <Picture className="size-4 shrink-0 text-muted" />
                 <Label>向量化图片</Label>
                 <span className="ml-auto text-muted-foreground text-xs">{vecStore?.mediaCount ?? vecStatus?.mediaCount ?? 0} 张</span>
               </Dropdown.Item>
@@ -490,7 +490,7 @@ export function ChatHeader({
                 aria-label={notifyEnabled ? '关闭新消息提醒' : '开启新消息提醒'}
                 onPress={handleToggleNotify}
               >
-                {notifyEnabled ? <Bell size={18} className="text-primary" /> : <BellOff size={18} />}
+                {notifyEnabled ? <Bell width={18} height={18} className="text-primary" /> : <BellSlash width={18} height={18} />}
               </Button>
             </Tooltip.Trigger>
             <Tooltip.Content placement="bottom">{notifyEnabled ? '新消息提醒已开启 · 点击关闭' : '开启新消息提醒（桌宠气泡）'}</Tooltip.Content>
@@ -507,7 +507,7 @@ export function ChatHeader({
                 aria-label="克隆好友"
                 onPress={() => window.electronAPI.window.openPersonaChatWindow(currentSession.username)}
               >
-                <Bot size={18} />
+                <FaceRobot width={18} height={18} />
               </Button>
             </Tooltip.Trigger>
             <Tooltip.Content placement="bottom">克隆好友（和 TA 的数字分身聊天）</Tooltip.Content>
@@ -525,7 +525,7 @@ export function ChatHeader({
                 onPress={onExportVoiceCloneSample}
                 isDisabled={isExportingVoiceSample || !currentSessionId}
               >
-                {isExportingVoiceSample ? <Loader2 size={18} className="animate-spin" /> : <Download size={18} />}
+                {isExportingVoiceSample ? <CircleDashed width={18} height={18} className="animate-spin" /> : <ArrowDownToLine width={18} height={18} />}
               </Button>
             </Tooltip.Trigger>
             <Tooltip.Content placement="bottom">{isExportingVoiceSample ? '正在导出复刻语音样本' : '导出复刻语音样本（至少 10 秒）'}</Tooltip.Content>
@@ -542,7 +542,7 @@ export function ChatHeader({
                 aria-label="查看朋友圈"
                 onPress={() => window.electronAPI.window.openMomentsWindow(currentSession.username)}
               >
-                <Aperture size={18} />
+                <Aperture width={18} height={18} />
               </Button>
             </Tooltip.Trigger>
             <Tooltip.Content placement="bottom">查看朋友圈</Tooltip.Content>
@@ -567,7 +567,7 @@ export function ChatHeader({
               onPress={onBatchTranscribe}
               isDisabled={isBatchTranscribing || !currentSessionId}
             >
-              {isBatchTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+              {isBatchTranscribing ? <CircleDashed width={18} height={18} className="animate-spin" /> : <Microphone width={18} height={18} />}
             </Button>
           </Tooltip.Trigger>
           <Tooltip.Content placement="bottom">
@@ -585,7 +585,7 @@ export function ChatHeader({
               onPress={onBatchDecrypt}
               isDisabled={isBatchDecrypting || !currentSessionId}
             >
-              {isBatchDecrypting ? <Loader2 size={18} className="animate-spin" /> : <ImageIcon size={18} />}
+              {isBatchDecrypting ? <CircleDashed width={18} height={18} className="animate-spin" /> : <Picture width={18} height={18} />}
             </Button>
           </Tooltip.Trigger>
           <Tooltip.Content placement="bottom">
@@ -602,7 +602,7 @@ export function ChatHeader({
               aria-label="会话详情"
               onPress={() => setIsDetailOpen(true)}
             >
-              <Info size={18} />
+              <CircleInfo width={18} height={18} />
             </Button>
           </Tooltip.Trigger>
           <Tooltip.Content placement="bottom">会话详情</Tooltip.Content>

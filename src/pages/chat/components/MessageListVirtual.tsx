@@ -1,6 +1,6 @@
 import { useCallback, useLayoutEffect, useMemo, useRef } from 'react'
 import type { RefObject } from 'react'
-import { ChevronDown, Loader2 } from 'lucide-react'
+import { ChevronDown, CircleDashed } from '@gravity-ui/icons'
 import { Button } from '@heroui/react'
 import { Virtualizer, type VirtualizerHandle } from 'virtua'
 import ChatBackground from '../../../components/ChatBackground'
@@ -218,7 +218,7 @@ export function MessageListVirtual({
       {/* 加载更多指示：浮层(absolute)，不入文档流，避免影响虚拟偏移 */}
       {hasMoreMessages && isLoadingMore && (
         <div className="vlist-loading-top">
-          <Loader2 size={14} />
+          <CircleDashed width={14} height={14} />
           <span>加载更多...</span>
         </div>
       )}
@@ -236,7 +236,7 @@ export function MessageListVirtual({
           aria-label="回到底部"
           onPress={handleScrollToBottomClick}
         >
-          <ChevronDown size={16} />
+          <ChevronDown width={16} height={16} />
         </Button>
       </div>
     </div>

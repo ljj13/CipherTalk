@@ -1,8 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import {
-  FileArchive, FileText, Link, MapPin, MessageSquare,
-  Phone, Play, UserRound, Video
-} from 'lucide-react'
+import { Comment, FileText, FileZipper, Handset, Link, MapPin, Person, Play, Video } from '@gravity-ui/icons'
 import MessageContent from '../../../../components/MessageContent'
 import { ChannelVideoCard, LinkSource, LinkThumb, MiniProgramThumb } from './AppMessageCards'
 import { emojiDataUrlCache } from './mediaState'
@@ -228,7 +225,7 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
             <div className="chat-record-preview">
               <div className="chat-record-desc">{desc || '点击打开查看完整聊天记录'}</div>
             </div>
-            <div className="chat-record-icon"><MessageSquare size={18} /></div>
+            <div className="chat-record-icon"><Comment width={18} height={18} /></div>
           </div>
         </div>
       )
@@ -250,8 +247,8 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
 
       const getFileIcon = (ext: string) => {
         const archiveExts = ['zip', 'rar', '7z', 'tar', 'gz', 'bz2']
-        if (archiveExts.includes(ext)) return <FileArchive size={28} />
-        return <FileText size={28} />
+        if (archiveExts.includes(ext)) return <FileZipper width={28} height={28} />
+        return <FileText width={28} height={28} />
       }
 
       const handleFileClick = async () => {
@@ -446,7 +443,7 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
         return (
           <div className="music-message" onClick={() => musicUrl && window.electronAPI.shell.openExternal(musicUrl)} onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}>
             <div className="music-cover">
-              {albumUrl ? <img src={albumUrl} alt="" referrerPolicy="no-referrer" /> : <Play size={24} />}
+              {albumUrl ? <img src={albumUrl} alt="" referrerPolicy="no-referrer" /> : <Play width={24} height={24} />}
             </div>
             <div className="music-info">
               <div className="music-title">{musicTitle || '未知歌曲'}</div>
@@ -563,7 +560,7 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
             {cdnthumbmd5 && session ? (
               <LinkThumb imageMd5={cdnthumbmd5} sessionId={session.username} />
             ) : (
-              <div className="link-thumb-placeholder"><Link size={24} /></div>
+              <div className="link-thumb-placeholder"><Link width={24} height={24} /></div>
             )}
           </div>
           {sourcedisplayname && <LinkSource username={sourceusername} name={sourcedisplayname} badge="公众号文章" />}
@@ -589,7 +586,7 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
     return (
       <div className="contact-card-message" onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}>
         <div className="contact-card-avatar">
-          {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" /> : <UserRound size={24} />}
+          {avatar ? <img src={avatar} alt="" referrerPolicy="no-referrer" /> : <Person width={24} height={24} />}
         </div>
         <div className="contact-card-info">
           <div className="contact-card-name">{nickname}</div>
@@ -615,7 +612,7 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
     return (
       <div className="location-message" onClick={() => window.electronAPI.shell.openExternal(`https://uri.amap.com/marker?position=${lng},${lat}&name=${encodeURIComponent(poiname || label)}`)} onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}>
         <div className="location-text">
-          <MapPin size={16} className="location-icon" />
+          <MapPin width={16} height={16} className="location-icon" />
           <div className="location-info">
             {poiname && <div className="location-name">{poiname}</div>}
             {label && <div className="location-label">{label}</div>}
@@ -624,7 +621,7 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
         {lat !== 0 && lng !== 0 && (
           <div className="location-map">
             <img src={tileUrl} alt="" referrerPolicy="no-referrer" />
-            <div className="location-pin"><MapPin size={20} fill="#e25b4a" color="#fff" /></div>
+            <div className="location-pin"><MapPin width={20} height={20} fill="#e25b4a" color="#fff" /></div>
           </div>
         )}
       </div>
@@ -635,10 +632,10 @@ function TextBubble({ message, session, isSent, onContextMenu }: TextBubbleProps
   if (message.localType === 50) {
     const raw = message.rawContent || ''
     const isVideoCall = /<room_type>0<\/room_type>/.test(raw)
-    const Icon = isVideoCall ? Video : Phone
+    const Icon = isVideoCall ? Video : Handset
     return (
       <div className="bubble-content" style={{ display: 'flex', alignItems: 'center', gap: 6, flexDirection: isSent ? 'row-reverse' : 'row' }} onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}>
-        <Icon size={16} style={{ transform: isSent ? 'scaleX(-1)' : undefined }} />
+        <Icon width={16} height={16} style={{ transform: isSent ? 'scaleX(-1)' : undefined }} />
         <span>{message.parsedContent}</span>
       </div>
     )

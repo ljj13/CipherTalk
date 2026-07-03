@@ -1,6 +1,6 @@
 import { createPortal } from 'react-dom'
 import { Dropdown, Label } from '@heroui/react'
-import { CheckSquare, Copy, Download, Edit, Info, RefreshCw, Volume2, VolumeX, ZoomIn } from 'lucide-react'
+import { ArrowDownToLine, ArrowsRotateLeft, CircleInfo, Copy, MagnifierPlus, Pencil, SquareCheck, Volume, VolumeXmark } from '@gravity-ui/icons'
 import { useTtsSpeaker } from '@/lib/ttsPlayer'
 import type { ChatSession, Message } from '../../../../types/models'
 import type { ContextMenuState } from '../../types'
@@ -112,7 +112,7 @@ export function ContextMenuPortal({
                 closeMenu()
               }}
             >
-              <ZoomIn className="size-4 shrink-0 text-muted" />
+              <MagnifierPlus className="size-4 shrink-0 text-muted" />
               <Label>放大阅读</Label>
             </Dropdown.Item>
           )}
@@ -127,7 +127,7 @@ export function ContextMenuPortal({
                 })
               }}
             >
-              {isSpeakingThis ? <VolumeX className="size-4 shrink-0 text-muted" /> : <Volume2 className="size-4 shrink-0 text-muted" />}
+              {isSpeakingThis ? <VolumeXmark className="size-4 shrink-0 text-muted" /> : <Volume className="size-4 shrink-0 text-muted" />}
               <Label>{isSpeakingThis ? '停止朗读' : '朗读'}</Label>
             </Dropdown.Item>
           )}
@@ -140,7 +140,7 @@ export function ContextMenuPortal({
                 closeMenu()
               }}
             >
-              <CheckSquare className="size-4 shrink-0 text-muted" />
+              <SquareCheck className="size-4 shrink-0 text-muted" />
               <Label>多选</Label>
             </Dropdown.Item>
           )}
@@ -154,7 +154,7 @@ export function ContextMenuPortal({
                 void exportVoiceMessage(contextMenu.message, contextMenu.session)
               }}
             >
-              <Download className="size-4 shrink-0 text-muted" />
+              <ArrowDownToLine className="size-4 shrink-0 text-muted" />
               <Label>导出语音文件</Label>
             </Dropdown.Item>
           )}
@@ -168,7 +168,7 @@ export function ContextMenuPortal({
                 closeMenu()
               }}
             >
-              <RefreshCw className="size-4 shrink-0 text-muted" />
+              <ArrowsRotateLeft className="size-4 shrink-0 text-muted" />
               <Label>重新转文字</Label>
             </Dropdown.Item>
           )}
@@ -182,7 +182,7 @@ export function ContextMenuPortal({
                 closeMenu()
               }}
             >
-              <Edit className="size-4 shrink-0 text-muted" />
+              <Pencil className="size-4 shrink-0 text-muted" />
               <Label>修改识别文字</Label>
             </Dropdown.Item>
           )}
@@ -195,7 +195,7 @@ export function ContextMenuPortal({
               closeMenu()
             }}
           >
-            <Info className="size-4 shrink-0 text-muted" />
+            <CircleInfo className="size-4 shrink-0 text-muted" />
             <Label>查看消息信息</Label>
           </Dropdown.Item>
         </Dropdown.Menu>

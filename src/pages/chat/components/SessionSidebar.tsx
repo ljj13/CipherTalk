@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button, SearchField, Tooltip } from '@heroui/react'
-import { AlertCircle, ChevronDown, ChevronUp, ListOrdered, MessageSquare, MessageSquareDashed, Newspaper, Pin, RefreshCw } from 'lucide-react'
+import { ArrowsRotateLeft, ChevronDown, ChevronUp, CircleExclamation, Comment, CommentSlash, ListOl, Pin, SquareArticle } from '@gravity-ui/icons'
 import { List } from 'react-window'
 import type { RowComponentProps } from 'react-window'
 import MessageContent from '../../../components/MessageContent'
@@ -242,9 +242,9 @@ export const SessionRow = (props: RowComponentProps<SessionRowData>) => {
         onClick={onTogglePinnedFolded}
         title={item.folded ? '展开置顶聊天' : '折叠置顶聊天'}
       >
-        <ListOrdered size={16} />
+        <ListOl width={16} height={16} />
         <span className="bar-title">折叠置顶聊天</span>
-        {item.folded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+        {item.folded ? <ChevronDown width={16} height={16} /> : <ChevronUp width={16} height={16} />}
       </div>
     )
   }
@@ -264,7 +264,7 @@ export const SessionRow = (props: RowComponentProps<SessionRowData>) => {
       >
         <div className="system-folder-avatar" style={{ width: 48, height: 48 }}>
           <div className="session-avatar official-folder-avatar" style={{ width: 48, height: 48 }}>
-            <Newspaper size={26} />
+            <SquareArticle width={26} height={26} />
           </div>
           {hasUnread && <span className="fold-group-unread-dot" aria-label="有新消息" />}
         </div>
@@ -298,7 +298,7 @@ export const SessionRow = (props: RowComponentProps<SessionRowData>) => {
       >
         <div className="system-folder-avatar" style={{ width: 48, height: 48 }}>
           <div className="session-avatar fold-group-avatar" style={{ width: 48, height: 48 }}>
-            <MessageSquareDashed size={26} />
+            <CommentSlash width={26} height={26} />
           </div>
           {hasUnread && <span className="fold-group-unread-dot" aria-label="有新消息" />}
         </div>
@@ -329,7 +329,7 @@ export const SessionRow = (props: RowComponentProps<SessionRowData>) => {
       <div className="session-info">
         <div className="session-top">
           <div className="session-name-wrap">
-            {session.isPinned && <Pin size={12} className="pin-icon" />}
+            {session.isPinned && <Pin width={12} height={12} className="pin-icon" />}
             <span className="session-name">{session.displayName || session.username}</span>
             {session.isWeCom && (
               session.weComCorp
@@ -631,7 +631,7 @@ export function SessionSidebar({
                 size="sm"
                 variant="ghost"
               >
-                <RefreshCw size={16} className={isLoadingSessions || isUpdating ? 'animate-spin' : ''} />
+                <ArrowsRotateLeft width={16} height={16} className={isLoadingSessions || isUpdating ? 'animate-spin' : ''} />
               </Button>
             </Tooltip.Trigger>
             <Tooltip.Content>刷新会话列表</Tooltip.Content>
@@ -641,7 +641,7 @@ export function SessionSidebar({
 
       {connectionError && (
         <div className="connection-error">
-          <AlertCircle size={16} />
+          <CircleExclamation width={16} height={16} />
           <span>{connectionError}</span>
           <button onClick={onRetryConnect}>重试</button>
         </div>
@@ -689,9 +689,9 @@ export function SessionSidebar({
               onClick={togglePinnedFolded}
               title="折叠置顶聊天"
             >
-              <ListOrdered size={16} />
+              <ListOl width={16} height={16} />
               <span className="bar-title">折叠置顶聊天</span>
-              <ChevronUp size={16} />
+              <ChevronUp width={16} height={16} />
             </div>
           )}
           {scrollbar.show && (
@@ -705,7 +705,7 @@ export function SessionSidebar({
         </div>
       ) : (
         <div className="empty-sessions">
-          <MessageSquare />
+          <Comment />
           <p>暂无会话</p>
           <p className="hint">请先在数据管理页面解密数据库</p>
         </div>

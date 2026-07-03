@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
-import { Code2, Copy, Download, Loader2, X } from 'lucide-react'
+import { ArrowDownToLine, CircleDashed, Code, Copy, Xmark } from '@gravity-ui/icons'
 import type { ChatSession, Message } from '../../../types/models'
 import { isGroupChat, isSystemMessage } from '../utils/messageGuards'
 import { formatDateDivider, shouldShowDateDivider } from '../utils/time'
@@ -382,7 +382,7 @@ export function SharePosterModal({ session, messages, myAvatarUrl, onClose, show
           <div className="poster-panel__header">
             <span className="poster-panel__title">分享海报</span>
             <button type="button" className="poster-btn poster-btn--icon" onClick={onClose} aria-label="关闭">
-              <X size={15} />
+              <Xmark width={15} height={15} />
             </button>
           </div>
           <div className="poster-panel__hint">
@@ -417,7 +417,7 @@ export function SharePosterModal({ session, messages, myAvatarUrl, onClose, show
                       aria-label="删除该样式"
                       onClick={(e) => { e.stopPropagation(); deleteCustomTheme(theme.id) }}
                     >
-                      <X size={11} />
+                      <Xmark width={11} height={11} />
                     </span>
                   </div>
                 ))}
@@ -442,7 +442,7 @@ export function SharePosterModal({ session, messages, myAvatarUrl, onClose, show
                   className="poster-btn poster-btn--primary poster-style-entry__btn"
                   onClick={() => void openStyleWorkbench()}
                 >
-                  <Code2 size={14} />
+                  <Code width={14} height={14} />
                   打开
                 </button>
               </div>
@@ -451,11 +451,11 @@ export function SharePosterModal({ session, messages, myAvatarUrl, onClose, show
 
           <div className="poster-panel__actions">
             <button type="button" className="poster-btn" onClick={handleCopy} disabled={busy}>
-              {copying ? <Loader2 size={14} className="poster-spin" /> : <Copy size={14} />}
+              {copying ? <CircleDashed width={14} height={14} className="poster-spin" /> : <Copy width={14} height={14} />}
               复制图片
             </button>
             <button type="button" className="poster-btn poster-btn--primary" onClick={handleSave} disabled={busy}>
-              {saving ? <Loader2 size={14} className="poster-spin" /> : <Download size={14} />}
+              {saving ? <CircleDashed width={14} height={14} className="poster-spin" /> : <ArrowDownToLine width={14} height={14} />}
               保存图片
             </button>
           </div>

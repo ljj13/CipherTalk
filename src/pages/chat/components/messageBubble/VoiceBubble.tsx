@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { AlertCircle, Loader2 } from 'lucide-react'
+import { CircleDashed, CircleExclamation } from '@gravity-ui/icons'
 import { Qwen } from '@lobehub/icons'
 import { checkOnlineSttConfigReady } from '../../utils/sttConfig'
 import { globalVoiceManager } from './mediaState'
@@ -289,10 +289,10 @@ function VoiceBubble({ message, session, isSent, onContextMenu }: VoiceBubblePro
   // 语音图标组件
   const VoiceIcon = () => {
     if (voiceLoading) {
-      return <Loader2 size={18} className="spin" />
+      return <CircleDashed width={18} height={18} className="spin" />
     }
     if (voiceError) {
-      return <AlertCircle size={18} className="voice-error-icon" />
+      return <CircleExclamation width={18} height={18} className="voice-error-icon" />
     }
     if (voicePlaying) {
       return (
@@ -400,7 +400,7 @@ function VoiceBubble({ message, session, isSent, onContextMenu }: VoiceBubblePro
         ) : (
           <div className="stt-transcript" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <span>{sttTranscript}</span>
-            {sttLoading && <Loader2 size={12} className="spin" style={{ flexShrink: 0, color: 'var(--text-tertiary)' }} />}
+            {sttLoading && <CircleDashed width={12} height={12} className="spin" style={{ flexShrink: 0, color: 'var(--text-tertiary)' }} />}
           </div>
         )
       ) : (
@@ -412,12 +412,12 @@ function VoiceBubble({ message, session, isSent, onContextMenu }: VoiceBubblePro
         >
           {sttLoading ? (
             (sttProvider === 'aliyun-qwen-asr' || sttProvider === 'qianwen-cloud') ? (
-              <Qwen.Color className="stt-provider-loading-icon" size={18} />
+              <Qwen.Color className="stt-provider-loading-icon" width={18} height={18} />
             ) : (
-              <Loader2 size={12} className="spin" />
+              <CircleDashed width={12} height={12} className="spin" />
             )
           ) : sttError ? (
-            <AlertCircle size={12} />
+            <CircleExclamation width={12} height={12} />
           ) : (
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M4 7V4h16v3" />

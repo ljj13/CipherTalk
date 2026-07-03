@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { Info, X } from 'lucide-react'
+import { CircleInfo, Xmark } from '@gravity-ui/icons'
 import type { Message } from '../../../../types/models'
 
 interface MessageInfoModalProps {
@@ -15,11 +15,11 @@ export function MessageInfoModal({ message, onClose }: MessageInfoModalProps) {
       <div className="message-info-modal" onClick={(e) => e.stopPropagation()}>
         <div className="message-info-header">
           <div className="message-info-title">
-            <Info size={18} />
+            <CircleInfo width={18} height={18} />
             <h3>消息详细信息</h3>
           </div>
           <button className="message-info-close-btn" onClick={onClose} aria-label="关闭消息详情">
-            <X size={18} />
+            <Xmark width={18} height={18} />
           </button>
         </div>
         <div className="message-info-body">

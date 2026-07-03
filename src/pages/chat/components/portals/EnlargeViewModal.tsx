@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { X } from 'lucide-react'
+import { Xmark } from '@gravity-ui/icons'
 import MessageContent from '../../../../components/MessageContent'
 import type { Message } from '../../../../types/models'
 
@@ -17,7 +17,7 @@ export function EnlargeViewModal({ view, onClose }: EnlargeViewModalProps) {
         <div className="enlarge-view-header">
           <h3>放大阅读</h3>
           <button className="close-btn" onClick={onClose}>
-            <X size={16} />
+            <Xmark width={16} height={16} />
           </button>
         </div>
         <div className="enlarge-view-body">

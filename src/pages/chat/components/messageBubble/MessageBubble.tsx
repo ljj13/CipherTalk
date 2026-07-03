@@ -1,5 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { Check } from 'lucide-react'
+import { Check } from '@gravity-ui/icons'
 
 import { useChatStore } from '../../../../stores/chatStore'
 import type { ChatSession, Message } from '../../../../types/models'
@@ -328,7 +328,7 @@ function MessageBubble({ message, session, showTime, myAvatarUrl, isGroupChat, h
             {renderContent()}
             {selectMode && (
               <div className={`select-checkbox${isSelected ? ' checked' : ''}`}>
-                {isSelected && <Check size={13} strokeWidth={3} />}
+                {isSelected && <Check width={13} height={13} strokeWidth={3} />}
               </div>
             )}
           </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Button } from '@heroui/react'
-import { ImagePlus, MessageSquare, X } from 'lucide-react'
+import { Comment, Picture, Xmark } from '@gravity-ui/icons'
 import { useChatStore, MAX_ACTIVE_MESSAGES } from '../../stores/chatStore'
 import { useUpdateStatusStore } from '../../stores/updateStatusStore'
 import ChatBackground from '../../components/ChatBackground'
@@ -1730,7 +1730,7 @@ function ChatPage(_props: ChatPageProps) {
                       variant="tertiary"
                       onPress={exitSelectMode}
                     >
-                      <X className="size-4 shrink-0" />
+                      <Xmark className="size-4 shrink-0" />
                       取消
                     </Button>
                     <Button
@@ -1740,7 +1740,7 @@ function ChatPage(_props: ChatPageProps) {
                       variant="primary"
                       onPress={() => void openPosterWindow()}
                     >
-                      <ImagePlus className="size-4 shrink-0" />
+                      <Picture className="size-4 shrink-0" />
                       生成海报
                     </Button>
                   </div>
@@ -1758,7 +1758,7 @@ function ChatPage(_props: ChatPageProps) {
                 <div className="message-list">
                   <ChatBackground />
                   <div className="empty-chat">
-                    <MessageSquare />
+                    <Comment />
                     <p>选择一个会话开始查看聊天记录</p>
                   </div>
                 </div>

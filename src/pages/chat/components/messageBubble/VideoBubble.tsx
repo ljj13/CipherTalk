@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
-import { Loader2, Play, Video } from 'lucide-react'
+import { CircleDashed, Play, Video } from '@gravity-ui/icons'
 import type { ChatSession, Message } from '../../../../types/models'
 import { lastIncrementalUpdateTime, videoInfoCache } from './mediaState'
 import type { CachedVideoInfo } from './mediaState'
@@ -147,7 +147,7 @@ function VideoBubble({ message, session, onContextMenu }: VideoBubbleProps) {
   if (!isVisible) {
     return (
       <div className="video-placeholder" ref={videoContainerRef} onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}>
-        <Video size={24} />
+        <Video width={24} height={24} />
       </div>
     )
   }
@@ -156,7 +156,7 @@ function VideoBubble({ message, session, onContextMenu }: VideoBubbleProps) {
   if (videoLoading) {
     return (
       <div className="video-loading" ref={videoContainerRef} onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}>
-        <Loader2 size={20} className="spin" />
+        <CircleDashed width={20} height={20} className="spin" />
       </div>
     )
   }
@@ -182,7 +182,7 @@ function VideoBubble({ message, session, onContextMenu }: VideoBubbleProps) {
         type="button"
         onContextMenu={onContextMenu ? (e) => onContextMenu(e, message) : undefined}
       >
-        <Video size={24} />
+        <Video width={24} height={24} />
         <span>视频不可用</span>
         {videoInfo?.diagnostics?.summary && (
           <span className="video-reason">{videoInfo.diagnostics.summary}</span>
@@ -200,11 +200,11 @@ function VideoBubble({ message, session, onContextMenu }: VideoBubbleProps) {
         <img src={thumbSrc} alt="视频缩略图" className="video-thumb" />
       ) : (
         <div className="video-thumb-placeholder">
-          <Video size={32} />
+          <Video width={32} height={32} />
         </div>
       )}
       <div className="video-play-button">
-        <Play size={36} fill="currentColor" />
+        <Play width={36} height={36} fill="currentColor" />
       </div>
       {message.videoDuration && message.videoDuration > 0 && (
         <span className="video-duration-tag">

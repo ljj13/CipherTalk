@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Calendar as CalendarIcon, Loader2 } from 'lucide-react'
+import { Calendar as CalendarIcon, CircleDashed } from '@gravity-ui/icons'
 import { Button, Calendar, Popover } from '@heroui/react'
 import { getLocalTimeZone, parseDate, today, type DateValue } from '@internationalized/date'
 
@@ -42,7 +42,7 @@ export function DateJumpPicker({ value, onChange, onJump, disabled, loading }: D
     <Popover isOpen={isOpen && !disabled} onOpenChange={(open) => { if (!disabled) setIsOpen(open) }}>
       <Popover.Trigger>
         <Button isIconOnly size="sm" variant="ghost" isDisabled={disabled} aria-label="跳转到日期">
-          {loading ? <Loader2 size={18} className="animate-spin" /> : <CalendarIcon size={18} />}
+          {loading ? <CircleDashed width={18} height={18} className="animate-spin" /> : <CalendarIcon width={18} height={18} />}
         </Button>
       </Popover.Trigger>
       <Popover.Content placement="bottom right">

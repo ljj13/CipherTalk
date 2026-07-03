@@ -1,4 +1,4 @@
-import { AlertCircle, CheckCircle, Loader2, Mic, XCircle } from 'lucide-react'
+import { CircleCheck, CircleDashed, CircleExclamation, CircleXmark, Microphone } from '@gravity-ui/icons'
 import { Button, Checkbox, Label, Modal, ProgressBar } from '@heroui/react'
 import type { Message } from '../../../types/models'
 import { formatBatchDateLabel } from '../utils/time'
@@ -50,7 +50,7 @@ export function BatchTranscribeModal({
             <Modal.CloseTrigger />
             <Modal.Header>
               <Modal.Icon className="bg-default text-foreground">
-                <Mic className="size-5" />
+                <Microphone className="size-5" />
               </Modal.Icon>
               <Modal.Heading>批量语音转文字</Modal.Heading>
             </Modal.Header>
@@ -99,14 +99,14 @@ export function BatchTranscribeModal({
               </div>
 
               <div className="mt-3 flex items-start gap-2 rounded-lg bg-warning-soft p-3 text-sm text-warning-soft-foreground">
-                <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                <CircleExclamation width={16} height={16} className="mt-0.5 shrink-0" />
                 <span>批量转写可能需要较长时间，转写过程中可以继续使用其他功能。已转写过的语音会自动跳过。</span>
               </div>
             </Modal.Body>
             <Modal.Footer>
               <Button slot="close" variant="secondary">取消</Button>
               <Button onPress={onConfirm}>
-                <Mic className="size-4" />
+                <Microphone className="size-4" />
                 开始转写
               </Button>
             </Modal.Footer>
@@ -119,7 +119,7 @@ export function BatchTranscribeModal({
           <Modal.Dialog className="sm:max-w-90">
             <Modal.Header>
               <Modal.Icon className="bg-default text-foreground">
-                <Loader2 className="size-5 animate-spin" />
+                <CircleDashed className="size-5 animate-spin" />
               </Modal.Icon>
               <Modal.Heading>正在转写...</Modal.Heading>
             </Modal.Header>
@@ -141,20 +141,20 @@ export function BatchTranscribeModal({
             <Modal.CloseTrigger />
             <Modal.Header>
               <Modal.Icon className="bg-success-soft text-success-soft-foreground">
-                <CheckCircle className="size-5" />
+                <CircleCheck className="size-5" />
               </Modal.Icon>
               <Modal.Heading>转写完成</Modal.Heading>
             </Modal.Header>
             <Modal.Body>
               <div className="flex flex-col gap-2 text-sm">
                 <div className="flex items-center gap-2">
-                  <CheckCircle size={18} className="text-success" />
+                  <CircleCheck width={18} height={18} className="text-success" />
                   <span className="text-muted">成功：</span>
                   <span className="font-medium">{result.success} 条</span>
                 </div>
                 {result.fail > 0 && (
                   <div className="flex items-center gap-2">
-                    <XCircle size={18} className="text-danger" />
+                    <CircleXmark width={18} height={18} className="text-danger" />
                     <span className="text-muted">失败：</span>
                     <span className="font-medium">{result.fail} 条</span>
                   </div>
@@ -162,7 +162,7 @@ export function BatchTranscribeModal({
               </div>
               {result.fail > 0 && (
                 <div className="mt-3 flex items-start gap-2 rounded-lg bg-warning-soft p-3 text-sm text-warning-soft-foreground">
-                  <AlertCircle size={16} className="mt-0.5 shrink-0" />
+                  <CircleExclamation width={16} height={16} className="mt-0.5 shrink-0" />
                   <span>部分语音转写失败，可能是语音文件损坏或网络问题</span>
                 </div>
               )}

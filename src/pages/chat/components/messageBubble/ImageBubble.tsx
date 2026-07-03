@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, RefreshCw, Image as ImageIcon } from 'lucide-react'
+import { ArrowsRotateLeft, CircleDashed, Picture } from '@gravity-ui/icons'
 import { LivePhotoIcon } from '../../../../components/LivePhotoIcon'
 import type { ChatSession, Message } from '../../../../types/models'
 import { resolveImageDisplaySize, type ImageDisplaySize } from '../../utils/imageSize'
@@ -26,7 +26,7 @@ function ImageStatusCard({ variant, size, clicked, containerRef, onClick, onCont
   if (variant === 'loading') {
     return (
       <div ref={containerRef} className="image-loading" style={style} onContextMenu={onContextMenu}>
-        <Loader2 size={20} className="spin" />
+        <CircleDashed width={20} height={20} className="spin" />
       </div>
     )
   }
@@ -34,7 +34,7 @@ function ImageStatusCard({ variant, size, clicked, containerRef, onClick, onCont
   if (variant === 'placeholder') {
     return (
       <div ref={containerRef} className="image-placeholder" style={style} onContextMenu={onContextMenu}>
-        <ImageIcon size={24} />
+        <Picture width={24} height={24} />
       </div>
     )
   }
@@ -42,7 +42,7 @@ function ImageStatusCard({ variant, size, clicked, containerRef, onClick, onCont
   if (variant === 'no-key') {
     return (
       <div ref={containerRef} className="image-no-key" style={style} onContextMenu={onContextMenu}>
-        <ImageIcon size={24} />
+        <Picture width={24} height={24} />
         <span>请配置图片解密密钥</span>
       </div>
     )
@@ -58,7 +58,7 @@ function ImageStatusCard({ variant, size, clicked, containerRef, onClick, onCont
       onClick={onClick}
       onContextMenu={onContextMenu}
     >
-      <ImageIcon size={24} />
+      <Picture width={24} height={24} />
       <span>图片未解密</span>
       <span className="image-action">{clicked ? '已点击…' : '点击解密'}</span>
     </div>
@@ -498,7 +498,7 @@ function ImageBubble({ message, session, hasImageKey, onContextMenu }: ImageBubb
               void requestImageDecrypt(true)
             }}
           >
-            <RefreshCw size={14} />
+            <ArrowsRotateLeft width={14} height={14} />
           </button>
         )}
         {imageLiveVideoPath && (
@@ -508,7 +508,7 @@ function ImageBubble({ message, session, hasImageKey, onContextMenu }: ImageBubb
         )}
         {imageLoading && (
           <div className="image-loading-overlay">
-            <Loader2 size={20} className="spin" />
+            <CircleDashed width={20} height={20} className="spin" />
           </div>
         )}
       </div>

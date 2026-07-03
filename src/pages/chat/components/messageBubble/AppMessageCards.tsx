@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, Video } from 'lucide-react'
+import { Link, Video } from '@gravity-ui/icons'
 
 export function ChannelVideoCard({ info }: { info: { title: string; author: string; avatar?: string; thumbUrl?: string; coverUrl?: string; duration?: number } }) {
   return (
@@ -8,7 +8,7 @@ export function ChannelVideoCard({ info }: { info: { title: string; author: stri
         {info.coverUrl || info.thumbUrl ? (
           <img src={info.coverUrl || info.thumbUrl} alt="" />
         ) : (
-          <div className="channel-video-cover-placeholder"><Video size={24} /></div>
+          <div className="channel-video-cover-placeholder"><Video width={24} height={24} /></div>
         )}
         {info.duration && (
           <span className="channel-video-duration">{Math.floor(info.duration / 60)}:{String(info.duration % 60).padStart(2, '0')}</span>
@@ -35,7 +35,7 @@ export function LinkThumb({ imageMd5, sessionId }: { imageMd5: string; sessionId
     })
     return () => { cancelled = true }
   }, [imageMd5, sessionId])
-  if (!src) return <div className="link-thumb-placeholder"><Link size={24} /></div>
+  if (!src) return <div className="link-thumb-placeholder"><Link width={24} height={24} /></div>
   return <img className="link-thumb" src={src} alt="" />
 }
 
