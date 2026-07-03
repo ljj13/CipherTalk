@@ -13,6 +13,8 @@ import SecurityTab from './tabs/SecurityTab'
 import type { UpdateInfo } from './types'
 import { formatFileSize } from './utils'
 import { useSettingsStore } from './settingsStore'
+import { usePluginStore, ensurePluginStoreSubscribed, selectEnabledPlugins } from '../../stores/pluginStore'
+import PluginHost from '../../features/plugins/PluginHost'
 import { ConfirmDialog, FloatingSaveButton } from './ui'
 import {
   Eye, EyeOff, Key, FolderSearch, FolderOpen, Search,
@@ -27,8 +29,9 @@ const DataManagementTab = lazy(() => import('./tabs/DataManagementTab'))
 const DatabaseTab = lazy(() => import('./tabs/DatabaseTab'))
 const SttTab = lazy(() => import('./tabs/SttTab'))
 const MemoryTab = lazy(() => import('./tabs/MemoryTab'))
+const PluginsTab = lazy(() => import('./tabs/PluginsTab'))
 
-type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'memory' | 'data' | 'security' | 'activation' | 'about'
+type SettingsTab = 'appearance' | 'database' | 'stt' | 'ai' | 'memory' | 'data' | 'plugins' | 'security' | 'activation' | 'about'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -38,6 +41,7 @@ const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'ai', label: 'AI 接入', icon: Sparkles },
   { id: 'memory', label: '记忆', icon: Brain },
   { id: 'data', label: '数据管理', icon: HardDrive },
+  { id: 'plugins', label: '插件', icon: Plug },
   // { id: 'activation', label: '激活', icon: Shield },
   { id: 'about', label: '关于', icon: Info }
 ]
@@ -165,13 +169,26 @@ function SettingsLayout() {
     onConfirm: () => void
   }>({ show: false, title: '', message: '', onConfirm: () => { } })
 
-  const [activeTab, setActiveTab] = useState<SettingsTab>(() => {
+  const [activeTab, setActiveTab] = useState<SettingsTab | string>(() => {
     const tab = searchParams.get('tab')
-    if (tab && tabs.some(t => t.id === tab)) {
-      return tab as SettingsTab
+    if (tab && (tabs.some(t => t.id === tab) || tab.startsWith('plugin:'))) {
+      return tab
     }
     return 'appearance'
   })
+
+  // 插件设置 tab 贡献点（声明式，只读 manifest）
+  const installedPlugins = usePluginStore(state => state.plugins)
+  useEffect(() => { ensurePluginStoreSubscribed() }, [])
+  const pluginTabs = selectEnabledPlugins(installedPlugins).flatMap((plugin) =>
+    (plugin.contributes.settingsTabs ?? []).map((tab) => ({
+      id: `plugin:${plugin.id}:${tab.view}`,
+      label: tab.label,
+      pluginId: plugin.id,
+      view: tab.view,
+    }))
+  )
+  const activePluginTab = pluginTabs.find(t => t.id === activeTab)
 
   const [decryptKey, setDecryptKey] = useState('')
   const [dbPath, setDbPath] = useState('')
@@ -1370,7 +1387,7 @@ function SettingsLayout() {
 
       <Tabs
         selectedKey={activeTab}
-        onSelectionChange={(key: HeroKey) => setActiveTab(String(key) as SettingsTab)}
+        onSelectionChange={(key: HeroKey) => setActiveTab(String(key))}
         className="settings-tabs"
       >
         <Tabs.ListContainer>
@@ -1378,6 +1395,13 @@ function SettingsLayout() {
             {tabs.map(tab => (
               <Tabs.Tab key={tab.id} id={tab.id}>
                 <tab.icon size={16} />
+                {tab.label}
+                <Tabs.Indicator />
+              </Tabs.Tab>
+            ))}
+            {pluginTabs.map(tab => (
+              <Tabs.Tab key={tab.id} id={tab.id}>
+                <Plug size={16} />
                 {tab.label}
                 <Tabs.Indicator />
               </Tabs.Tab>
@@ -1417,6 +1441,16 @@ function SettingsLayout() {
               onClearCurrentAccountConfig={handleClearCurrentAccountConfig}
             />
           </Suspense>
+        )}
+        {activeTab === 'plugins' && (
+          <Suspense fallback={<SettingsTabSkeleton />}>
+            <PluginsTab showMessage={showMessage} />
+          </Suspense>
+        )}
+        {activePluginTab && (
+          <div className="h-[70vh] min-h-[400px]">
+            <PluginHost pluginId={activePluginTab.pluginId} viewId={activePluginTab.view} />
+          </div>
         )}
         {activeTab === 'activation' && <ActivationTab />}
         {activeTab === 'about' && (

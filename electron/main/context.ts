@@ -45,6 +45,7 @@ export interface WindowManager {
   completeWelcome(): boolean
   isChatWindowOpen(): boolean
   closeChatWindow(): boolean
+  openPluginWindow(pluginId: string, viewId: string, opts?: { width?: number; height?: number; title?: string }): BrowserWindow
   openPetWindow(): BrowserWindow
   closePetWindow(): void
   isPetWindowOpen(): boolean

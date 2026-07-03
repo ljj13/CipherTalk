@@ -30,6 +30,8 @@ import PersonaChatPage from './pages/PersonaChatPage'
 import MomentsWindow from './pages/MomentsWindow'
 import PetWindow from './pages/PetWindow'
 import PetsPage from './pages/PetsPage'
+import PluginViewPage from './features/plugins/PluginViewPage'
+import PluginHost from './features/plugins/PluginHost'
 import { useAppStore } from './stores/appStore'
 import { useThemeStore } from './stores/themeStore'
 import { useChatStore } from './stores/chatStore'
@@ -582,6 +584,21 @@ function App() {
     return <SkillPreviewWindow />
   }
 
+  // 插件独立窗口：/plugin-window/:pluginId/:viewId
+  if (location.pathname.startsWith('/plugin-window/')) {
+    const [, , pluginWindowId, pluginWindowView] = location.pathname.split('/')
+    return (
+      <div className="standalone-window">
+        <TitleBar variant="standalone" />
+        <div className="flex-1 min-h-0">
+          {pluginWindowId && pluginWindowView && (
+            <PluginHost pluginId={pluginWindowId} viewId={pluginWindowView} />
+          )}
+        </div>
+      </div>
+    )
+  }
+
   if (isPosterStyleWindow) {
     return (
       <div className="poster-style-standalone-window">
@@ -848,6 +865,7 @@ function App() {
               <Route path="/export" element={<ExportPage />} />
               <Route path="/device-connect" element={<Navigate to="/home" replace />} />
               <Route path="/chat-history/:sessionId/:messageId" element={<ChatHistoryPage />} />
+              <Route path="/plugin/:pluginId/:viewId" element={<PluginViewPage />} />
             </Routes>
           </RouteGuard>
         </main>

@@ -6,6 +6,7 @@ import type { ChatSession } from '../../../types/models'
 import type { EmbeddingBuildProgress, EmbeddingBuildTarget, EmbeddingVectorStoreInfo } from '../../../types/electron'
 import { isGroupChat } from '../utils/messageGuards'
 import { SessionAvatar } from './SessionSidebar'
+import PluginChatToolbar from '../../../features/plugins/PluginChatToolbar'
 
 type Progress = {
   current: number
@@ -424,6 +425,10 @@ export function ChatHeader({
         )}
       </div>
       <div className="header-actions">
+        <PluginChatToolbar
+          sessionId={currentSessionId}
+          sessionName={currentSession.displayName || currentSession.username}
+        />
         <Tooltip delay={0}>
           <Tooltip.Trigger>
             <Button

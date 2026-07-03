@@ -39,6 +39,30 @@ contextBridge.exposeInMainWorld('electronAPI', {
     }
   },
 
+  // 插件系统（见 PLUGIN_SYSTEM_PLAN.md）
+  plugin: {
+    list: () => ipcRenderer.invoke('plugin:list') as Promise<{ plugins: any[]; devModeEnabled: boolean }>,
+    enable: (id: string) => ipcRenderer.invoke('plugin:enable', id) as Promise<{ success: boolean; error?: string }>,
+    disable: (id: string) => ipcRenderer.invoke('plugin:disable', id) as Promise<{ success: boolean; error?: string }>,
+    uninstall: (id: string) => ipcRenderer.invoke('plugin:uninstall', id) as Promise<{ success: boolean; error?: string }>,
+    rescan: () => ipcRenderer.invoke('plugin:rescan') as Promise<{ success: boolean }>,
+    setDevMode: (enabled: boolean) => ipcRenderer.invoke('plugin:setDevMode', enabled) as Promise<{ success: boolean }>,
+    addDevPlugin: (dir: string) => ipcRenderer.invoke('plugin:addDevPlugin', dir) as Promise<{ success: boolean; error?: string }>,
+    getViewUrl: (pluginId: string, viewId: string) => ipcRenderer.invoke('plugin:getViewUrl', pluginId, viewId) as Promise<string | null>,
+    invoke: (pluginId: string, method: string, args?: Record<string, unknown>) =>
+      ipcRenderer.invoke('plugin:invoke', pluginId, method, args) as Promise<{ success: boolean; data?: unknown; error?: string }>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback()
+      ipcRenderer.on('plugin:changed', listener)
+      return () => { ipcRenderer.removeListener('plugin:changed', listener) }
+    },
+    onEvent: (callback: (payload: { pluginId: string | null; requiredPermission?: string; event: string; payload: unknown }) => void) => {
+      const listener = (_: any, data: any) => callback(data)
+      ipcRenderer.on('plugin:event', listener)
+      return () => { ipcRenderer.removeListener('plugin:event', listener) }
+    }
+  },
+
   // AI 宠物（petdex 格式）
   pet: {
     listInstalled: () => ipcRenderer.invoke('pet:listInstalled') as Promise<{ success: boolean; pets?: Array<{ slug: string; displayName: string; description: string; builtin?: boolean }>; error?: string }>,

@@ -14,7 +14,8 @@ import { LogService } from './services/logService'
 import type { MainProcessContext, WindowManager } from './main/context'
 import { createWindowManager } from './main/windows/windowManager'
 import { registerModularIpcHandlers } from './main/ipc/register'
-import { registerLocalProtocols } from './main/protocols'
+import { registerLocalProtocols, registerPluginProtocol } from './main/protocols'
+import { pluginManagerService } from './services/pluginManagerService'
 import {
   checkAndConnectOnStartup,
   checkForUpdatesOnStartup,
@@ -87,6 +88,25 @@ protocol.registerSchemesAsPrivileged([
       secure: true,
       supportFetchAPI: true,
       bypassCSP: true
+    }
+  },
+  {
+    // 插件资源协议：standard 使相对路径/origin 语义生效（每个插件独立 origin）
+    scheme: 'ct-plugin',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
+    }
+  },
+  {
+    // 插件媒体一次性 URL（token 短时效，见 pluginMediaService）
+    scheme: 'ct-plugin-media',
+    privileges: {
+      secure: true,
+      supportFetchAPI: true,
+      stream: true
     }
   }
 ])
@@ -235,7 +255,21 @@ if (gotSingleInstanceLock) {
     // 注册自定义协议用于加载本地视频
     markStartupMilestone('startup:local-protocols-register-start')
     registerLocalProtocols()
+    registerPluginProtocol()
     markStartupMilestone('startup:local-protocols-register-done')
+
+    // 插件目录扫描放到启动空闲期，不占启动关键路径
+    setTimeout(() => {
+      try {
+        pluginManagerService.initialize()
+        pluginManagerService.on('changed', () => {
+          ctx.broadcastToWindows('plugin:changed')
+        })
+        ctx.broadcastToWindows('plugin:changed')
+      } catch (error) {
+        ctx.getLogService()?.warn('Plugin', '插件系统初始化失败', { error: String(error) })
+      }
+    }, 1500)
 
     markStartupMilestone('startup:ipc-register-start')
     registerModularIpcHandlers(ctx)

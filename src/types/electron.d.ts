@@ -396,6 +396,26 @@ export interface PersonaBuildProgressInfo {
   detail?: string
 }
 
+export interface PluginContributes {
+  sidebarMenus?: Array<{ id: string; label: string; icon?: string; view: string }>
+  settingsTabs?: Array<{ id: string; label: string; view: string }>
+  chatToolbarButtons?: Array<{ id: string; label: string; icon?: string; view: string }>
+  views?: Record<string, { entry: string; presentation?: 'page' | 'drawer' }>
+}
+
+export interface PluginInfo {
+  id: string
+  name: string
+  version: string
+  description?: string
+  permissions: string[]
+  contributes: PluginContributes
+  isDev: boolean
+  enabled: boolean
+  grantedPermissions: string[]
+  error?: string
+}
+
 export interface ElectronAPI {
   window: {
     minimize: () => void
@@ -435,6 +455,19 @@ export interface ElectronAPI {
     getTldCache: () => Promise<{ tlds: string[]; updatedAt: number } | null>
     setTldCache: (tlds: string[]) => Promise<void>
     onChanged: (callback: (payload: { key: string; value: unknown }) => void) => () => void
+  }
+  plugin: {
+    list: () => Promise<{ plugins: PluginInfo[]; devModeEnabled: boolean }>
+    enable: (id: string) => Promise<{ success: boolean; error?: string }>
+    disable: (id: string) => Promise<{ success: boolean; error?: string }>
+    uninstall: (id: string) => Promise<{ success: boolean; error?: string }>
+    rescan: () => Promise<{ success: boolean }>
+    setDevMode: (enabled: boolean) => Promise<{ success: boolean }>
+    addDevPlugin: (dir: string) => Promise<{ success: boolean; error?: string }>
+    getViewUrl: (pluginId: string, viewId: string) => Promise<string | null>
+    invoke: (pluginId: string, method: string, args?: Record<string, unknown>) => Promise<{ success: boolean; data?: unknown; error?: string }>
+    onChanged: (callback: () => void) => () => void
+    onEvent: (callback: (payload: { pluginId: string | null; requiredPermission?: string; event: string; payload: unknown }) => void) => () => void
   }
   pet: {
     listInstalled: () => Promise<{ success: boolean; pets?: Array<{ slug: string; displayName: string; description: string; builtin?: boolean }>; error?: string }>

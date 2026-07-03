@@ -5,6 +5,8 @@ import { Home, MessageSquare, Database, Settings, SquareChevronLeft, SquareChevr
 import { MCP } from '@lobehub/icons'
 import packageJson from '../../package.json'
 import { useAppStore } from '../stores/appStore'
+import { usePluginStore, ensurePluginStoreSubscribed, selectEnabledPlugins } from '../stores/pluginStore'
+import { PluginIcon } from '../features/plugins/PluginIcon'
 import { useDeviceConnectStatus } from '../hooks/useDeviceConnectStatus'
 import { DeviceConnectStatusDot } from './DeviceConnectStatusDot'
 import DeviceConnectDialog from './DeviceConnectDialog'
@@ -43,6 +45,9 @@ function Sidebar({ autoCollapse = false }: { autoCollapse?: boolean }) {
  const [collapsed, setCollapsed] = useState(false)
  const [deviceConnectOpen, setDeviceConnectOpen] = useState(false)
   const [diaryEnabled, setDiaryEnabled] = useState(true)
+  const plugins = usePluginStore(state => state.plugins)
+
+  useEffect(() => { ensurePluginStoreSubscribed() }, [])
  const userDisplayName = userInfo?.nickName?.trim() || userInfo?.alias?.trim() || '未连接用户'
   const userInitial = userDisplayName.slice(0, 1).toUpperCase()
 
@@ -91,6 +96,20 @@ function Sidebar({ autoCollapse = false }: { autoCollapse?: boolean }) {
     { key: 'data-management', label: '数据管理', icon: <Database size={NAV_ICON_SIZE} />, type: 'route', path: '/data-management' },
     { key: 'mcp', label: 'MCP & Skills', icon: <MCP size={NAV_ICON_SIZE} />, type: 'route', path: '/mcp' },
  ]
+
+  // 插件侧边栏贡献点（声明式：只读 manifest，不执行插件代码）
+  for (const plugin of selectEnabledPlugins(plugins)) {
+    for (const menu of plugin.contributes.sidebarMenus ?? []) {
+      navItems.push({
+        key: `plugin:${plugin.id}:${menu.id}`,
+        label: menu.label,
+        icon: <PluginIcon name={menu.icon} size={NAV_ICON_SIZE} />,
+        type: 'route',
+        path: `/plugin/${plugin.id}/${menu.view}`,
+      })
+    }
+  }
+
   const visibleNavItems = diaryEnabled ? navItems : navItems.filter((item) => item.key !== 'diary')
  const activeNavKey = navItems.find(item => item.type === 'route' && isActive(item.path))?.key
 
