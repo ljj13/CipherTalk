@@ -17,8 +17,8 @@ import Select from '../../Select'
 
 type ThemeMode = 'light' | 'dark' | 'system'
 
-// 磁贴窗口靠 Win32 跟踪微信主窗口，仅 Windows 可用
-const IS_WINDOWS = navigator.platform.toLowerCase().includes('win')
+// 磁贴窗口支持 Windows/macOS；Linux 暂不显示入口。
+const SUPPORTS_REPLY_TILE = /win|mac/.test(navigator.platform.toLowerCase())
 
 const toThemeMode = (key: Key): ThemeMode => String(key) as ThemeMode
 const toNavLayout = (key: Key): NavLayout => String(key) as NavLayout
@@ -85,7 +85,7 @@ function AppearanceTab() {
   // 磁贴全局开关：立即生效（不走设置页的暂存-保存模型），本地态从主进程读
   const [replyTileEnabled, setReplyTileEnabled] = useState(false)
   useEffect(() => {
-    if (IS_WINDOWS) void window.electronAPI.window.getReplyTileEnabled().then(setReplyTileEnabled)
+    if (SUPPORTS_REPLY_TILE) void window.electronAPI.window.getReplyTileEnabled().then(setReplyTileEnabled)
   }, [])
   const [backgroundImporting, setBackgroundImporting] = useState(false)
   const [backgroundError, setBackgroundError] = useState('')
@@ -146,7 +146,7 @@ function AppearanceTab() {
         </Tabs.ListContainer>
       </Tabs>
 
-      {IS_WINDOWS && (
+      {SUPPORTS_REPLY_TILE && (
         <>
           <h3 className="section-title" style={{ marginTop: '2rem' }}>回复建议磁贴</h3>
           <Switch

@@ -503,6 +503,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openSkillPreviewWindow: (skillName: string) => ipcRenderer.invoke('window:openSkillPreviewWindow', skillName) as Promise<boolean>,
     setReplyTileEnabled: (enabled: boolean) => ipcRenderer.invoke('window:setReplyTileEnabled', enabled) as Promise<boolean>,
     getReplyTileEnabled: () => ipcRenderer.invoke('window:getReplyTileEnabled') as Promise<boolean>,
+    replyTileReady: () => ipcRenderer.send('window:replyTileReady'),
     replyTileRefresh: () => ipcRenderer.send('window:replyTileRefresh'),
     replyTile: {
       push: (entry: { sessionId: string; sessionName: string; avatarUrl?: string; state: 'pending' | 'loading' | 'error' | 'ready' | 'gone'; suggestions?: string[]; batches?: Array<{ id: string; targetKey: string; quote: string; suggestions: string[] }>; pendingContinue?: boolean; error?: string }) =>

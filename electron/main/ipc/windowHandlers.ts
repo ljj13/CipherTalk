@@ -11,7 +11,7 @@ const titleBarOverlayStates = new WeakMap<BrowserWindow, TitleBarOverlayState>()
 
 function shouldForceHideMacWindowButtons(win: BrowserWindow): boolean {
   const url = win.webContents.getURL()
-  return url.includes('#/splash') || url.includes('#/pet-window')
+  return url.includes('#/splash') || url.includes('#/pet-window') || url.includes('#/reply-tile-window')
 }
 
 function applyTitleBarOverlay(win: BrowserWindow, state: TitleBarOverlayState) {
@@ -37,6 +37,10 @@ function applyTitleBarOverlay(win: BrowserWindow, state: TitleBarOverlayState) {
   }
 }
 
+function supportsReplyTileWindow(): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin'
+}
+
 export function registerWindowHandlers(ctx: MainProcessContext): void {
   ipcMain.on('window:splashReady', (event) => {
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -45,6 +49,14 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
       win.setWindowButtonPosition({ x: -100, y: -100 })
     }
     ctx.setSplashReady(true)
+  })
+
+  ipcMain.on('window:replyTileReady', (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender)
+    if (win && process.platform === 'darwin' && shouldForceHideMacWindowButtons(win)) {
+      win.setWindowButtonVisibility(false)
+      win.setWindowButtonPosition({ x: -100, y: -100 })
+    }
   })
 
   ipcMain.on('window:minimize', (event) => {
@@ -141,7 +153,7 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
 
   // 磁贴后台生成服务 + 启动时按全局开关恢复
   replyTileService.init(ctx)
-  if (process.platform === 'win32' && ctx.getConfigService()?.get('replyTileEnabled') === true) {
+  if (supportsReplyTileWindow() && ctx.getConfigService()?.get('replyTileEnabled') === true) {
     ctx.getWindowManager().setReplyTileEnabled(true)
     replyTileService.setRunning(true)
   }
@@ -172,7 +184,7 @@ export function registerWindowHandlers(ctx: MainProcessContext): void {
   })
 
   ipcMain.handle('window:getReplyTileEnabled', () => {
-    return process.platform === 'win32' && ctx.getConfigService()?.get('replyTileEnabled') === true
+    return supportsReplyTileWindow() && ctx.getConfigService()?.get('replyTileEnabled') === true
   })
 
   ipcMain.on('window:replyTileRefresh', () => {

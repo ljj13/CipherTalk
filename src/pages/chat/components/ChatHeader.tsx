@@ -19,8 +19,8 @@ import {
 import { SessionAvatar } from './SessionSidebar'
 import PluginChatToolbar from '../../../features/plugins/PluginChatToolbar'
 
-// 磁贴窗口靠 Win32 跟踪微信主窗口，仅 Windows 可用，非 Windows 不显示该开关
-const IS_WINDOWS = navigator.platform.toLowerCase().includes('win')
+// 磁贴窗口支持 Windows/macOS；Linux 暂不显示该开关。
+const SUPPORTS_REPLY_TILE = /win|mac/.test(navigator.platform.toLowerCase())
 
 type Progress = {
   current: number
@@ -620,7 +620,7 @@ export function ChatHeader({
                     </Switch>
                   </span>
                 </Dropdown.Item>
-                {IS_WINDOWS && (
+                {SUPPORTS_REPLY_TILE && (
                   <Dropdown.Item id="tile" textValue="磁贴窗口">
                     <LayoutSideContentRight className="size-4 shrink-0 text-muted" />
                     <Label>磁贴窗口</Label>

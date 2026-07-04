@@ -2,11 +2,12 @@ import { screen } from 'electron'
 import { wxKeyService } from './wxKeyService'
 
 /**
- * Windows-only WeChat main-window tracker for the reply suggestion tile.
+ * WeChat main-window tracker for the reply suggestion tile.
  *
  * WeChat image preview / media viewer windows are also top-level windows owned by
  * Weixin.exe, so do not pick the largest WeChat-owned window. Track only the real
- * Chinese-titled main window instead.
+ * Chinese-titled main window on Windows. macOS uses CoreGraphics window metadata
+ * and falls back to the largest normal WeChat window when the title is not exposed.
  */
 
 export type WeChatWindowState = {
@@ -37,6 +38,10 @@ const SWP_NOSIZE = 0x0001
 const SWP_NOMOVE = 0x0002
 const SWP_NOACTIVATE = 0x0010
 const SWP_NOOWNERZORDER = 0x0200
+const MAC_WINDOW_LIST_OPTIONS = 0x0001 | 0x0010
+const MAC_NORMAL_WINDOW_LAYER = 0
+const K_CF_STRING_ENCODING_UTF8 = 0x08000100
+const K_CF_NUMBER_DOUBLE_TYPE = 13
 
 let loaded = false
 let unavailable = false
@@ -49,6 +54,15 @@ let SetWinEventHook: any, UnhookWinEvent: any, WinEventProc: any
 let pidBuf: any = null
 let rectBuf: any = null
 let titleBuf: Buffer | null = null
+
+let macLoaded = false
+let macUnavailable = false
+let macKoffi: any = null
+let CGWindowListCopyWindowInfo: any, CFArrayGetCount: any, CFArrayGetValueAtIndex: any
+let CFDictionaryGetValue: any, CFStringCreateWithCString: any, CFStringGetCString: any
+let CFNumberGetValue: any, CFBooleanGetValue: any, CFRelease: any
+let macKeys: Record<string, any> | null = null
+let macNumberBuf: any = null
 
 let cachedPid: number | null = null
 let lastPidProbe = 0
@@ -86,6 +100,47 @@ function ensureLoaded(): boolean {
   }
 }
 
+function ensureMacLoaded(): boolean {
+  if (macLoaded) return !macUnavailable
+  macLoaded = true
+
+  try {
+    macKoffi = require('koffi')
+    const coreGraphics = macKoffi.load('/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics')
+    const coreFoundation = macKoffi.load('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+    CGWindowListCopyWindowInfo = coreGraphics.func('void* CGWindowListCopyWindowInfo(uint32 option, uint32 relativeToWindow)')
+    CFArrayGetCount = coreFoundation.func('long CFArrayGetCount(void* theArray)')
+    CFArrayGetValueAtIndex = coreFoundation.func('void* CFArrayGetValueAtIndex(void* theArray, long idx)')
+    CFDictionaryGetValue = coreFoundation.func('void* CFDictionaryGetValue(void* dict, void* key)')
+    CFStringCreateWithCString = coreFoundation.func('void* CFStringCreateWithCString(void* alloc, const char* cStr, uint32 encoding)')
+    CFStringGetCString = coreFoundation.func('bool CFStringGetCString(void* string, void* buffer, long bufferSize, uint32 encoding)')
+    CFNumberGetValue = coreFoundation.func('bool CFNumberGetValue(void* number, int32 theType, void* valuePtr)')
+    CFBooleanGetValue = coreFoundation.func('bool CFBooleanGetValue(void* boolean)')
+    CFRelease = coreFoundation.func('void CFRelease(void* cf)')
+    macNumberBuf = macKoffi.alloc('double', 1)
+    macKeys = {
+      ownerName: createCFString('kCGWindowOwnerName'),
+      name: createCFString('kCGWindowName'),
+      ownerPid: createCFString('kCGWindowOwnerPID'),
+      layer: createCFString('kCGWindowLayer'),
+      bounds: createCFString('kCGWindowBounds'),
+      onscreen: createCFString('kCGWindowIsOnscreen'),
+      x: createCFString('X'),
+      y: createCFString('Y'),
+      width: createCFString('Width'),
+      height: createCFString('Height'),
+    }
+    return true
+  } catch {
+    macUnavailable = true
+    return false
+  }
+}
+
+function createCFString(value: string): any {
+  return CFStringCreateWithCString(null, value, K_CF_STRING_ENCODING_UTF8)
+}
+
 function readPid(hwnd: any): number {
   GetWindowThreadProcessId(hwnd, pidBuf)
   return koffi.decode(pidBuf, 'uint32', 1)[0]
@@ -111,6 +166,16 @@ function readTitle(hwnd: any): string {
 
 function isWeChatMainTitle(title: string): boolean {
   return title === '\u5fae\u4fe1'
+}
+
+function rectsNear(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): boolean {
+  return Math.abs(a.x - b.x) <= 2
+    && Math.abs(a.y - b.y) <= 2
+    && Math.abs(a.width - b.width) <= 2
+    && Math.abs(a.height - b.height) <= 2
 }
 
 function hwndAddress(hwnd: any): bigint {
@@ -145,6 +210,7 @@ function foregroundWindow(): { hwnd: any; hwndAddr: bigint; bounds: { x: number;
 }
 
 export function probeWeChatWindow(): WeChatWindowState {
+  if (process.platform === 'darwin') return probeMacWeChatWindow()
   if (process.platform !== 'win32' || !ensureLoaded()) return NOT_FOUND
 
   let pid = cachedPid
@@ -174,6 +240,119 @@ export function probeWeChatWindow(): WeChatWindowState {
     foregroundBounds: foreground?.bounds || null,
     bounds: { x: dip.x, y: dip.y, width: dip.width, height: dip.height },
   }
+}
+
+function probeMacWeChatWindow(): WeChatWindowState {
+  if (!ensureMacLoaded() || !macKeys) return NOT_FOUND
+
+  let windowList: any = null
+  try {
+    windowList = CGWindowListCopyWindowInfo(MAC_WINDOW_LIST_OPTIONS, 0)
+    if (!windowList) return NOT_FOUND
+    const count = Number(CFArrayGetCount(windowList))
+    let main: MacWindowInfo | null = null
+    let foreground: MacWindowInfo | null = null
+
+    for (let i = 0; i < count; i++) {
+      const dict = CFArrayGetValueAtIndex(windowList, i)
+      const info = readMacWindowInfo(dict)
+      if (!info) continue
+      if (!foreground && info.ownerPid !== process.pid) foreground = info
+      if (!isMacWeChatWindow(info)) continue
+
+      const score = info.area + (isWeChatMainTitle(info.title) || info.title === 'WeChat' ? 1_000_000_000 : 0)
+      if (!main || score > main.score) main = { ...info, score }
+    }
+
+    if (!main) return NOT_FOUND
+
+    const foregroundActive = Boolean(foreground && foreground.ownerPid === main.ownerPid && rectsNear(main.bounds, foreground.bounds))
+    return {
+      found: true,
+      minimized: false,
+      foregroundActive,
+      otherForegroundActive: Boolean(foreground && !foregroundActive),
+      foregroundBounds: foreground?.bounds || null,
+      bounds: main.bounds,
+    }
+  } catch {
+    return NOT_FOUND
+  } finally {
+    if (windowList) {
+      try { CFRelease(windowList) } catch { /* ignore */ }
+    }
+  }
+}
+
+type MacWindowInfo = {
+  ownerPid: number
+  ownerName: string
+  title: string
+  bounds: { x: number; y: number; width: number; height: number }
+  area: number
+  score: number
+}
+
+function readMacWindowInfo(dict: any): MacWindowInfo | null {
+  if (!macKeys) return null
+
+  const layer = readCFNumber(CFDictionaryGetValue(dict, macKeys.layer))
+  const onscreen = readCFBoolean(CFDictionaryGetValue(dict, macKeys.onscreen))
+  const boundsDict = CFDictionaryGetValue(dict, macKeys.bounds)
+  const bounds = boundsDict ? readMacBounds(boundsDict) : null
+  if (layer !== MAC_NORMAL_WINDOW_LAYER || !onscreen || !bounds || bounds.width <= 0 || bounds.height <= 0) return null
+
+  const ownerPid = Math.round(readCFNumber(CFDictionaryGetValue(dict, macKeys.ownerPid)))
+  const ownerName = readCFString(CFDictionaryGetValue(dict, macKeys.ownerName))
+  const title = readCFString(CFDictionaryGetValue(dict, macKeys.name))
+  return {
+    ownerPid,
+    ownerName,
+    title,
+    bounds,
+    area: bounds.width * bounds.height,
+    score: 0
+  }
+}
+
+function readMacBounds(boundsDict: any): MacWindowInfo['bounds'] | null {
+  if (!macKeys) return null
+  const x = readCFNumber(CFDictionaryGetValue(boundsDict, macKeys.x))
+  const y = readCFNumber(CFDictionaryGetValue(boundsDict, macKeys.y))
+  const width = readCFNumber(CFDictionaryGetValue(boundsDict, macKeys.width))
+  const height = readCFNumber(CFDictionaryGetValue(boundsDict, macKeys.height))
+  if (![x, y, width, height].every(Number.isFinite)) return null
+  return { x, y, width, height }
+}
+
+function readCFNumber(value: any): number {
+  if (!value || !macNumberBuf) return 0
+  try {
+    if (!CFNumberGetValue(value, K_CF_NUMBER_DOUBLE_TYPE, macNumberBuf)) return 0
+    return Number(macKoffi.decode(macNumberBuf, 'double', 1)[0])
+  } catch {
+    return 0
+  }
+}
+
+function readCFBoolean(value: any): boolean {
+  if (!value) return false
+  try { return Boolean(CFBooleanGetValue(value)) } catch { return false }
+}
+
+function readCFString(value: any): string {
+  if (!value) return ''
+  const buffer = Buffer.alloc(512)
+  try {
+    if (!CFStringGetCString(value, buffer, buffer.length, K_CF_STRING_ENCODING_UTF8)) return ''
+    return buffer.toString('utf8').replace(/\u0000+$/, '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function isMacWeChatWindow(info: MacWindowInfo): boolean {
+  return info.ownerName === 'WeChat' || info.ownerName === '微信'
 }
 
 function getWeChatPidForHook(): number | null {

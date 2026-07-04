@@ -12,7 +12,7 @@ export type ReplySuggestSettings = {
   count: number
   /** 深度模式：更长历史上下文 + 子进程内带会话检索工具的小步 Agent 循环 */
   deep: boolean
-  /** 磁贴窗口：把建议贴到微信主窗口旁的独立窗口显示（仅 Windows） */
+  /** 磁贴窗口：把建议贴到微信主窗口旁的独立窗口显示 */
   tile: boolean
 }
 

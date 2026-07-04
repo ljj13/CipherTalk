@@ -31,6 +31,10 @@ type ReleaseAnnouncementPayload = {
 
 const MAIN_WINDOW_ROUTES = new Set(['/home', '/agent', '/settings', '/pets', '/diary', '/export'])
 
+function supportsReplyTileWindow(): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin'
+}
+
 function getReleaseAnnouncementPath(): string {
   const isDev = !!process.env.VITE_DEV_SERVER_URL
   return isDev
@@ -396,6 +400,8 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
       width: REPLY_TILE_WIDTH,
       height: 400,
       frame: false,
+      titleBarStyle: 'hidden',
+      trafficLightPosition: { x: -100, y: -100 },
       transparent: true,
       backgroundColor: '#00000000',
       resizable: false,
@@ -413,6 +419,16 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
         nodeIntegration: false,
         webSecurity: false
       }
+    })
+    hideMacWindowControls(replyTileWindow)
+    replyTileWindow.once('ready-to-show', () => {
+      if (replyTileWindow && !replyTileWindow.isDestroyed()) hideMacWindowControls(replyTileWindow)
+    })
+    replyTileWindow.on('show', () => {
+      if (replyTileWindow && !replyTileWindow.isDestroyed()) hideMacWindowControls(replyTileWindow)
+    })
+    replyTileWindow.on('focus', () => {
+      if (replyTileWindow && !replyTileWindow.isDestroyed()) hideMacWindowControls(replyTileWindow)
     })
     replyTileWindow.setAlwaysOnTop(true, 'screen-saver')
     replyTileWindow.on('closed', () => {
@@ -436,7 +452,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     startReplyTileEventWatch()
     replyTileTimer = setInterval(() => {
       const now = Date.now()
-      const fallbackMs = replyTileEventWatchDisposer ? 1000 : 120
+      const fallbackMs = replyTileEventWatchDisposer ? 1000 : (process.platform === 'darwin' ? 600 : 120)
       if (now - replyTileLastFallbackPollAt >= fallbackMs) {
         replyTileLastFallbackPollAt = now
         repositionReplyTile()
@@ -1557,7 +1573,7 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     },
 
     setReplyTileEnabled(enabled: boolean) {
-      if (process.platform !== 'win32') return // 磁贴仅 Windows：靠 Win32 跟踪微信窗口
+      if (!supportsReplyTileWindow()) return
       replyTileEnabled = enabled
       if (enabled) {
         openReplyTileWindow()

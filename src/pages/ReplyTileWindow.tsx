@@ -46,6 +46,7 @@ export default function ReplyTileWindow() {
     document.body.style.background = 'transparent'
     document.body.style.overflow = 'hidden'
     if (root) root.style.background = 'transparent'
+    window.electronAPI.window.replyTileReady()
 
     const unsubscribe = window.electronAPI.window.replyTile.onUpdate((entry) => {
       const map = entriesRef.current

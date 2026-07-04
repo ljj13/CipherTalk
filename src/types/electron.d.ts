@@ -475,6 +475,7 @@ export interface ElectronAPI {
     onImageListUpdate: (callback: (data: { imageList: ImageListItem[], currentIndex: number }) => void) => () => void
     setReplyTileEnabled: (enabled: boolean) => Promise<boolean>
     getReplyTileEnabled: () => Promise<boolean>
+    replyTileReady: () => void
     replyTileRefresh: () => void
     replyTile: {
       push: (entry: { sessionId: string; sessionName: string; avatarUrl?: string; state: 'pending' | 'loading' | 'error' | 'ready' | 'gone'; suggestions?: string[]; batches?: Array<{ id: string; targetKey: string; quote: string; suggestions: string[] }>; pendingContinue?: boolean; error?: string }) => void

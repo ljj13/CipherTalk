@@ -5,7 +5,7 @@ import type { MainProcessContext, ReplyTileBatch, ReplyTileEntry } from '../main
 import type { ChatSession, Message } from './chat/types'
 
 /**
- * 磁贴后台生成（Windows，主进程）：为「参与磁贴」的会话在收到新消息时生成回复建议，推给磁贴窗口。
+ * 磁贴后台生成（主进程）：为「参与磁贴」的会话在收到新消息时生成回复建议，推给磁贴窗口。
  * 参与 = replySuggestSessions[username].enabled && .tile。当前正在软件里打开的会话交给渲染端全保真生成，这里跳过。
  * 挂在 chatService 'dbChange' 事件上（复用监控桥，不新增轮询），思路与 notifyService 一致。
  * 上下文与渲染端 replySuggest.ts 对齐：语音换转写缓存、对方待回复图片、likeme/deep 画像，全保真。
