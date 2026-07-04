@@ -851,7 +851,8 @@ export function createSearchSimilarMedia(uploadedMediaContext?: AgentUploadedMed
   })
 }
 
-function currentModelVisionSupport(providerConfig: AgentProviderConfig): boolean | undefined {
+/** 当前模型是否标记支持图像输入（models.dev 模态数据）；目录里查不到返回 undefined（未知，可尝试）。回复建议引擎也复用。 */
+export function currentModelVisionSupport(providerConfig: AgentProviderConfig): boolean | undefined {
   try {
     const def = getProviderDefinition(providerConfig.name)
     const details = def?.modelDetails || []

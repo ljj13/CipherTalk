@@ -10,9 +10,38 @@ type Phase = 'confirm' | 'building' | 'done' | 'error'
 
 /**
  * 克隆我自己浮层：在「回复建议」下拉里触发，用与克隆好友一致的 AI 管线提炼
- * "我"对该联系人的说话风格自画像（按 self: 前缀存储）。构建动画复刻 PersonaChatPage
- * 的呼吸光环 + ProgressBar 风格。
+ * "我"对该联系人的说话风格自画像（按 self: 前缀存储）。
+ *
+ * 构建动画：左边联系人头像 + 中间数据线（亮带流动 + 光点传输）+ 右边"我"的头像，
+ * 表达"从两人的对话记录里提炼我的画像"。
  */
+
+/** 轻量圆形头像：直接吃 url，处理加载失败/首字母兜底。用于渲染"我"的头像。 */
+function MyAvatar({ url, name, size }: { url?: string; name: string; size: number }) {
+  const [failed, setFailed] = useState(false)
+  const initial = name.trim().slice(0, 1) || '我'
+  if (!url || failed) {
+    return (
+      <div
+        className="clone-self-avatar clone-self-avatar--fallback"
+        style={{ width: size, height: size, fontSize: size * 0.42 }}
+        aria-label="我的头像"
+      >
+        {initial}
+      </div>
+    )
+  }
+  return (
+    <img
+      className="clone-self-avatar"
+      src={url}
+      alt="我的头像"
+      style={{ width: size, height: size }}
+      onError={() => setFailed(true)}
+    />
+  )
+}
+
 export function CloneSelfModal({
   isOpen,
   onOpenChange,
@@ -25,6 +54,7 @@ export function CloneSelfModal({
   const [phase, setPhase] = useState<Phase>('confirm')
   const [buildProgress, setBuildProgress] = useState<PersonaBuildProgressInfo | null>(null)
   const [buildError, setBuildError] = useState<string | null>(null)
+  const [myAvatarUrl, setMyAvatarUrl] = useState<string | undefined>(undefined)
   const { showTopToast } = useTopToast()
   // 自画像存储键带 self: 前缀；主进程进度事件也用同一前缀的 sessionId 推回
   const progressSessionId = `self:${session.username}`
@@ -37,6 +67,16 @@ export function CloneSelfModal({
       setBuildError(null)
     }
   }, [isOpen, session.username])
+
+  // 加载"我"的头像（克隆动画右边用）
+  useEffect(() => {
+    if (!isOpen) return
+    let cancelled = false
+    void window.electronAPI.chat.getMyAvatarUrl().then((res) => {
+      if (!cancelled && res.success && res.avatarUrl) setMyAvatarUrl(res.avatarUrl)
+    }).catch(() => { /* 头像加载失败用首字母兜底 */ })
+    return () => { cancelled = true }
+  }, [isOpen])
 
   // 订阅构建进度，只收本会话的自画像事件
   useEffect(() => {
@@ -110,12 +150,21 @@ export function CloneSelfModal({
             )}
 
             {phase === 'building' && (
-              <div className="flex flex-col items-center gap-4 px-4">
-                {/* 呼吸光环：AI 单次调用期间百分比不动，靠动画表明没卡死（复刻 PersonaChatPage 克隆动画） */}
-                <div className="relative flex size-20 items-center justify-center">
-                  <span className="absolute inset-0 animate-ping rounded-full bg-accent/20 animation-duration-[2.4s]" />
-                  <span className="absolute inset-1 animate-pulse rounded-full bg-accent/15" />
-                  <SessionAvatar session={session} size={64} />
+              <div className="flex flex-col items-center gap-5 px-4">
+                {/* 两头像 + 数据线传输：左 TA、中间数据线、右"我" */}
+                <div className="clone-self-transmit">
+                  <div className="clone-self-transmit__avatar clone-self-transmit__avatar--left">
+                    <SessionAvatar session={session} size={56} />
+                  </div>
+                  <div className="clone-self-transmit__line" aria-hidden="true">
+                    <span className="clone-self-transmit__flow" />
+                    <span className="clone-self-transmit__dot clone-self-transmit__dot--1" />
+                    <span className="clone-self-transmit__dot clone-self-transmit__dot--2" />
+                    <span className="clone-self-transmit__dot clone-self-transmit__dot--3" />
+                  </div>
+                  <div className="clone-self-transmit__avatar clone-self-transmit__avatar--right">
+                    <MyAvatar url={myAvatarUrl} name="我" size={56} />
+                  </div>
                 </div>
                 <h2 className="text-base font-semibold text-foreground">正在克隆我自己</h2>
                 <ProgressBar aria-label="克隆进度" className="w-full" value={buildProgress?.percent ?? 0} maxValue={100}>

@@ -1351,12 +1351,22 @@ export interface ElectronAPI {
     replySuggest: (
       input: {
         contactName: string
+        /** 会话 username：深度模式的历史检索、likeme 的真实问答对检索需要 */
+        sessionId?: string
         context: Array<{ fromMe: boolean; text: string }>
         style: string
         count: number
+        /** 深度模式：子进程内跑带会话检索工具的小步 Agent 循环 */
+        deep?: boolean
         myRecentTexts?: string[]
         /** likeme 模式下由自画像画像卡渲染成的提示文本，优先于 myRecentTexts */
         myPersonaContext?: string
+        /** 自画像统计（我平均一轮连发几条/每条字数），用于连发自适应 */
+        myStats?: { avgBurst?: number; avgChars?: number }
+        /** 深度模式时对方的画像提示文本（克隆过 TA 才有） */
+        friendPersonaContext?: string
+        /** 对方刚发来待回复的图片（base64，时间正序）；模型标记不支持图像输入时引擎侧忽略 */
+        images?: Array<{ base64: string }>
       },
       modelConfig?: unknown
     ) => Promise<{ success: boolean; suggestions?: string[]; error?: string }>

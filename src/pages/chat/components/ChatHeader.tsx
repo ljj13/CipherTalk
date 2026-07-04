@@ -1,6 +1,6 @@
 import { Aperture, ArrowDownToLine, ArrowsRotateLeft, Bell, BellSlash, Bulb, CircleCheck, CircleDashed, CircleInfo, FaceRobot, FileText, Layers, Microphone, Picture, Sparkles } from '@gravity-ui/icons'
 import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
-import { Button, Drawer, Dropdown, Label, Tooltip } from '@heroui/react'
+import { Button, Drawer, Dropdown, Label, Switch, Tooltip } from '@heroui/react'
 import { CloneSelfModal } from './CloneSelfModal'
 import { DateJumpPicker } from './DateJumpPicker'
 import type { ChatSession } from '../../../types/models'
@@ -488,40 +488,45 @@ export function ChatHeader({
           <Tooltip.Content placement="bottom">刷新消息</Tooltip.Content>
         </Tooltip>
 
-        <Dropdown>
-          <Button
-            isIconOnly
-            size="sm"
-            variant="ghost"
-            aria-label="向量化（语义索引）"
-            isDisabled={vecDisabled}
-          >
-            {vecBuilding
-              ? <CircleDashed width={18} height={18} className="animate-spin" />
-              : <Sparkles width={18} height={18} className={(vecStatus && (vecStatus.count > 0 || vecStatus.mediaCount > 0)) ? 'text-primary' : ''} />}
-          </Button>
-          <Dropdown.Popover className="min-w-64" placement="bottom end">
-            <Dropdown.Menu
-              disabledKeys={vecStatus && !vecStatus.mediaEnabled ? ['image'] : undefined}
-              onAction={(key) => void handleVectorize(String(key) as EmbeddingBuildTarget)}
-            >
-              <Dropdown.Item id="text" textValue="向量化文本">
-                <FileText className="size-4 shrink-0 text-muted" />
-                <Label>向量化文本</Label>
-                <span className="ml-auto text-muted-foreground text-xs">{vecStore?.count ?? vecStatus?.count ?? 0} 段</span>
-              </Dropdown.Item>
-              <Dropdown.Item id="image" textValue="向量化图片">
-                <Picture className="size-4 shrink-0 text-muted" />
-                <Label>向量化图片</Label>
-                <span className="ml-auto text-muted-foreground text-xs">{vecStore?.mediaCount ?? vecStatus?.mediaCount ?? 0} 张</span>
-              </Dropdown.Item>
-              <Dropdown.Item id="all" textValue="向量化文本和图片">
-                <Layers className="size-4 shrink-0 text-muted" />
-                <Label>向量化全部</Label>
-              </Dropdown.Item>
-            </Dropdown.Menu>
-          </Dropdown.Popover>
-        </Dropdown>
+        <Tooltip delay={0}>
+          <Tooltip.Trigger>
+            <Dropdown>
+              <Button
+                isIconOnly
+                size="sm"
+                variant="ghost"
+                aria-label="向量化（语义索引）"
+                isDisabled={vecDisabled}
+              >
+                {vecBuilding
+                  ? <CircleDashed width={18} height={18} className="animate-spin" />
+                  : <Sparkles width={18} height={18} className={(vecStatus && (vecStatus.count > 0 || vecStatus.mediaCount > 0)) ? 'text-primary' : ''} />}
+              </Button>
+              <Dropdown.Popover className="min-w-64" placement="bottom end">
+                <Dropdown.Menu
+                  disabledKeys={vecStatus && !vecStatus.mediaEnabled ? ['image'] : undefined}
+                  onAction={(key) => void handleVectorize(String(key) as EmbeddingBuildTarget)}
+                >
+                  <Dropdown.Item id="text" textValue="向量化文本">
+                    <FileText className="size-4 shrink-0 text-muted" />
+                    <Label>向量化文本</Label>
+                    <span className="ml-auto text-muted-foreground text-xs">{vecStore?.count ?? vecStatus?.count ?? 0} 段</span>
+                  </Dropdown.Item>
+                  <Dropdown.Item id="image" textValue="向量化图片">
+                    <Picture className="size-4 shrink-0 text-muted" />
+                    <Label>向量化图片</Label>
+                    <span className="ml-auto text-muted-foreground text-xs">{vecStore?.mediaCount ?? vecStatus?.mediaCount ?? 0} 张</span>
+                  </Dropdown.Item>
+                  <Dropdown.Item id="all" textValue="向量化文本和图片">
+                    <Layers className="size-4 shrink-0 text-muted" />
+                    <Label>向量化全部</Label>
+                  </Dropdown.Item>
+                </Dropdown.Menu>
+              </Dropdown.Popover>
+            </Dropdown>
+          </Tooltip.Trigger>
+          <Tooltip.Content placement="bottom">{vecTooltip}</Tooltip.Content>
+        </Tooltip>
 
         {isPrivateSession && (
           <Tooltip delay={0}>
@@ -541,20 +546,21 @@ export function ChatHeader({
         )}
 
         {isPrivateSession && (
-          <Dropdown>
-            <Button
-              isIconOnly
-              size="sm"
-              variant="ghost"
-              aria-label="回复建议设置"
-            >
-              <Bulb width={18} height={18} className={replySettings.enabled ? 'text-primary' : ''} />
-            </Button>
-            <Dropdown.Popover className="min-w-56" placement="bottom end">
+          <Tooltip delay={0}>
+            <Tooltip.Trigger>
+              <Dropdown>
+                <Button
+                  isIconOnly
+                  size="sm"
+                  variant="ghost"
+                  aria-label="回复建议设置"
+                >
+                  <Bulb width={18} height={18} className={replySettings.enabled ? 'text-primary' : ''} />
+                </Button>
+                <Dropdown.Popover className="min-w-56" placement="bottom end">
               <Dropdown.Menu
                 onAction={(key) => {
-                  if (key === 'toggle') patchReplySettings({ enabled: !replySettings.enabled })
-                  if (key === 'deep') patchReplySettings({ deep: !replySettings.deep })
+                  // 自动建议/深度模式由各自的 Switch 独立切换，不走整行 onAction
                   if (key === 'cloneSelf') setCloneSelfOpen(true)
                 }}
               >
@@ -573,8 +579,37 @@ export function ChatHeader({
                 <Dropdown.Item id="toggle" textValue="自动建议">
                   <Bulb className="size-4 shrink-0 text-muted" />
                   <Label>自动建议</Label>
-                  <span className={`ml-auto text-xs ${replySettings.enabled ? 'text-primary' : 'text-muted-foreground'}`}>
-                    {replySettings.enabled ? '已开启' : '已关闭'}
+                  <span
+                    className="ml-auto inline-flex pointer-events-auto"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Switch
+                      aria-label="自动建议"
+                      isSelected={replySettings.enabled}
+                      onChange={(v) => patchReplySettings({ enabled: v })}
+                    >
+                      <Switch.Control>
+                        <Switch.Thumb />
+                      </Switch.Control>
+                    </Switch>
+                  </span>
+                </Dropdown.Item>
+                <Dropdown.Item id="deep" textValue="深度模式">
+                  <Layers className="size-4 shrink-0 text-muted" />
+                  <Label>深度模式</Label>
+                  <span
+                    className="ml-auto inline-flex pointer-events-auto"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <Switch
+                      aria-label="深度模式"
+                      isSelected={replySettings.deep}
+                      onChange={(v) => patchReplySettings({ deep: v })}
+                    >
+                      <Switch.Control>
+                        <Switch.Thumb />
+                      </Switch.Control>
+                    </Switch>
                   </span>
                 </Dropdown.Item>
                 <Dropdown.SubmenuTrigger>
@@ -621,15 +656,12 @@ export function ChatHeader({
                     </Dropdown.Menu>
                   </Dropdown.Popover>
                 </Dropdown.SubmenuTrigger>
-                <Dropdown.Item id="deep" textValue="深度模式">
-                  <Label>深度模式</Label>
-                  <span className={`ml-auto text-xs ${replySettings.deep ? 'text-primary' : 'text-muted-foreground'}`}>
-                    {replySettings.deep ? '开' : '关'}
-                  </span>
-                </Dropdown.Item>
               </Dropdown.Menu>
             </Dropdown.Popover>
           </Dropdown>
+          </Tooltip.Trigger>
+          <Tooltip.Content placement="bottom">回复建议设置</Tooltip.Content>
+          </Tooltip>
         )}
 
         {isPrivateSession && (

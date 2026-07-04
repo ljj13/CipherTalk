@@ -2,7 +2,8 @@
  * 编排引擎 —— 用 AI SDK 的 ToolLoopAgent 跑 ReAct 循环，流式产出 UIMessageChunk。
  * 运行在 AI utilityProcess 子进程内（见文档 §3.1/§5.2）。
  */
-import { generateText, smoothStream, ToolLoopAgent, stepCountIs, type ModelMessage, type UIMessageChunk } from 'ai'
+import { generateText, smoothStream, tool, ToolLoopAgent, stepCountIs, type ModelMessage, type UIMessageChunk } from 'ai'
+import { z } from 'zod'
 import type { SystemModelMessage } from '@ai-sdk/provider-utils'
 import { createLanguageModel } from './provider'
 import { buildAgentPromptParts, CODE_WORKSPACE_PROMPT, IMAGE_GEN_PROMPT, PLAN_MODE_PROMPT, WEB_SEARCH_PROMPT } from './prompts'
@@ -17,6 +18,8 @@ import { loopGuardCondition, withToolTimeouts } from './guards'
 import { reportAgentProgress, withAgentProgress } from './progress'
 import { getCachedStartupMemory, warmStartupMemory } from './runtimeCache'
 import { buildToolRuntimeContext } from './toolPolicy'
+import { currentModelVisionSupport } from './tools/mediaHistory'
+import { detectImageMime } from '../media/mediaResolver'
 import { formatAgentError } from './errorFormat'
 import type { AgentProgressReporter, AgentProviderConfig, AgentRunInput } from './types'
 
@@ -380,16 +383,32 @@ export type ReplySuggestStyle = 'natural' | 'short' | 'formal' | 'humorous' | 'w
 
 export type ReplySuggestInput = {
   contactName: string
-  /** 对话上下文，从旧到新；深度模式由渲染端多传消息实现，本函数不感知 */
+  /** 会话 username；深度模式的历史检索工具、likeme 的真实问答对检索都需要它 */
+  sessionId?: string
+  /** 对话上下文，从旧到新；深度模式由渲染端多传消息实现 */
   context: Array<{ fromMe: boolean; text: string }>
   style: ReplySuggestStyle
   count: number
+  /** 深度模式：给模型一个会话内检索工具跑小步工具循环，先查历史背景再给建议 */
+  deep?: boolean
   /** style === 'likeme' 时的"我"历史发言 few-shot（无自画像时的兜底） */
   myRecentTexts?: string[]
   /** style === 'likeme' 时由自画像画像卡渲染成的提示文本；优先于 myRecentTexts */
   myPersonaContext?: string
+  /** 自画像统计：avgBurst=我平均一轮连发几条，avgChars=每条平均字数；用于连发自适应 */
+  myStats?: { avgBurst?: number; avgChars?: number }
+  /** 深度模式时对方的画像（克隆过 TA 才有），拟回复时考虑 TA 吃哪套、避开雷区 */
+  friendPersonaContext?: string
+  /** 对方刚发来待回复的图片（base64，时间正序）；模型标记不支持图像输入时忽略 */
+  images?: Array<{ base64: string }>
   providerConfig: AgentProviderConfig
 }
+
+/** 单次回复建议最多附带的图片张数 */
+const SUGGEST_IMAGE_LIMIT = 3
+
+/** 我平均一轮连发达到该值就提示模型按连发习惯拆条（用"／"分隔） */
+const BURST_HINT_THRESHOLD = 1.5
 
 const REPLY_STYLE_HINTS: Record<ReplySuggestStyle, string> = {
   natural: '自然日常，像平时和朋友聊天',
@@ -412,18 +431,95 @@ export async function generateReplySuggestions(
     .map((m) => `${m.fromMe ? '我' : contactName}：${m.text.slice(0, 300)}`)
   if (lines.length === 0) return []
 
-  const fewShot = input.style === 'likeme'
-    ? input.myPersonaContext
-      ? `\n\n"我"的说话画像（严格遵循其中的语气、口头禅、标点习惯来生成回复）：\n${input.myPersonaContext}`
-      : input.myRecentTexts?.length
-        ? `\n\n"我"的历史发言示例（模仿这种语气）：\n${input.myRecentTexts.slice(0, 20).map((t) => `- ${t.trim().slice(0, 100)}`).join('\n')}`
-        : ''
+  const sessionId = input.sessionId?.trim()
+  const fewShotParts: string[] = []
+  if (input.style === 'likeme') {
+    if (input.myPersonaContext) {
+      fewShotParts.push(`"我"的说话画像（严格遵循其中的语气、口头禅、标点习惯来生成回复）：\n${input.myPersonaContext}`)
+    } else if (input.myRecentTexts?.length) {
+      fewShotParts.push(`"我"的历史发言示例（模仿这种语气）：\n${input.myRecentTexts.slice(0, 20).map((t) => `- ${t.trim().slice(0, 100)}`).join('\n')}`)
+    }
+    // 检索式 few-shot：拿"我"过去遇到类似话时的真实回复，比画像卡里的静态样本更贴当前话题（与克隆好友聊天同一招）
+    const lastIncoming = [...input.context].reverse().find((m) => !m.fromMe)?.text.trim()
+    if (sessionId && lastIncoming) {
+      try {
+        const { personaPairStore } = await import('./persona/personaPairStore')
+        const hits = await personaPairStore.search(`self:${sessionId}`, lastIncoming, 6)
+        if (hits.length > 0) {
+          fewShotParts.push(
+            `"我"过去遇到类似话时的真实回复（最优先参考，回复要像这些一样）：\n${hits
+              .map((h) => `- 对方：${h.user}\n  我：${h.replies.join('／')}`)
+              .join('\n')}`,
+          )
+        }
+      } catch {
+        // 检索失败静默，退回画像卡/历史发言
+      }
+    }
+  }
+  const fewShot = fewShotParts.length > 0 ? `\n\n${fewShotParts.join('\n\n')}` : ''
+
+  const deep = input.deep === true && !!sessionId
+  // 连发自适应：我真人习惯连发短句时，让每条建议按习惯拆成短句连发（正式风格不拆）
+  const avgBurst = input.myStats?.avgBurst ?? 0
+  const burstHint = avgBurst >= BURST_HINT_THRESHOLD && input.style !== 'formal'
+    ? `"我"平时习惯把一句话拆成短句连发（平均一轮 ${Math.round(avgBurst * 10) / 10} 条${input.myStats?.avgChars ? `、每条约 ${input.myStats.avgChars} 字` : ''}）：每条建议照这个习惯拆成 2~3 条短句，短句之间用"／"分隔；内容本来就短的保持一条即可。`
     : ''
+  const system = `你是微信回复建议助手。根据对话上下文，替"我"拟出 ${count} 条可以直接发送给「${contactName}」的回复。要求：口语化中文；紧贴最后一条消息；${count} 条之间角度或语气要有区分度；不要解释、不要编号、不要称呼前缀。风格要求：${REPLY_STYLE_HINTS[input.style] ?? REPLY_STYLE_HINTS.natural}。${burstHint}${deep ? '你可以先用 search_history 工具检索"我"和对方的历史聊天，弄清最后一条消息涉及的人物、事件、之前聊过的相关背景，再给建议；最多检索两三次，别恋战。' : ''}最终只输出 JSON 字符串数组，形如 ["回复一","回复二"]，不要输出其它任何内容。`
+  const friendBlock = deep && input.friendPersonaContext
+    ? `\n\n对方「${contactName}」的画像（拟回复时考虑 TA 吃哪套、避开雷区）：\n${input.friendPersonaContext}`
+    : ''
+
+  // 多模态：把对方刚发来的图片附进请求。仅当模型被明确标记"不支持图像输入"时丢弃；
+  // 目录里查不到（undefined）按可尝试处理，与 inspect_media_image 工具口径一致。
+  const imageParts: Array<{ type: 'image'; image: Buffer; mediaType: string }> = []
+  if (input.images?.length && currentModelVisionSupport(input.providerConfig) !== false) {
+    for (const img of input.images.slice(0, SUGGEST_IMAGE_LIMIT)) {
+      try {
+        const buffer = Buffer.from(img.base64, 'base64')
+        const mediaType = buffer.length > 0 ? detectImageMime(buffer) : null
+        if (mediaType) imageParts.push({ type: 'image', image: buffer, mediaType })
+      } catch {
+        // 单张解码失败跳过
+      }
+    }
+  }
+  const imageNote = imageParts.length > 0
+    ? `\n\n（对方最近发来的 ${imageParts.length} 张图片已按时间顺序附在本条消息里，回复建议要针对图片内容）`
+    : ''
+
+  const prompt = `对话记录（从旧到新）：\n${lines.join('\n')}${friendBlock}${fewShot}${imageNote}\n\n请给出 ${count} 条回复建议。`
+  const messages: ModelMessage[] = [{
+    role: 'user',
+    content: imageParts.length > 0 ? [{ type: 'text', text: prompt }, ...imageParts] : prompt,
+  }]
 
   const result = await generateText({
     model: createLanguageModel(input.providerConfig),
-    system: `你是微信回复建议助手。根据对话上下文，替"我"拟出 ${count} 条可以直接发送给「${contactName}」的回复。要求：口语化中文；紧贴最后一条消息；${count} 条之间角度或语气要有区分度；不要解释、不要编号、不要称呼前缀。风格要求：${REPLY_STYLE_HINTS[input.style] ?? REPLY_STYLE_HINTS.natural}。只输出 JSON 字符串数组，形如 ["回复一","回复二"]，不要输出其它任何内容。`,
-    prompt: `对话记录（从旧到新）：\n${lines.join('\n')}${fewShot}\n\n请给出 ${count} 条回复建议。`,
+    system,
+    messages,
+    // 模仿真人说话要"活"一点，与克隆聊天引擎的温度取向一致
+    ...(input.style === 'likeme' ? { temperature: 0.8 } : {}),
+    ...(deep
+      ? {
+          tools: {
+            search_history: tool({
+              description: `按关键词检索"我"和「${contactName}」的历史聊天记录，用于在拟回复前补充相关背景（人物、事件、之前聊过的话题）。`,
+              inputSchema: z.object({
+                query: z.string().describe('关键词/词组'),
+              }),
+              execute: async ({ query }) => {
+                const { searchChat } = await import('./tools/shared')
+                const { hits } = await searchChat({ query, sessionId, limit: 8 })
+                return hits.length > 0
+                  ? hits.map((h) => `${h.time} ${h.sender}: ${h.excerpt}`).join('\n')
+                  : '没有命中'
+              },
+            }),
+          },
+          stopWhen: stepCountIs(6),
+        }
+      : {}),
     abortSignal: signal,
   })
 

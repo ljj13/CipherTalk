@@ -10,7 +10,7 @@ export type ReplySuggestSettings = {
   enabled: boolean
   style: ReplySuggestStyle
   count: number
-  /** 深度模式：把更多历史消息作为上下文（不走完整 Agent 工具循环） */
+  /** 深度模式：更长历史上下文 + 子进程内带会话检索工具的小步 Agent 循环 */
   deep: boolean
 }
 
@@ -70,13 +70,59 @@ export function isReplySuggestSession(session: ChatSession): boolean {
     && !session.isOfficialFolder
 }
 
-/** 取最近消息作为对话上下文（从旧到新）。深度模式取更长历史。 */
-export function buildSuggestContext(messages: Message[], deep: boolean): Array<{ fromMe: boolean; text: string }> {
+/**
+ * 取最近消息作为对话上下文（从旧到新）。深度模式取更长历史。
+ * 语音消息（localType 34）查 STT 转写缓存，命中就把 "[语音]" 占位换成转写文字；
+ * 没转写过的保持占位、不现场转写（会拖慢生成，批量转写按钮点一次就全有了）。
+ */
+export async function buildSuggestContext(
+  sessionId: string,
+  messages: Message[],
+  deep: boolean,
+): Promise<Array<{ fromMe: boolean; text: string }>> {
   const take = deep ? 120 : 30
-  return messages
-    .filter((m) => m.parsedContent?.trim())
-    .slice(-take)
-    .map((m) => ({ fromMe: m.isSend === 1, text: m.parsedContent.trim() }))
+  const slice = messages.filter((m) => m.parsedContent?.trim()).slice(-take)
+  return Promise.all(slice.map(async (m) => {
+    let text = m.parsedContent.trim()
+    if (m.localType === 34) {
+      try {
+        const cached = await window.electronAPI.stt.getCachedTranscript(sessionId, m.createTime)
+        if (cached.success && cached.transcript) text = `[语音] ${cached.transcript}`
+      } catch {
+        // 查缓存失败保持占位
+      }
+    }
+    return { fromMe: m.isSend === 1, text }
+  }))
+}
+
+/** 单张图片 base64 上限（约 4.5MB 原始字节），超过不附，防 IPC 报文过大 */
+const SUGGEST_IMAGE_MAX_BASE64 = 6 * 1024 * 1024
+/** 最多附带的图片张数，与引擎侧上限一致 */
+const SUGGEST_IMAGE_MAX = 3
+
+/**
+ * 收集"对方自我上次回复之后连发的图片"（正在等我回的那批），解密成 base64、时间正序。
+ * 引擎侧会按模型是否支持图像输入决定用不用；单张失败静默丢弃。
+ */
+export async function collectPendingImages(sessionId: string, messages: Message[]): Promise<Array<{ base64: string }>> {
+  const refs: Message[] = []
+  for (let i = messages.length - 1; i >= 0 && refs.length < SUGGEST_IMAGE_MAX; i -= 1) {
+    const m = messages[i]
+    if (m.isSend === 1) break
+    if (m.localType === 3) refs.push(m)
+  }
+  if (refs.length === 0) return []
+  const out: Array<{ base64: string }> = []
+  for (const m of refs.reverse()) {
+    try {
+      const res = await window.electronAPI.chat.getImageData(sessionId, String(m.localId), m.createTime)
+      if (res.success && res.data && res.data.length <= SUGGEST_IMAGE_MAX_BASE64) out.push({ base64: res.data })
+    } catch {
+      // 单张解密失败跳过
+    }
+  }
+  return out
 }
 
 /** "像我"风格的 few-shot：取"我"最近的文本发言，跳过 [图片] 这类占位。 */
@@ -104,6 +150,41 @@ export async function loadMyPersona(contactSessionId: string): Promise<PersonaRe
   } catch {
     return null
   }
+}
+
+/** 加载对方的画像（克隆好友产物，按 sessionId 直接存）；不存在返回 null，失败静默。 */
+export async function loadFriendPersona(sessionId: string): Promise<PersonaRecordInfo | null> {
+  try {
+    const res = await window.electronAPI.persona.get(sessionId)
+    return res.success && res.persona ? res.persona : null
+  } catch {
+    return null
+  }
+}
+
+/** 把对方画像渲染成给 LLM 的提示文本（深度模式用）：TA 是什么样的人、你们的关系、雷区、典型反应。 */
+export function buildFriendPersonaContext(persona: PersonaRecordInfo): string {
+  const lines: string[] = []
+  const { card, profile } = persona
+  if (card.tone) lines.push(`- TA 的语气风格：${card.tone}`)
+  if (card.personalityTraits?.length) lines.push(`- TA 的性格：${card.personalityTraits.join('、')}`)
+  if (card.topics?.length) lines.push(`- 你们常聊：${card.topics.join('、')}`)
+  if (profile?.relationship) lines.push(`- 你们的关系：${profile.relationship}`)
+  if (profile?.boundaries?.length) lines.push(`- TA 的雷区/别碰的话题：${profile.boundaries.join('、')}`)
+  if (profile?.reactionPatterns?.length) {
+    lines.push('- TA 在不同情境下的典型反应：')
+    for (const r of profile.reactionPatterns.slice(0, 4)) lines.push(`  · ${r}`)
+  }
+  return lines.join('\n')
+}
+
+/** 连发建议的分隔符：与画像语料里的连发分隔约定一致，模型按此拆条。 */
+export const SUGGEST_BURST_JOINER = '／'
+
+/** 把一条建议按连发分隔符拆成若干短句（无分隔符时返回单元素数组）。 */
+export function splitSuggestionBursts(text: string): string[] {
+  const segs = text.split(SUGGEST_BURST_JOINER).map((t) => t.trim()).filter(Boolean)
+  return segs.length > 0 ? segs : [text.trim()]
 }
 
 /**
