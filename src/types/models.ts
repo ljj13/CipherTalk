@@ -117,6 +117,11 @@ export interface AnalyticsData {
 }
 
 export type RelationshipGraphRelationType = 'direct_chat' | 'same_group' | 'group_interaction'
+export type RelationshipGraphTimeRangePreset = '1y' | '2y' | '3y' | '5y' | 'all'
+export type RelationshipGraphScope = 'panorama' | 'close' | 'friends'
+export type RelationshipGraphLabelVisibility = 'always' | 'hover' | 'hidden'
+export type RelationshipGraphLinkVisibility = 'primary' | 'secondary' | 'hidden'
+export type RelationshipGraphTaskStatus = 'idle' | 'running' | 'completed' | 'failed'
 
 export interface RelationshipGraphNode {
   id: string
@@ -124,16 +129,37 @@ export interface RelationshipGraphNode {
   avatarUrl?: string
   kind: 'self' | 'friend' | 'group_member' | 'other'
   communityId?: string
+  score: number
+  rank: number
+  x: number
+  y: number
+  size: number
+  color: string
+  labelVisibility: RelationshipGraphLabelVisibility
+  privateMessageCount: number
+  groupMessageCount: number
+  commonGroupCount: number
+  searchText: string
   weightedDegree: number
   degree: number
   lastActiveTime?: number
 }
 
 export interface RelationshipGraphLink {
+  id: string
   source: string
   target: string
   type: RelationshipGraphRelationType
   weight: number
+  coOccurrenceCount: number
+  coOccurrenceRawScore: number
+  replyInteractionCount: number
+  repliesFromSourceToTarget: number
+  repliesFromTargetToSource: number
+  sourceGroupCount: number
+  sourceSessionIds: string[]
+  visibility: RelationshipGraphLinkVisibility
+  lastInteractionTs?: number
   messageCount?: number
   sharedGroupCount?: number
   lastActiveTime?: number
@@ -141,6 +167,10 @@ export interface RelationshipGraphLink {
 }
 
 export interface RelationshipGraphOptions {
+  acceptStale?: boolean
+  forceRecompute?: boolean
+  timeRangePreset?: RelationshipGraphTimeRangePreset
+  graphScope?: RelationshipGraphScope
   startTime?: number
   endTime?: number
   relationTypes?: RelationshipGraphRelationType[]
@@ -169,11 +199,83 @@ export interface RelationshipGraphStats {
   stale: boolean
 }
 
-export type RelationshipGraphBuildStage = 'loading' | 'sessions' | 'groups' | 'analyzing' | 'caching' | 'done' | 'error'
+export type RelationshipGraphBuildStage = 'queued' | 'snapshot' | 'loading' | 'facts' | 'sessions' | 'groups' | 'analyzing' | 'layout' | 'caching' | 'done' | 'error'
+
+export interface RelationshipGraphData {
+  nodes: RelationshipGraphNode[]
+  links: RelationshipGraphLink[]
+  communities?: RelationshipGraphCommunity[]
+  rankings?: {
+    central: RelationshipGraphNode[]
+    isolated: RelationshipGraphNode[]
+    active: RelationshipGraphNode[]
+  }
+  similar?: Record<string, RelationshipGraphNode[]>
+  stats?: RelationshipGraphStats
+}
+
+export interface RelationshipGraphTimeRange {
+  preset: RelationshipGraphTimeRangePreset
+  startTime?: number
+  endTime?: number
+}
+
+export interface RelationshipGraphSearchResults {
+  query?: string
+  nodeIds: string[]
+  linkIds: string[]
+}
+
+export interface RelationshipGraphDiagnostics {
+  signature?: string
+  dbVersion?: string
+  contactVersion?: string
+  groupMetadataVersion?: string
+  factsCacheKey?: string
+  factsCacheHit?: boolean
+  groupsConsidered?: number
+  groupsAccepted?: number
+  groupsSkipped?: number
+  buildMs?: number
+  warnings?: string[]
+}
+
+export interface RelationshipGraphCacheInfo {
+  hit: boolean
+  stale: boolean
+  snapshotPath?: string
+  builtAt?: number
+  ageMs?: number
+  signature?: string
+  reason?: string
+  factsHit?: boolean
+}
+
+export interface RelationshipGraphTaskInfo {
+  id: string
+  status: RelationshipGraphTaskStatus
+  stage?: RelationshipGraphBuildStage
+  message?: string
+  current?: number
+  total?: number
+  startedAt?: number
+  updatedAt?: number
+  finishedAt?: number
+  error?: string
+}
 
 export interface RelationshipGraphResult {
   success: boolean
+  graph?: RelationshipGraphData
+  searchResults?: RelationshipGraphSearchResults
+  diagnostics?: RelationshipGraphDiagnostics
+  cache?: RelationshipGraphCacheInfo
+  task?: RelationshipGraphTaskInfo
+  timeRange?: RelationshipGraphTimeRange
+  algorithmVersion?: string
+  /** @deprecated Use graph.nodes. Kept for old renderer callers during migration. */
   nodes?: RelationshipGraphNode[]
+  /** @deprecated Use graph.links. Kept for old renderer callers during migration. */
   links?: RelationshipGraphLink[]
   communities?: RelationshipGraphCommunity[]
   rankings?: {
@@ -202,8 +304,10 @@ export interface RelationshipGraphPathResult {
 }
 
 export interface RelationshipGraphBuildProgress {
+  taskId?: string
   stage: RelationshipGraphBuildStage
   message: string
   current?: number
   total?: number
+  status?: RelationshipGraphTaskStatus
 }

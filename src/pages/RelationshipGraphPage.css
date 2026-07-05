@@ -122,6 +122,10 @@
   flex-wrap: wrap;
 }
 
+.relationship-toolbar-controls [role='tablist'] {
+  max-width: 100%;
+}
+
 .relationship-field,
 .relationship-date-range [data-slot='label'] {
   display: grid;
@@ -133,6 +137,19 @@
 .relationship-search {
   width: min(280px, 100%);
   min-width: 200px;
+}
+
+.relationship-tabs {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.relationship-tabs [role='tablist'] {
+  white-space: nowrap;
+}
+
+.relationship-tabs--scope {
+  min-width: 190px;
 }
 
 .relationship-date-range {
@@ -174,6 +191,31 @@
 
 .relationship-graph canvas {
   display: block;
+}
+
+.relationship-pixi-host {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.relationship-pixi-host canvas {
+  width: 100%;
+  height: 100%;
+}
+
+.relationship-pixi-canvas {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.relationship-pixi-canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
 }
 
 .relationship-empty {

@@ -1076,6 +1076,7 @@ export interface ElectronAPI {
   relationshipGraph: {
     getGraph: (options?: RelationshipGraphOptions) => Promise<RelationshipGraphResult>
     rebuild: (options?: RelationshipGraphOptions) => Promise<RelationshipGraphResult>
+    getNeighborhood: (nodeId: string, options?: RelationshipGraphOptions) => Promise<RelationshipGraphResult>
     getPath: (sourceId: string, targetId: string, options?: RelationshipGraphOptions) => Promise<RelationshipGraphPathResult>
     onProgress: (callback: (progress: RelationshipGraphBuildProgress) => void) => () => void
     onPartial: (callback: (partial: RelationshipGraphPartialResult) => void) => () => void

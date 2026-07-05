@@ -760,6 +760,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   relationshipGraph: {
     getGraph: (options?: any) => ipcRenderer.invoke('relationshipGraph:getGraph', options),
     rebuild: (options?: any) => ipcRenderer.invoke('relationshipGraph:rebuild', options),
+    getNeighborhood: (nodeId: string, options?: any) =>
+      ipcRenderer.invoke('relationshipGraph:getNeighborhood', nodeId, options),
     getPath: (sourceId: string, targetId: string, options?: any) =>
       ipcRenderer.invoke('relationshipGraph:getPath', sourceId, targetId, options),
     onProgress: (callback: (progress: any) => void) => {

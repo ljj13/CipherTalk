@@ -20,6 +20,10 @@ export function registerRelationshipGraphHandlers(ctx: MainProcessContext): void
     return relationshipGraphService.rebuild(options || {})
   })
 
+  ipcMain.handle('relationshipGraph:getNeighborhood', async (_, nodeId: string, options?: RelationshipGraphOptions) => {
+    return relationshipGraphService.getNeighborhood(nodeId, options || {})
+  })
+
   ipcMain.handle('relationshipGraph:getPath', async (_, sourceId: string, targetId: string, options?: RelationshipGraphOptions) => {
     return relationshipGraphService.getPath(sourceId, targetId, options || {})
   })

@@ -80,6 +80,51 @@ class GroupMetadataService {
       return []
     }
   }
+
+  async getGroupMembersByUsernames(chatroomId: string, usernames: string[]): Promise<GroupMemberMetadata[]> {
+    if (!chatroomId) return []
+    const uniqueUsernames = Array.from(new Set(usernames.map(item => String(item || '').trim()).filter(Boolean)))
+    if (uniqueUsernames.length === 0) return []
+
+    try {
+      if (!await this.hasGroupMemberTables()) return []
+
+      const members: GroupMemberMetadata[] = []
+      for (let i = 0; i < uniqueUsernames.length; i += 400) {
+        const batch = uniqueUsernames.slice(i, i + 400)
+        const placeholders = batch.map(() => '?').join(',')
+        const rows = await dbAdapter.all<{
+          username: string
+          nick_name?: string
+          remark?: string
+          alias?: string
+          small_head_url?: string
+          big_head_url?: string
+        }>(
+          'contact',
+          '',
+          `SELECT n.username, c.nick_name, c.remark, c.alias, c.small_head_url, c.big_head_url
+           FROM chatroom_member m
+           JOIN name2id n ON m.member_id = n.rowid
+           LEFT JOIN contact c ON n.username = c.username
+           WHERE m.room_id = (SELECT rowid FROM name2id WHERE username = ?)
+             AND n.username IN (${placeholders})`,
+          [chatroomId, ...batch]
+        )
+
+        members.push(...rows.map((row) => ({
+          username: row.username,
+          displayName: row.remark || row.nick_name || row.alias || row.username,
+          avatarUrl: row.big_head_url || row.small_head_url || undefined
+        })))
+      }
+
+      return members
+    } catch (error) {
+      console.warn('[GroupMetadataService] Failed to read selected group members:', chatroomId, error)
+      return []
+    }
+  }
 }
 
 export const groupMetadataService = new GroupMetadataService()
