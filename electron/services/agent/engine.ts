@@ -3,6 +3,7 @@
  * 运行在 AI utilityProcess 子进程内（见文档 §3.1/§5.2）。
  */
 import { generateText, tool, ToolLoopAgent, isStepCount, toUIMessageStream, type ModelMessage, type UIMessageChunk } from 'ai'
+import { randomBytes } from 'crypto'
 import { z } from 'zod'
 import type { SystemModelMessage } from '@ai-sdk/provider-utils'
 import { createLanguageModel } from './provider'
@@ -17,15 +18,20 @@ import { loopGuardCondition, withToolTimeouts } from './guards'
 import { reportAgentProgress, withAgentProgress } from './progress'
 import { getCachedStartupMemory, warmStartupMemory } from './runtimeCache'
 import { buildToolRuntimeContext } from './toolPolicy'
+import { buildAgentToolApproval } from './toolApproval'
 import { currentModelVisionSupport } from './tools/mediaHistory'
 import { detectImageMime } from '../media/mediaResolver'
 import { formatAgentError } from './errorFormat'
-import type { AgentMcpToolDescriptor, AgentProgressReporter, AgentProviderConfig, AgentRunInput, AgentSkillContextItem, AgentToolProfile } from './types'
+import type { AgentMcpToolDescriptor, AgentProgressReporter, AgentProviderConfig, AgentRunInput, AgentSkillContextItem, AgentToolProfile, AgentTraceMetadata, AgentTraceTool } from './types'
 import type { CodeWorkspaceRef } from './codeWorkspaceTypes'
 
 const MAX_STEPS = 24
 const DEFAULT_AGENT_TEMPERATURE = 0.2
 const REPLY_DEEP_MAX_STEPS = 10
+const AGENT_TOTAL_TIMEOUT_MS = 3_600_000
+const TITLE_TIMEOUT_MS = 120_000
+const REPLY_SUGGEST_TIMEOUT_MS = 600_000
+const TOOL_APPROVAL_SECRET = process.env.CT_AGENT_TOOL_APPROVAL_SECRET || randomBytes(32).toString('base64url')
 
 export function buildAgentInstructions(
   input: AgentRunInput,
@@ -116,6 +122,28 @@ function withCacheHitRate(usage: unknown): unknown {
   return cacheHitRate === undefined ? usage : { ...(usage as Record<string, unknown>), cacheHitRate }
 }
 
+function readToolOutputError(output: unknown): string | undefined {
+  if (!output || typeof output !== 'object') return undefined
+  const value = output as { type?: unknown; error?: unknown; errorText?: unknown }
+  if (value.type !== 'tool-error' && value.type !== 'tool-output-denied') return undefined
+  const error = value.error ?? value.errorText
+  if (error === undefined || error === null) return '工具执行失败'
+  return error instanceof Error ? error.message : String(error)
+}
+
+function snapshotTrace(trace: AgentTraceMetadata): AgentTraceMetadata {
+  const now = Date.now()
+  return {
+    ...trace,
+    finishedAt: trace.finishedAt ?? now,
+    totalElapsedMs: trace.totalElapsedMs ?? now - trace.startedAt,
+    stepCount: trace.steps.length,
+    toolCount: trace.tools.length,
+    steps: trace.steps.slice(),
+    tools: trace.tools.slice(0, 50),
+  }
+}
+
 /**
  * L1 自动记忆：主回答流完后抽取稳定事实写库，并把每条写入作为合成 auto_memory 工具 part 注入思考链
  * （static 工具形态 tool-input/output-available，前端 isToolUIPart 可识别）。失败静默。
@@ -158,6 +186,13 @@ export async function runAgent(
     // 子进程侧耗时打点：stdout 会被主进程转发到控制台，配合主进程 [agent:perf] 看完整时间线
     const perfStart = Date.now()
     let perfLast = perfStart
+    const trace: AgentTraceMetadata = {
+      startedAt: perfStart,
+      stepCount: 0,
+      toolCount: 0,
+      steps: [],
+      tools: [],
+    }
     const perf = (label: string, detail?: string) => {
       const now = Date.now()
       console.info(`[agent:perf:child] ${label} +${now - perfLast}ms，累计 ${now - perfStart}ms${detail ? `（${detail}）` : ''}`)
@@ -201,6 +236,34 @@ export async function runAgent(
       // 步数上限 + 死循环检测（连续 N 步相同工具调用即停），见 guards.ts
       stopWhen: [isStepCount(MAX_STEPS), loopGuardCondition()],
       providerOptions: buildProviderOptions(input, prepared.promptCacheKey),
+      toolApproval: buildAgentToolApproval(input, input.mcpTools?.map((item) => item.name) ?? []),
+      experimental_toolApprovalSecret: TOOL_APPROVAL_SECRET,
+      timeout: { totalMs: AGENT_TOTAL_TIMEOUT_MS },
+      onStepEnd: (step) => {
+        trace.steps.push({
+          stepNumber: step.stepNumber,
+          callId: step.callId,
+          provider: step.model.provider,
+          modelId: step.model.modelId,
+          finishReason: step.finishReason,
+          elapsedMs: step.performance?.stepTimeMs,
+          responseMs: step.performance?.responseTimeMs,
+          timeToFirstOutputMs: step.performance?.timeToFirstOutputMs,
+          outputTokensPerSecond: step.performance?.outputTokensPerSecond,
+          effectiveOutputTokensPerSecond: step.performance?.effectiveOutputTokensPerSecond,
+        })
+      },
+      onToolExecutionEnd: (event) => {
+        const toolCall = event.toolCall as { toolCallId?: unknown; toolName?: unknown }
+        const item: AgentTraceTool = {
+          toolCallId: typeof toolCall.toolCallId === 'string' ? toolCall.toolCallId : `tool-${trace.tools.length + 1}`,
+          toolName: typeof toolCall.toolName === 'string' ? toolCall.toolName : 'unknown',
+          elapsedMs: event.toolExecutionMs,
+        }
+        const error = readToolOutputError(event.toolOutput)
+        if (error) item.error = error
+        trace.tools.push(item)
+      },
       // 每步先做 >90% AI 压缩（折叠早期历史为摘要并发持久标记），再叠加确定性裁剪 + query_sql 门控状态
       prepareStep: async ({ messages, steps }) => {
         const runtimeContext = buildToolRuntimeContext(steps)
@@ -221,6 +284,7 @@ export async function runAgent(
     const result = await agent.stream({
       messages: input.messages,
       abortSignal: signal,
+      timeout: { totalMs: AGENT_TOTAL_TIMEOUT_MS },
     })
     perf('发起模型流式请求')
     // 截留 message 的 finish，等主回答流真正结束、工具状态补齐后再发；自动记忆抽取改成后台异步，不再等它
@@ -242,16 +306,21 @@ export async function runAgent(
           rawFinishReason: part.rawFinishReason,
           modelProvider: input.providerConfig.name,
           modelId: input.providerConfig.model,
+          ciphertalk: {
+            trace: snapshotTrace(trace),
+          },
           ...(input.planMode ? { planMode: true } : {}),
         }
       },
     })) {
       if (!perfFirstEventSeen) {
         perfFirstEventSeen = true
+        trace.firstStreamEventMs = Date.now() - perfStart
         perf('模型流首个事件', chunk.type)
       }
       if (!perfFirstOutputSeen && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta' || chunk.type === 'tool-input-start')) {
         perfFirstOutputSeen = true
+        trace.firstOutputMs = Date.now() - perfStart
         perf('模型首个增量输出（真正开始回复）', chunk.type)
       }
       if (chunk.type === 'finish') { finishChunk = chunk; continue }
@@ -271,6 +340,11 @@ export async function runAgent(
       }
       perf('补齐未完成工具状态', `${pendingToolCalls.size} 个`)
     }
+    const traceEnd = Date.now()
+    trace.finishedAt = traceEnd
+    trace.totalElapsedMs = traceEnd - perfStart
+    trace.stepCount = trace.steps.length
+    trace.toolCount = trace.tools.length
     if (finishChunk) onChunk(finishChunk)
     reportAgentProgress({ stage: 'run_finished', title: '回答生成完成' })
     // 自动记忆抽取是额外一次 LLM 调用；主回答已经出完，不再让"回复中"干等这一步。
@@ -293,6 +367,7 @@ export async function generateConversationTitle(
     instructions: '你是对话标题生成器。只输出一个中文短标题，不要解释，不要引号，不要标点装饰。',
     prompt: `根据用户第一句话生成 4 到 12 个汉字的聊天标题：\n${firstMessage}`,
     abortSignal: signal,
+    timeout: TITLE_TIMEOUT_MS,
   })
 
   return sanitizeGeneratedTitle(result.text)
@@ -451,6 +526,7 @@ export async function generateReplySuggestions(
         // Keep the likeme style a little more lively, matching persona chat.
         ...(input.style === 'likeme' ? { temperature: 0.8 } : {}),
         abortSignal: signal,
+        timeout: REPLY_SUGGEST_TIMEOUT_MS,
       })).text
 
   return {
@@ -532,7 +608,7 @@ Deep reply-suggestion mode is connected to the full Agent toolset. You may searc
       }
     },
   })
-  const result = await agent.generate({ messages, abortSignal: signal })
+  const result = await agent.generate({ messages, abortSignal: signal, timeout: { totalMs: REPLY_SUGGEST_TIMEOUT_MS } })
   return result.text
 }
 

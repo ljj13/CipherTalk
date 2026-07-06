@@ -12,7 +12,7 @@
  */
 import { memo } from 'react'
 import { Button as HeroButton } from '@heroui/react'
-import { Bulb, Magnifier, Persons, Play, Wrench } from '@gravity-ui/icons'
+import { Bulb, Check, Magnifier, Persons, Play, Wrench, Xmark } from '@gravity-ui/icons'
 import type { ChatStatus, UIMessage } from 'ai'
 import {
   ChainOfThoughtSearchResult,
@@ -78,6 +78,7 @@ export type AgentMessageItemProps = {
   onRetry: (messageIndex: number) => void
   onEdit: (messageIndex: number, text: string) => void
   onExecutePlan: () => void
+  onToolApproval: (approvalId: string, approved: boolean) => void
   onPreviewGeneratedImage: (payload: AgentImagePreviewPayload) => void
 }
 
@@ -102,6 +103,7 @@ function AgentMessageItemImpl({
   onRetry,
   onEdit,
   onExecutePlan,
+  onToolApproval,
   onPreviewGeneratedImage,
 }: AgentMessageItemProps) {
   const lastPart = message.parts[message.parts.length - 1]
@@ -223,6 +225,10 @@ function AgentMessageItemImpl({
           for (const badge of collectRetrievalBadges(toolName, part.output)) pushBadge(badges, badge)
           collectToolBadges(part.output, badges)
         }
+        const approvalId = typeof (part as { approval?: { id?: unknown } }).approval?.id === 'string'
+          ? (part as { approval: { id: string } }).approval.id
+          : ''
+        const canRespondApproval = isLastMessage && !busy && part.state === 'approval-requested' && approvalId
         return (
           <ChainOfThoughtStep
             icon={toolName.includes('search') ? Magnifier : Wrench}
@@ -244,6 +250,26 @@ function AgentMessageItemImpl({
             )}
             {part.state === 'output-denied' && (
               <p className="text-muted-foreground text-xs">用户拒绝了这次工具操作。</p>
+            )}
+            {canRespondApproval && (
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <HeroButton
+                  onPress={() => onToolApproval(approvalId, true)}
+                  size="sm"
+                  variant="primary"
+                >
+                  <Check className="size-3.5" />
+                  确认执行
+                </HeroButton>
+                <HeroButton
+                  onPress={() => onToolApproval(approvalId, false)}
+                  size="sm"
+                  variant="secondary"
+                >
+                  <Xmark className="size-3.5" />
+                  拒绝
+                </HeroButton>
+              </div>
             )}
             {toolName === 'delegate_analysis' && subAgentEventsForMessage.length > 0 && (
               <SubAgentProgressPanel events={subAgentEventsForMessage} tasks={delegateTasks} />

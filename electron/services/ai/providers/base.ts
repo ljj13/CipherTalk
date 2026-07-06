@@ -4,6 +4,7 @@ import { createGoogle } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createProxyFetch, getResolvedProxyUrl } from '../proxyFetch'
+import { withOpenAIResponsesSanitizer } from '../openaiResponsesSanitizer'
 
 export namespace OpenAI {
   export namespace Chat {
@@ -405,7 +406,7 @@ export abstract class BaseAIProvider implements AIProvider {
         baseURL: this.baseURL || undefined,
         name: this.name,
         headers,
-        fetch
+        fetch: withOpenAIResponsesSanitizer(fetch)
       }).responses(model as any)
     }
 

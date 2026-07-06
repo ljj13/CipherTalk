@@ -19,6 +19,14 @@ export function formatEstimatedCost(value: number): string {
   return `约 $${value < 0.01 ? value.toFixed(4) : value.toFixed(3)}`
 }
 
+export function formatDurationMs(value: number): string {
+  if (value < 1000) return `${Math.round(value)}ms`
+  if (value < 60_000) return `${(Math.round(value / 100) / 10).toFixed(1)}s`
+  const minutes = Math.floor(value / 60_000)
+  const seconds = Math.round((value % 60_000) / 1000)
+  return `${minutes}m ${seconds}s`
+}
+
 export function formatPercent(value: number): string {
   return `${Math.round(value * 1000) / 10}%`
 }
@@ -135,6 +143,51 @@ export function buildUsageDetailRows(metadata: AgentMessageMetadata, modelInfoBy
   if (estimatedCost !== null) add('estimatedCost', '估算费用', formatEstimatedCost(estimatedCost), '按本地模型价格表估算')
   const cacheSavings = estimateCacheSavings(metadata, modelInfoByKey)
   if (cacheSavings !== null && cacheSavings > 0) add('cacheSavings', '缓存节省', formatEstimatedCost(cacheSavings), '按普通输入价与缓存读价差估算')
+
+  const trace = metadata.ciphertalk?.trace
+  if (trace) {
+    add('traceTotalElapsed', '总耗时', trace.totalElapsedMs !== undefined ? formatDurationMs(trace.totalElapsedMs) : undefined, 'Agent 本轮端到端耗时')
+    add('traceFirstOutput', '首个输出', trace.firstOutputMs !== undefined ? formatDurationMs(trace.firstOutputMs) : undefined, '从开始到首次文本/推理/工具输入')
+    add('traceSteps', '模型步数', trace.stepCount || trace.steps.length)
+    add('traceTools', '工具调用数', trace.toolCount || trace.tools.length)
+    const slowestTool = trace.tools.reduce((best, item) => (item.elapsedMs > (best?.elapsedMs ?? -1) ? item : best), undefined as (typeof trace.tools)[number] | undefined)
+    if (slowestTool) add('traceSlowestTool', '最慢工具', `${slowestTool.toolName} · ${formatDurationMs(slowestTool.elapsedMs)}`, slowestTool.error)
+    if (trace.steps.length > 0) {
+      rows.push({
+        id: 'traceStepDetails',
+        label: '模型步骤耗时',
+        value: (
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 p-2 text-[11px]">
+            {trace.steps.map((step) => [
+              `#${step.stepNumber + 1}`,
+              step.provider && step.modelId ? `${step.provider}/${step.modelId}` : undefined,
+              step.elapsedMs !== undefined ? `step=${formatDurationMs(step.elapsedMs)}` : undefined,
+              step.responseMs !== undefined ? `response=${formatDurationMs(step.responseMs)}` : undefined,
+              step.timeToFirstOutputMs !== undefined ? `ttfo=${formatDurationMs(step.timeToFirstOutputMs)}` : undefined,
+              step.finishReason ? `finish=${step.finishReason}` : undefined,
+            ].filter(Boolean).join(' · ')).join('\n')}
+          </pre>
+        ),
+        note: 'AI SDK 7 performance',
+      })
+    }
+    if (trace.tools.length > 0) {
+      rows.push({
+        id: 'traceToolDetails',
+        label: '工具耗时',
+        value: (
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/30 p-2 text-[11px]">
+            {trace.tools.map((item) => [
+              item.toolName,
+              formatDurationMs(item.elapsedMs),
+              item.error ? `error=${item.error}` : undefined,
+            ].filter(Boolean).join(' · ')).join('\n')}
+          </pre>
+        ),
+        note: 'AI SDK 7 tool execution',
+      })
+    }
+  }
 
   if (usage?.raw) {
     rows.push({

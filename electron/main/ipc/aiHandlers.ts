@@ -6,12 +6,23 @@ import type { MainProcessContext } from '../context'
 import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope, AgentToolProfile, AgentUploadedMediaContext } from '../../services/agent/types'
 import type { CodeWorkspaceRef } from '../../services/agent/codeWorkspaceTypes'
 import type { PersonaCard, PersonaNotes, PersonaRecord, PersonaTtsVoiceBinding } from '../../services/agent/persona/personaTypes'
+import { formatAgentError } from '../../services/agent/errorFormat'
 
 /** 进行中的 agent 运行：runId → AbortController，用于取消。 */
 const agentAborters = new Map<string, AbortController>()
 const ttsStreamAborters = new Map<string, AbortController>()
 const AGENT_RUN_PROXY_CACHE_TTL_MS = 5 * 60 * 1000
 const AGENT_PREP_PROGRESS_TITLE = '大模型准备中'
+const TOOL_APPROVAL_SIGNATURE_TTL_MS = 2 * 60 * 60 * 1000
+const TOOL_APPROVAL_SIGNATURE_CACHE_MAX = 500
+
+type ToolApprovalSignatureCacheItem = {
+  toolCallId: string
+  signature: string
+  at: number
+}
+
+const toolApprovalSignatureCache = new Map<string, ToolApprovalSignatureCacheItem>()
 
 let agentRunProxyRefreshedAt = 0
 let agentRunProxyRefreshPromise: Promise<string | null> | null = null
@@ -233,6 +244,93 @@ function errorToLogData(error: unknown): Record<string, unknown> {
   return { message: String(error) }
 }
 
+function pruneToolApprovalSignatureCache(now = Date.now()): void {
+  for (const [approvalId, item] of toolApprovalSignatureCache.entries()) {
+    if (now - item.at > TOOL_APPROVAL_SIGNATURE_TTL_MS) toolApprovalSignatureCache.delete(approvalId)
+  }
+  while (toolApprovalSignatureCache.size > TOOL_APPROVAL_SIGNATURE_CACHE_MAX) {
+    const oldest = toolApprovalSignatureCache.keys().next().value
+    if (!oldest) break
+    toolApprovalSignatureCache.delete(oldest)
+  }
+}
+
+function rememberToolApprovalSignature(chunk: unknown): void {
+  if (!chunk || typeof chunk !== 'object') return
+  const item = chunk as { type?: unknown; approvalId?: unknown; toolCallId?: unknown; signature?: unknown }
+  if (item.type !== 'tool-approval-request') return
+  if (typeof item.approvalId !== 'string' || typeof item.toolCallId !== 'string' || typeof item.signature !== 'string') return
+  toolApprovalSignatureCache.set(item.approvalId, {
+    toolCallId: item.toolCallId,
+    signature: item.signature,
+    at: Date.now(),
+  })
+  pruneToolApprovalSignatureCache()
+}
+
+function rememberUiMessageToolApprovalSignatures(messages: UIMessage[] = []): void {
+  for (const message of messages) {
+    const parts = Array.isArray((message as any)?.parts) ? (message as any).parts as any[] : []
+    for (const part of parts) {
+      const approval = part && typeof part === 'object' ? (part as any).approval : null
+      if (!approval || typeof approval.id !== 'string' || typeof approval.signature !== 'string') continue
+      if (typeof (part as any).toolCallId !== 'string') continue
+      toolApprovalSignatureCache.set(approval.id, {
+        toolCallId: (part as any).toolCallId,
+        signature: approval.signature,
+        at: Date.now(),
+      })
+    }
+  }
+  pruneToolApprovalSignatureCache()
+}
+
+function restoreUiMessageToolApprovalSignatures(messages: UIMessage[] = []): UIMessage[] {
+  let changed = false
+  const nextMessages = messages.map((message) => {
+    const parts = Array.isArray((message as any)?.parts) ? (message as any).parts as any[] : null
+    if (!parts) return message
+
+    let partsChanged = false
+    const nextParts = parts.map((part) => {
+      if (!part || typeof part !== 'object') return part
+      const approval = (part as any).approval
+      const approvalId = typeof approval?.id === 'string' ? approval.id : ''
+      const toolCallId = typeof (part as any).toolCallId === 'string' ? (part as any).toolCallId : ''
+      if (!approvalId || !toolCallId || typeof approval?.signature === 'string') return part
+
+      const cached = toolApprovalSignatureCache.get(approvalId)
+      if (!cached || cached.toolCallId !== toolCallId) return part
+
+      partsChanged = true
+      return {
+        ...(part as Record<string, unknown>),
+        approval: {
+          ...approval,
+          signature: cached.signature,
+        },
+      }
+    })
+    if (!partsChanged) return message
+    changed = true
+    return { ...message, parts: nextParts } as UIMessage
+  })
+  return changed ? nextMessages : messages
+}
+
+function stripToolApprovalSignatureFromChunk(chunk: unknown): unknown {
+  if (!chunk || typeof chunk !== 'object') return chunk
+  const item = chunk as { type?: unknown; signature?: unknown }
+  if (item.type !== 'tool-approval-request' || typeof item.signature !== 'string') return chunk
+  const { signature: _signature, ...safeChunk } = item as Record<string, unknown>
+  return safeChunk
+}
+
+function formatIpcError(error: unknown, fallback: string): string {
+  const message = formatAgentError(error).trim()
+  return message && message !== 'Error' && message !== '[object Object]' ? message : fallback
+}
+
 const PERSONA_VOICE_MARKER_RE = /^[\[【]\s*(?:语音|voice)\s*[\]】]\s*/i
 
 function createPersonaVoiceCachePrewarmer(input: {
@@ -419,12 +517,16 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       markPerf('解析 Agent Profile', `MCP ${profile.mcpTools.length} 个 / 技能 ${profile.skills.length} 个`)
       stage = 'convert_messages'
       sendPrepProgress()
+      rememberUiMessageToolApprovalSignatures(payload.messages)
+      const messagesWithApprovalSignatures = restoreUiMessageToolApprovalSignatures(payload.messages)
       const uiMessages = shouldStripProviderMetadata(providerConfig)
-        ? stripUiMessageProviderMetadata(payload.messages)
-        : payload.messages
-      const uploadedMediaContext = extractUploadedMediaContext(uiMessages)
-      const messages = sanitizeModelMessageToolPairs(await convertToModelMessages(uiMessages))
-      markPerf('整理消息', `${messages.length} 条`)
+        ? stripUiMessageProviderMetadata(messagesWithApprovalSignatures)
+        : messagesWithApprovalSignatures
+      const { prepareProviderFileUploads } = await import('../../services/agent/providerFileUpload')
+      const providerFileUpload = await timedTask('provider file upload', prepareProviderFileUploads(uiMessages, providerConfig, logger))
+      const uploadedMediaContext = extractUploadedMediaContext(providerFileUpload.messages)
+      const messages = sanitizeModelMessageToolPairs(await convertToModelMessages(providerFileUpload.messages))
+      markPerf('整理消息', `${messages.length} 条 / file upload ${providerFileUpload.stats.uploaded} 上传 ${providerFileUpload.stats.reused} 复用 ${providerFileUpload.stats.failed} 失败`)
       stage = 'inject_tools_and_skills'
       sendPrepProgress()
       const mcpTools = profile.mcpTools
@@ -504,7 +606,8 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
             firstModelOutputSeen = true
             markPerf('模型首个增量输出', chunkType)
           }
-          send(chunk)
+          rememberToolApprovalSignature(chunk)
+          send(stripToolApprovalSignatureFromChunk(chunk))
         },
         (progress) => {
           progressCount += 1
@@ -690,7 +793,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const { getEmbeddingConfig } = await import('../../services/ai/embeddingService')
       return { success: true, config: getEmbeddingConfig() }
     } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, error: formatIpcError(e, '读取嵌入配置失败') }
     }
   })
 
@@ -699,7 +802,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const { saveEmbeddingConfig } = await import('../../services/ai/embeddingService')
       return { success: true, config: saveEmbeddingConfig(patch as any) }
     } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, error: formatIpcError(e, '保存嵌入配置失败') }
     }
   })
 
@@ -710,7 +813,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       await refreshResolvedProxyUrl() // 测试也走代理，保证"测试通过=实际可用"
       return await testEmbeddingConfig(cfg)
     } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, error: formatIpcError(e, '嵌入模型测试失败') }
     }
   })
 
@@ -902,7 +1005,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const store = messageVectorService.getSessionVectorStoreInfo(sessionId)
       return { success: true, enabled: messageVectorService.isReady(cfg), mediaEnabled: messageVectorService.isMediaReady(cfg), count: store.count, mediaCount: store.mediaCount || 0, store }
     } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, error: formatIpcError(e, '读取向量化状态失败') }
     }
   })
 
@@ -938,7 +1041,7 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const store = messageVectorService.getSessionVectorStoreInfo(sessionId)
       return { success: true, indexed: store.count || indexed, mediaIndexed: store.mediaCount || mediaIndexed }
     } catch (e) {
-      return { success: false, error: e instanceof Error ? e.message : String(e) }
+      return { success: false, error: formatIpcError(e, '向量化失败') }
     }
   })
 
@@ -1235,10 +1338,12 @@ export function registerAiHandlers(ctx: MainProcessContext): void {
       const { resolveProviderConfig } = await import('../../services/agent/resolveProviderConfig')
       const { refreshResolvedProxyUrl } = await import('../../services/ai/proxyFetch')
       const { sanitizeModelMessageToolPairs } = await import('../../services/agent/compaction')
+      const { prepareProviderFileUploads } = await import('../../services/agent/providerFileUpload')
       const { convertToModelMessages } = await import('ai')
       const providerConfig = resolveProviderConfig()
       await refreshAgentRunProxyCached(refreshResolvedProxyUrl)
-      const messages = sanitizeModelMessageToolPairs(await convertToModelMessages(payload.messages || []))
+      const providerFileUpload = await prepareProviderFileUploads(payload.messages || [], providerConfig, logger)
+      const messages = sanitizeModelMessageToolPairs(await convertToModelMessages(providerFileUpload.messages))
 
       // 导演笔记（纠正规则 + 分身对话记忆）：读取失败不阻塞聊天
       let notes: PersonaNotes | undefined

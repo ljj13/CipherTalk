@@ -100,6 +100,9 @@ function extensionOf(mimeType: string): string {
 }
 
 function saveImageBuffer(data: Uint8Array, mimeType: string): string {
+  if (!data || data.byteLength === 0) {
+    throw new Error('生成图片数据为空')
+  }
   const filePath = path.join(
     imageOutputDir(),
     `img-${Date.now()}-${Math.floor(Math.random() * 1e6)}.${extensionOf(mimeType)}`,
@@ -130,6 +133,9 @@ async function generateViaAiSdk(prompt: string, cfg: ImageGenConfig, size?: stri
   })
 
   const mimeType = image.mediaType || 'image/png'
+  if (!image.uint8Array || image.uint8Array.byteLength === 0) {
+    return { success: false, error: '作图接口返回成功，但 AI SDK 未返回有效图片数据（图片字节为空）' }
+  }
   return { success: true, filePath: saveImageBuffer(image.uint8Array, mimeType), mimeType }
 }
 
@@ -172,8 +178,13 @@ async function generateViaCompatible(prompt: string, cfg: ImageGenConfig, size?:
 
   const payload: any = await response.json().catch(() => null)
   const item = payload?.data?.[0] || payload?.images?.[0]
-  if (item?.b64_json) {
-    return { success: true, filePath: saveImageBuffer(Buffer.from(String(item.b64_json), 'base64'), 'image/png'), mimeType: 'image/png' }
+  const b64 = String(item?.b64_json || '').trim()
+  if (b64) {
+    const data = Buffer.from(b64, 'base64')
+    if (data.byteLength === 0) {
+      return { success: false, error: '作图接口返回成功，但 b64_json 解码后为空' }
+    }
+    return { success: true, filePath: saveImageBuffer(data, 'image/png'), mimeType: 'image/png' }
   }
   const url = String(item?.url || '').trim()
   if (url) {
@@ -181,6 +192,9 @@ async function generateViaCompatible(prompt: string, cfg: ImageGenConfig, size?:
     if (!imageResponse.ok) return { success: false, error: `下载生成图片失败: HTTP ${imageResponse.status}` }
     const mimeType = imageResponse.headers.get('content-type')?.split(';')[0] || 'image/png'
     const data = new Uint8Array(await imageResponse.arrayBuffer())
+    if (data.byteLength === 0) {
+      return { success: false, error: '下载生成图片失败：图片响应为空' }
+    }
     return { success: true, filePath: saveImageBuffer(data, mimeType), mimeType }
   }
   return { success: false, error: '作图接口返回成功，但未找到图片数据（b64_json/url 均为空）' }

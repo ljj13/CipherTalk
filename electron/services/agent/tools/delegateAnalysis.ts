@@ -15,7 +15,7 @@ import { loopGuardCondition } from '../guards'
 import { compactMessages } from '../compaction'
 import { reportAgentProgress, withSubAgentScope } from '../progress'
 import { buildToolRuntimeContext } from '../toolPolicy'
-import type { AgentEvidenceItem } from './shared'
+import { describeToolError, type AgentEvidenceItem } from './shared'
 import type { AgentProviderConfig, AgentScope } from '../types'
 
 const SUB_AGENT_MAX_STEPS = 12
@@ -231,7 +231,7 @@ export function createDelegateAnalysis(opts: {
             elapsedMs: Date.now() - startedAt,
           }
         } catch (e) {
-          const message = e instanceof Error ? e.message : String(e)
+          const message = describeToolError(e, '子助手分析失败')
           reportAgentProgress({
             stage: 'error',
             title: '子助手分析失败',

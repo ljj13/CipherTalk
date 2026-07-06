@@ -4,7 +4,7 @@
  * 等待回复时头部只显示「对方正在输入…」，不暴露内部检索过程。
  * 历史挂 agent 会话存储（scope kind='persona'），打开恢复、每轮保存。
  */
-import { ArrowsRotateLeft, CircleCheck, CircleDashed, CircleExclamation, Clock, ClockArrowRotateLeft, CommentSlash, FaceRobot, Microphone, PencilToLine, PencilToSquare, TrashBin } from '@gravity-ui/icons'
+import { ArrowsRotateLeft, CircleCheck, CircleDashed, CircleExclamation, CircleInfo, Clock, ClockArrowRotateLeft, CommentSlash, FaceRobot, Microphone, PencilToLine, PencilToSquare, TrashBin } from '@gravity-ui/icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useChat } from '@ai-sdk/react'
@@ -30,7 +30,10 @@ import { PersonaChatTransport } from '../features/aiagent/transport/personaChatT
 import { cn } from '../lib/utils'
 import { useTtsSpeaker } from '../lib/ttsPlayer'
 import { parseWechatEmoji } from '../utils/wechatEmoji'
+import { getAIProviders, type AIModelInfo, type AIProviderInfo } from '../types/ai'
 import type { AgentConversationUpdatedEvent, PersonaBuildProgressInfo, PersonaRecordInfo } from '../types/electron'
+import { parseAgentMessageMetadata, type AgentMessageMetadata } from './agent/agentConversationHelpers'
+import { UsageDetailsModal, formatTokenCount } from './agent/AgentUsageStats'
 
 type Phase = 'loading' | 'confirm' | 'building' | 'chat'
 
@@ -303,7 +306,7 @@ function getPersonaVoiceLabel(persona: PersonaRecordInfo | null): string {
 function PersonaChatSkeleton() {
   return (
     <div className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
-      <div className="flex h-16 shrink-0 items-center gap-3 border-b border-border/60 px-5">
+      <div className="flex h-16 shrink-0 items-center gap-3 border-b border-border/60 px-3 sm:px-4">
         <Skeleton className="size-11 shrink-0 rounded-full" />
         <div className="min-w-0 flex-1 space-y-2">
           <Skeleton className="h-4 w-36 rounded-lg" />
@@ -316,15 +319,15 @@ function PersonaChatSkeleton() {
         </div>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-hidden px-6 py-5">
-        <div className="flex items-start gap-3">
+      <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-hidden px-3 py-5 sm:px-4">
+        <div className="flex items-start gap-2">
           <Skeleton className="size-10 shrink-0 rounded-full" />
           <div className="space-y-2">
             <Skeleton className="h-11 w-72 rounded-2xl" />
             <Skeleton className="h-11 w-52 rounded-2xl" />
           </div>
         </div>
-        <div className="flex justify-end gap-3">
+        <div className="flex justify-end gap-2">
           <div className="space-y-2">
             <Skeleton className="h-11 w-64 rounded-2xl" />
             <Skeleton className="ml-auto h-11 w-40 rounded-2xl" />
@@ -333,8 +336,8 @@ function PersonaChatSkeleton() {
         </div>
       </div>
 
-      <div className="shrink-0 border-t border-border/60 px-5 py-4">
-        <Skeleton className="mx-auto h-24 w-full max-w-4xl rounded-[22px]" />
+      <div className="shrink-0 border-t border-border/60 px-3 py-4 sm:px-4">
+        <Skeleton className="h-24 w-full rounded-[22px]" />
       </div>
     </div>
   )
@@ -363,6 +366,42 @@ function PersonaMessageAttachment({ file, isMine }: { file: FileUIPart; isMine: 
       isMine ? 'rounded-tr-sm bg-success-soft text-success-soft-foreground' : 'rounded-tl-sm'
     )}>
       {file.filename || '附件'}
+    </div>
+  )
+}
+
+function PersonaMessageUsageLine({
+  metadata,
+  onOpenDetails,
+}: {
+  metadata: unknown
+  onOpenDetails: (data: AgentMessageMetadata) => void
+}) {
+  const parsed = parseAgentMessageMetadata(metadata)
+  if (!parsed?.usage) return null
+
+  const inputTokens = Number(parsed.usage.inputTokens)
+  const outputTokens = Number(parsed.usage.outputTokens)
+  const totalTokens = Number(parsed.usage.totalTokens)
+  const parts = [
+    Number.isFinite(inputTokens) ? `输入 ${formatTokenCount(inputTokens)}` : '',
+    Number.isFinite(outputTokens) ? `输出 ${formatTokenCount(outputTokens)}` : '',
+    Number.isFinite(totalTokens) ? `共 ${formatTokenCount(totalTokens)}` : '',
+  ].filter(Boolean)
+
+  return (
+    <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted">
+      {parts.length > 0 && <span>{parts.join(' · ')}</span>}
+      <Button
+        aria-label="查看用量详情"
+        className="h-6 min-w-6 px-1 text-muted hover:text-foreground"
+        isIconOnly
+        size="sm"
+        variant="ghost"
+        onPress={() => onOpenDetails(parsed)}
+      >
+        <CircleInfo className="size-3.5" />
+      </Button>
     </div>
   )
 }
@@ -397,6 +436,8 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyRecords, setHistoryRecords] = useState<PersonaConversationRecord[]>([])
   const [recordPendingDelete, setRecordPendingDelete] = useState<PersonaConversationRecord | null>(null)
+  const [providersInfo, setProvidersInfo] = useState<AIProviderInfo[]>([])
+  const [usageDetailsModal, setUsageDetailsModal] = useState<AgentMessageMetadata | null>(null)
   /** 待发缓冲：真人不会秒回——发出的消息先挂着，停顿几秒没有新消息了才一起交给 AI 回一轮 */
   const [pendingTexts, setPendingTexts] = useState<string[]>([])
   const pendingRef = useRef<string[]>([])
@@ -426,6 +467,16 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   const transport = useMemo(() => new PersonaChatTransport(() => sessionId), [sessionId])
   const { messages, sendMessage, setMessages, status, stop, error } = useChat({ transport, experimental_throttle: 50 })
   const busy = status === 'submitted' || status === 'streaming'
+  const modelInfoByKey = useMemo(() => {
+    const map = new Map<string, AIModelInfo>()
+    for (const provider of providersInfo) {
+      for (const detail of provider.modelDetails || []) {
+        map.set(`${provider.id}::${detail.id}`, detail)
+        if (!map.has(detail.id)) map.set(detail.id, detail)
+      }
+    }
+    return map
+  }, [providersInfo])
   conversationIdRef.current = conversationId
   busyRef.current = busy
   historyOpenRef.current = historyOpen
@@ -515,6 +566,16 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
     stopVoiceRef.current = stopVoice
     setMessagesRef.current = setMessages
   }, [setMessages, stop, stopVoice])
+
+  useEffect(() => {
+    let cancelled = false
+    void getAIProviders().then((items) => {
+      if (!cancelled) setProvidersInfo(items)
+    }).catch(() => {
+      if (!cancelled) setProvidersInfo([])
+    })
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     stopRef.current()
@@ -1179,7 +1240,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   return (
     <div className="relative flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
       {/* 仿手机聊天头部：等待回复时只显示"对方正在输入…" */}
-      <div className="flex h-16 shrink-0 items-center gap-3 border-b border-border/60 px-5">
+      <div className="flex h-16 shrink-0 items-center gap-3 border-b border-border/60 px-3 sm:px-4">
         <PersonaAvatar name={displayName} avatarUrl={avatarUrl} size={44} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-base font-semibold text-foreground">{headerTitle}</div>
@@ -1440,7 +1501,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
       {/* 消息区 */}
       <ScrollShadow
         ref={scrollRef}
-        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 pt-5 pb-52"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 pt-5 pb-52 sm:px-4"
         onLoadCapture={handleMessageMediaLoad}
         onScroll={handleMessageScroll}
       >
@@ -1464,7 +1525,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
           const bubbles = rawBubbles.map(parseBubble)
           const isMine = message.role === 'user'
           return (
-            <div key={message.id} className={`flex w-full gap-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
+            <div key={message.id} className={`flex w-full gap-2 ${isMine ? 'justify-end' : 'justify-start'}`}>
               {!isMine && <PersonaAvatar name={displayName} avatarUrl={avatarUrl} size={38} />}
               <div className={`flex max-w-[76%] flex-col gap-1.5 ${isMine ? 'items-end' : 'items-start'}`}>
                 {fileParts.map((file, index) => (
@@ -1512,6 +1573,12 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
                     </div>
                   )
                 })}
+                {!isMine && (
+                  <PersonaMessageUsageLine
+                    metadata={message.metadata}
+                    onOpenDetails={setUsageDetailsModal}
+                  />
+                )}
               </div>
               {isMine && <PersonaAvatar name="我" avatarUrl={myAvatarUrl} size={38} />}
             </div>
@@ -1519,7 +1586,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
         })}
         {/* 待发缓冲气泡：已显示但还没交给 AI（等用户把话说完） */}
         {pendingTexts.length > 0 && (
-          <div className="flex w-full justify-end gap-3">
+          <div className="flex w-full justify-end gap-2">
             <div className="flex max-w-[76%] flex-col items-end gap-1.5">
               {pendingTexts.map((bubble, index) => (
                 <div
@@ -1534,7 +1601,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
           </div>
         )}
         {showTypingIndicator && (
-          <div className="flex w-full items-start justify-start gap-3">
+          <div className="flex w-full items-start justify-start gap-2">
             <PersonaAvatar name={displayName} avatarUrl={avatarUrl} size={38} />
             <span className="inline-flex gap-1 rounded-2xl rounded-tl-sm bg-surface px-4 py-3">
               <span className="size-1.5 animate-bounce rounded-full bg-muted [animation-delay:0ms]" />
@@ -1553,8 +1620,8 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
 
       {/* 输入栏 */}
       <div className="pointer-events-none absolute right-0 bottom-0 left-0 h-56">
-        <div className="absolute right-0 bottom-4 left-0 grid place-items-center px-5">
-        <div className="pointer-events-auto w-full max-w-[min(64rem,calc(100%-2.5rem))]">
+        <div className="absolute right-0 bottom-4 left-0 grid place-items-center px-3 sm:px-4">
+        <div className="pointer-events-auto w-full max-w-none">
           <PromptInput
             accept="image/*"
             className="persona-prompt-input w-full **:data-[slot=input-group]:border-border **:data-[slot=input-group]:bg-surface/55 **:data-[slot=input-group]:shadow-lg"
@@ -1673,6 +1740,14 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
           </AlertDialog.Dialog>
         </AlertDialog.Container>
       </AlertDialog.Backdrop>
+
+      {usageDetailsModal !== null && (
+        <UsageDetailsModal
+          data={usageDetailsModal}
+          modelInfoByKey={modelInfoByKey}
+          onClose={() => setUsageDetailsModal(null)}
+        />
+      )}
     </div>
   )
 }

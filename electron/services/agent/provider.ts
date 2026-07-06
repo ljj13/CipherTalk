@@ -7,7 +7,9 @@ import { createGoogle } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import type { LanguageModel } from 'ai'
+import type { FilesV4 } from '@ai-sdk/provider'
 import { createProxyFetch } from '../ai/proxyFetch'
+import { withOpenAIResponsesSanitizer } from '../ai/openaiResponsesSanitizer'
 import type { AgentProviderConfig } from './types'
 
 /**
@@ -62,8 +64,25 @@ export function createLanguageModel(config: AgentProviderConfig): LanguageModel 
     return createGoogle({ apiKey, baseURL, name, headers, fetch })(model as any)
   }
   if (providerKind === 'openai-responses') {
-    return createOpenAI({ apiKey, baseURL, name, headers, fetch }).responses(model as any)
+    return createOpenAI({ apiKey, baseURL, name, headers, fetch: withOpenAIResponsesSanitizer(fetch) }).responses(model as any)
   }
 
   return createOpenAICompatible({ name, apiKey, baseURL, headers, includeUsage: true, fetch }).chatModel(model)
+}
+
+export function createProviderFilesApi(config: AgentProviderConfig): FilesV4 | null {
+  const { providerKind, name, apiKey, baseURL, headers, proxyUrl } = config
+  const fetch = createProxyFetch(proxyUrl)
+
+  if (providerKind === 'anthropic') {
+    return createAnthropic({ apiKey, baseURL, name, headers, fetch: withAnthropicSanitizer(fetch) }).files()
+  }
+  if (providerKind === 'google') {
+    return createGoogle({ apiKey, baseURL, name, headers, fetch }).files()
+  }
+  if (providerKind === 'openai-responses') {
+    return createOpenAI({ apiKey, baseURL, name, headers, fetch: withOpenAIResponsesSanitizer(fetch) }).files()
+  }
+
+  return null
 }

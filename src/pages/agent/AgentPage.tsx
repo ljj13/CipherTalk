@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { isToolUIPart, type UIMessage } from 'ai'
+import { isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai'
 import { AlertDialog, Button as HeroButton, ButtonGroup, Dropdown, Header, Label, Modal, SearchField, Separator, Spinner, Surface, Switch, Toolbar, Tooltip, toast } from '@heroui/react'
 import { ArrowDownToLine, ArrowUpRightFromSquare, Bulb, Check, ChevronDown, CircleInfo, Clock, Display, Globe, LayoutSideContentLeft, ListCheck, PencilToLine, PencilToSquare, Terminal, TrashBin, Xmark } from '@gravity-ui/icons'
 import { toPng } from 'dom-to-image-more'
@@ -478,7 +478,7 @@ export default function AgentPage() {
   }, [])
   const transport = useMemo(
     () => new IpcChatTransport(
-      () => submitScopeRef.current ?? scopeRef.current,
+      () => submitScopeRef.current ?? activeScopeRef.current,
       () => selectedModelConfigRef.current,
       () => conversationIdRef.current,
       handleAgentProgress,
@@ -489,9 +489,10 @@ export default function AgentPage() {
     [handleAgentProgress]
   )
   // 流式 chunk 合并到每 50ms 更新一次 UI，避免 token 级高频重渲染拖卡滚动
-  const { messages, sendMessage, regenerate, setMessages, status, stop } = useChat({
+  const { messages, sendMessage, regenerate, setMessages, status, stop, addToolApprovalResponse } = useChat({
     transport,
     experimental_throttle: 50,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
     // 主进程/子进程侧的请求失败（限流、参数不支持等）此前只进日志，聊天区什么都不显示，用户分不清是没回应还是报错了
     onError: (error) => setAgentNotice(error instanceof Error ? error.message : String(error)),
   })
@@ -1561,6 +1562,21 @@ export default function AgentPage() {
     void sendPromise
   }, [busy, selectedModelSupportsTools, sendMessage])
 
+  const handleToolApproval = useCallback((approvalId: string, approved: boolean) => {
+    if (!approvalId || busy) return
+    setAgentNotice('')
+    setAgentProgress([])
+    setAgentRunPending(true)
+    setSubAgentProgress([])
+    runIsPlanRef.current = false
+    submitScopeRef.current = activeScopeRef.current
+    void addToolApprovalResponse({
+      id: approvalId,
+      approved,
+      reason: approved ? '用户已确认' : '用户拒绝',
+    })
+  }, [addToolApprovalResponse, busy])
+
   const handleModelSelect = useCallback((id: string) => {
     const model = models.find((item) => item.id === id)
     if (!model || model.disabled) return
@@ -1824,6 +1840,7 @@ export default function AgentPage() {
                 onRegenerate={handleRegenerateAssistantMessage}
                 onRetry={handleRetryUserMessage}
                 onSpeak={handleSpeakAssistantMessage}
+                onToolApproval={handleToolApproval}
                 runIsPlan={runIsPlanRef.current}
                 selectedModelSupportsTools={selectedModelSupportsTools}
                 sessionNameOf={sessionNameOf}

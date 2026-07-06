@@ -10,7 +10,7 @@ import { z } from 'zod'
 import { rerankCandidates } from '../../ai/rerankService'
 import { reciprocalRankFusion } from '../../retrieval/rrf'
 import { reportAgentProgress } from '../progress'
-import { evidenceFromHit, searchChat, resolveSenders, toLocalTime } from './shared'
+import { describeToolError, evidenceFromHit, searchChat, resolveSenders, toLocalTime } from './shared'
 
 interface FusedHit {
   key: string
@@ -51,7 +51,7 @@ export const semanticSearch = tool({
 
       // 混合路径：需启用嵌入 + 指定会话（懒构建成本只压在单个会话上）
       if (sessionId && embeddingReady) {
-        const [vector, keyword] = await Promise.all([
+        const [vectorResult, keywordResult] = await Promise.allSettled([
           (async () => {
             const queryVec = await embedQuery(query, cfg)
             reportAgentProgress({
@@ -81,6 +81,33 @@ export const semanticSearch = tool({
           })(),
           searchChat({ query, sessionId, startTimeMs, endTimeMs, limit: candidateLimit }),
         ])
+        const vectorError = vectorResult.status === 'rejected'
+          ? describeToolError(vectorResult.reason, '向量检索失败')
+          : undefined
+        const keywordError = keywordResult.status === 'rejected'
+          ? describeToolError(keywordResult.reason, '关键词检索失败')
+          : undefined
+
+        if (vectorResult.status === 'rejected' && keywordResult.status === 'rejected') {
+          return {
+            error: `semantic_search 检索失败：向量路径：${vectorError}；关键词路径：${keywordError}`,
+            retrieval: {
+              mode: 'hybrid',
+              embeddingReady: true,
+              vectorCount: 0,
+              keywordCount: 0,
+              vectorError,
+              keywordError,
+            },
+            hits: [],
+            evidence: [],
+          }
+        }
+
+        const vector = vectorResult.status === 'fulfilled' ? vectorResult.value : { hits: [], indexed: 0 }
+        const keyword = keywordResult.status === 'fulfilled'
+          ? keywordResult.value
+          : { hits: [], sessionsScanned: 0, coverage: 'keyword_failed' }
 
         const senderMap = await resolveSenders(vector.hits.map((h) => h.senderUsername || ''))
 
@@ -144,6 +171,9 @@ export const semanticSearch = tool({
             embeddingReady: true,
             vectorCount: vector.hits.length,
             keywordCount: keyword.hits.length,
+            degraded: Boolean(vectorError || keywordError),
+            vectorError,
+            keywordError,
             rerank: rerankMeta,
           },
           indexedVectors: vector.indexed,
@@ -186,7 +216,7 @@ export const semanticSearch = tool({
         evidence: hits.map(evidenceFromHit),
       }
     } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) }
+      return { error: describeToolError(error, 'semantic_search 执行失败') }
     }
   },
 })

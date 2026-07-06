@@ -5,6 +5,7 @@
  */
 import { tool } from 'ai'
 import { z } from 'zod'
+import fs from 'fs'
 import { generateImageToFile } from '../../ai/imageGenService'
 
 export const generateImage = tool({
@@ -20,6 +21,13 @@ export const generateImage = tool({
     const res = await generateImageToFile(prompt, { size, signal: abortSignal })
     if (!res.success) {
       return { error: res.error || '图片生成失败' }
+    }
+    if (!res.filePath || !fs.existsSync(res.filePath)) {
+      return { error: '图片生成接口返回成功，但没有生成可读取的本地图片文件' }
+    }
+    const stat = fs.statSync(res.filePath)
+    if (stat.size <= 0) {
+      return { error: '图片生成接口返回成功，但生成的本地图片文件为空' }
     }
     return {
       success: true,

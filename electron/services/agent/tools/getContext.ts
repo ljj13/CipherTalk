@@ -5,7 +5,17 @@
  */
 import { tool } from 'ai'
 import { z } from 'zod'
-import { compactMessage, evidenceFromMessage, resolveSenders, type CompactMessage } from './shared'
+import { compactMessage, describeToolError, evidenceFromMessage, resolveSenders, type CompactMessage } from './shared'
+import type { Message } from '../../chat/types'
+
+function sameAnchorMessage(
+  message: Pick<Message, 'localId' | 'sortSeq' | 'createTime'>,
+  anchor: { localId: number; sortSeq: number; createTime: number },
+): boolean {
+  return Number(message.localId) === Number(anchor.localId) &&
+    Number(message.sortSeq) === Number(anchor.sortSeq) &&
+    Number(message.createTime) === Number(anchor.createTime)
+}
 
 export const getContext = tool({
   description:
@@ -22,22 +32,28 @@ export const getContext = tool({
   execute: async ({ sessionId, sortSeq, createTime, localId, radius }) => {
     try {
       const { chatService } = await import('../../chatService')
+      const anchor = { sessionId, sortSeq, createTime, localId }
       const [beforeRes, anchorRes, afterRes] = await Promise.all([
         chatService.getMessagesBefore(sessionId, sortSeq, radius, createTime, localId),
         chatService.getMessageByLocalId(sessionId, localId),
         chatService.getMessagesAfter(sessionId, sortSeq, radius, createTime, localId),
       ])
+      const anchorMessage = anchorRes.success && anchorRes.message && sameAnchorMessage(anchorRes.message, anchor)
+        ? anchorRes.message
+        : null
+      const anchorMismatch = Boolean(anchorRes.success && anchorRes.message && !anchorMessage)
 
       const collected = [
         ...(beforeRes.success ? beforeRes.messages || [] : []),
-        ...(anchorRes.success && anchorRes.message ? [anchorRes.message] : []),
+        ...(anchorMessage ? [anchorMessage] : []),
         ...(afterRes.success ? afterRes.messages || [] : []),
       ]
 
-      // 去重 + 按时间升序
+      // 去重 + 按时间升序。localId 可跨库/跨表重复，锚点 localId 必须同时匹配 sortSeq/createTime。
       const seen = new Set<string>()
       const ordered = collected
         .filter((m) => {
+          if (Number(m.localId) === Number(localId) && !sameAnchorMessage(m, anchor)) return false
           const key = `${m.localId}:${m.sortSeq}`
           if (seen.has(key)) return false
           seen.add(key)
@@ -54,11 +70,14 @@ export const getContext = tool({
       return {
         sessionId,
         anchorLocalId: localId,
+        ...(anchorMismatch
+          ? { note: '锚点 localId 命中了不同 sortSeq/createTime 的旧消息，已丢弃该 localId 冲突结果。' }
+          : {}),
         messages,
         evidence: messages.map((message) => evidenceFromMessage(sessionId, message)),
       }
     } catch (error) {
-      return { error: error instanceof Error ? error.message : String(error) }
+      return { error: describeToolError(error, 'get_context 执行失败') }
     }
   },
 })

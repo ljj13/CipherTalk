@@ -6,6 +6,7 @@
  */
 import type { Message } from '../../chatService'
 import type { ChatSearchIndexHit } from '../../search/chatSearchIndexService'
+import { truncateText } from '../errorFormat'
 import { reportAgentProgress } from '../progress'
 
 /** 归一到毫秒：秒级(<=1e12)自动 ×1000。无效返回 null。 */
@@ -209,4 +210,39 @@ export function evidenceFromMessage(sessionId: string, message: CompactMessage):
     sender: message.sender,
     text: message.text,
   }
+}
+
+function readableErrorMessage(error: unknown): string {
+  if (!error) return ''
+  if (error instanceof Error && error.message.trim()) return error.message.trim()
+  if (typeof error === 'string' && error.trim()) return error.trim()
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : null
+  const direct = record?.message
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  const nested = record?.error
+  if (typeof nested === 'string' && nested.trim()) return nested.trim()
+  if (nested && typeof nested === 'object') {
+    const nestedMessage = (nested as Record<string, unknown>).message
+    if (typeof nestedMessage === 'string' && nestedMessage.trim()) return nestedMessage.trim()
+  }
+  const text = String(error).trim()
+  return text && text !== '[object Object]' && text !== 'Error' ? text : ''
+}
+
+export function describeToolError(error: unknown, fallback = '工具执行失败'): string {
+  const record = error && typeof error === 'object' ? error as Record<string, unknown> : null
+  const details = [readableErrorMessage(error) || fallback]
+
+  const status = record?.statusCode ?? record?.status
+  if (typeof status === 'number') details.push(`status=${status}`)
+  if (typeof record?.url === 'string' && record.url) details.push(`url=${record.url}`)
+  if (typeof record?.responseBody === 'string' && record.responseBody) {
+    details.push(`responseBody=${truncateText(record.responseBody, 600)}`)
+  }
+
+  const cause = record?.cause
+  const causeMessage = readableErrorMessage(cause)
+  if (causeMessage && causeMessage !== details[0]) details.push(`cause=${truncateText(causeMessage, 400)}`)
+
+  return details.filter(Boolean).join(' | ')
 }

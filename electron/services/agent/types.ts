@@ -91,6 +91,38 @@ export interface AgentProgressEvent {
 
 export type AgentProgressReporter = (event: AgentProgressEvent) => void
 
+export interface AgentTraceStep {
+  stepNumber: number
+  callId?: string
+  provider?: string
+  modelId?: string
+  finishReason?: string
+  elapsedMs?: number
+  responseMs?: number
+  timeToFirstOutputMs?: number
+  outputTokensPerSecond?: number
+  effectiveOutputTokensPerSecond?: number
+}
+
+export interface AgentTraceTool {
+  toolCallId: string
+  toolName: string
+  elapsedMs: number
+  error?: string
+}
+
+export interface AgentTraceMetadata {
+  startedAt: number
+  finishedAt?: number
+  totalElapsedMs?: number
+  firstStreamEventMs?: number
+  firstOutputMs?: number
+  stepCount: number
+  toolCount: number
+  steps: AgentTraceStep[]
+  tools: AgentTraceTool[]
+}
+
 /** 一次 agent 运行的输入。 */
 export interface AgentRunInput {
   messages: ModelMessage[]

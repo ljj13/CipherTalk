@@ -145,6 +145,38 @@ export type AgentUsage = {
   raw?: unknown
 }
 
+export type AgentTraceStep = {
+  stepNumber: number
+  callId?: string
+  provider?: string
+  modelId?: string
+  finishReason?: string
+  elapsedMs?: number
+  responseMs?: number
+  timeToFirstOutputMs?: number
+  outputTokensPerSecond?: number
+  effectiveOutputTokensPerSecond?: number
+}
+
+export type AgentTraceTool = {
+  toolCallId: string
+  toolName: string
+  elapsedMs: number
+  error?: string
+}
+
+export type AgentTraceMetadata = {
+  startedAt: number
+  finishedAt?: number
+  totalElapsedMs?: number
+  firstStreamEventMs?: number
+  firstOutputMs?: number
+  stepCount: number
+  toolCount: number
+  steps: AgentTraceStep[]
+  tools: AgentTraceTool[]
+}
+
 export type AgentMessageMetadata = {
   usage?: AgentUsage
   finishReason?: string
@@ -156,6 +188,7 @@ export type AgentMessageMetadata = {
   ciphertalk?: {
     subAgentProgress?: AgentProgressEvent[]
     toolElapsed?: Record<string, number>
+    trace?: AgentTraceMetadata
   }
 }
 
