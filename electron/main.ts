@@ -17,6 +17,7 @@ import { registerModularIpcHandlers } from './main/ipc/register'
 import { registerLocalProtocols, registerPluginProtocol } from './main/protocols'
 import { registerPluginNavigationGuard } from './main/pluginNavigationGuard'
 import { pluginManagerService } from './services/pluginManagerService'
+import { initAiTelemetry } from './services/ai/telemetry'
 import {
   checkAndConnectOnStartup,
   checkForUpdatesOnStartup,
@@ -71,6 +72,7 @@ function configureWindowsGpuPolicy(): void {
 
 configureWindowsGpuPolicy()
 installElectronStartupDiagnostics(app)
+initAiTelemetry('ciphertalk-main')
 
 // 注册自定义协议为特权协议（必须在 app ready 之前）
 protocol.registerSchemesAsPrivileged([

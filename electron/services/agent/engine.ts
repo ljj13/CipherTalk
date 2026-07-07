@@ -321,6 +321,7 @@ export async function runAgent(
       toolApproval: buildAgentToolApproval(input, input.mcpTools?.map((item) => item.name) ?? []),
       experimental_toolApprovalSecret: TOOL_APPROVAL_SECRET,
       timeout: { totalMs: AGENT_TOTAL_TIMEOUT_MS },
+      telemetry: { functionId: 'agent-run' },
       onStepEnd: (step) => {
         trace.steps.push({
           stepNumber: step.stepNumber,
@@ -473,6 +474,7 @@ export async function generateConversationTitle(
     prompt: `根据用户第一句话生成 4 到 12 个汉字的聊天标题：\n${firstMessage}`,
     abortSignal: signal,
     timeout: TITLE_TIMEOUT_MS,
+    telemetry: { functionId: 'agent-title' },
   })
 
   return sanitizeGeneratedTitle(result.text)
@@ -705,6 +707,7 @@ Deep reply-suggestion mode is connected to the full Agent toolset. You may searc
     reasoning: buildReasoningOption(input.providerConfig),
     stopWhen: [isStepCount(REPLY_DEEP_MAX_STEPS), loopGuardCondition()],
     providerOptions: buildProviderOptions(agentInput, prepared.promptCacheKey),
+    telemetry: { functionId: 'agent-reply-suggest' },
     prepareStep: async ({ steps }) => {
       const runtimeContext = buildToolRuntimeContext(steps)
       return {

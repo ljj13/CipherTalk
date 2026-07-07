@@ -431,6 +431,7 @@ export async function runPersonaChat(
       temperature: PERSONA_TEMPERATURE,
       reasoning: buildReasoningOption(input.providerConfig),
       abortSignal: signal,
+      telemetry: { functionId: 'persona-chat' },
     })
 
     const replyText = resolveStickerMarkers(

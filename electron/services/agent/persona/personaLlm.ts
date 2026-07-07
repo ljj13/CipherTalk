@@ -59,6 +59,7 @@ export async function generateValidated<T>(
         : `${opts.prompt}\n\n注意：上一次输出无法解析为 JSON，请严格只输出一个合法 JSON 对象，不要任何解释、前后缀或代码围栏。`,
       temperature: opts.temperature,
       abortSignal: opts.signal,
+      telemetry: { functionId: `persona-${label}` },
     })
     lastRaw = result.text
     try {

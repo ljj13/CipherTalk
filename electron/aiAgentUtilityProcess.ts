@@ -18,6 +18,9 @@ import {
 import type { PersonaChatInput } from './services/agent/persona/personaTypes'
 import type { AgentRunInput } from './services/agent/types'
 import { formatAgentError } from './services/agent/errorFormat'
+import { initAiTelemetry } from './services/ai/telemetry'
+
+initAiTelemetry('ciphertalk-ai-utility')
 
 const parentPort = process.parentPort
 

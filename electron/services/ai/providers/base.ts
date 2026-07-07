@@ -550,7 +550,8 @@ export abstract class BaseAIProvider implements AIProvider {
           temperature,
           maxOutputTokens: options?.maxTokens,
           timeout: 300000,
-          maxRetries: 0
+          maxRetries: 0,
+          telemetry: { functionId: 'provider-chat' }
         })
         return response.text || ''
       } catch (error) {
@@ -587,7 +588,8 @@ export abstract class BaseAIProvider implements AIProvider {
           timeout: 300000,
           maxRetries: 0,
           tools: toAiToolSet(options.tools),
-          toolChoice: toAiToolChoice(options.toolChoice)
+          toolChoice: toAiToolChoice(options.toolChoice),
+          telemetry: { functionId: 'provider-chat-tools' }
         } as any)
 
         const toolCalls = (response.toolCalls || []).map(toOpenAIToolCall)
@@ -636,7 +638,8 @@ export abstract class BaseAIProvider implements AIProvider {
           timeout: 300000,
           maxRetries: 0,
           tools: toAiToolSet(options.tools),
-          toolChoice: toAiToolChoice(options.toolChoice)
+          toolChoice: toAiToolChoice(options.toolChoice),
+          telemetry: { functionId: 'provider-stream-chat-tools' }
         } as any)
 
         let content = ''
@@ -739,7 +742,8 @@ export abstract class BaseAIProvider implements AIProvider {
           temperature,
           maxOutputTokens: options?.maxTokens,
           timeout: 300000,
-          maxRetries: 0
+          maxRetries: 0,
+          telemetry: { functionId: 'provider-stream-chat' }
         })
 
         let contentText = ''
