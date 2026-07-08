@@ -235,9 +235,17 @@ interface ConfigSchema {
   mcpExposeMediaPaths: boolean
   mcpProxyPort: number
   mcpProxyToken: string
+  // Agent 工具审批 HMAC 签名密钥：跨 AI utility 进程重启/App 重启保持稳定，
+  // 否则每次重启换新密钥会让待处理的审批签名验证失败（见 engine.ts TOOL_APPROVAL_SECRET）
+  agentToolApprovalSecret: string
+  // 待处理工具审批的签名缓存落盘副本，App 完整重启后用它重建 aiHandlers.ts 里的内存 Map，
+  // 否则重启后签名缓存清空、待确认卡片点了也会因"找不到缓存签名"而失败
+  agentToolApprovalSignatures: Array<{ approvalId: string; toolCallId: string; signature: string; at: number }>
 }
 
 const defaults: ConfigSchema = {
+  agentToolApprovalSecret: '',
+  agentToolApprovalSignatures: [],
   dbPath: '',
   decryptKey: '',
   myWxid: '',

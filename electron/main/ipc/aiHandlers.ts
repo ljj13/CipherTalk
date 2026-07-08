@@ -3,6 +3,7 @@ import { createHash } from 'crypto'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
 import type { UIMessage } from 'ai'
+import type { ConfigService } from '../../services/config'
 import type { MainProcessContext } from '../context'
 import type { AgentProviderConfig, AgentProviderConfigOverride, AgentScope, AgentSkillContextItem, AgentToolProfile, AgentUploadedMediaContext } from '../../services/agent/types'
 import type { CodeWorkspaceRef } from '../../services/agent/codeWorkspaceTypes'
@@ -25,6 +26,8 @@ type ToolApprovalSignatureCacheItem = {
 }
 
 const toolApprovalSignatureCache = new Map<string, ToolApprovalSignatureCacheItem>()
+// App 完整重启后 toolApprovalSignatureCache 会清空，靠这份落盘副本重建，见 registerAiHandlers 里的加载和 persistToolApprovalSignatureCache
+let toolApprovalCacheConfigService: ConfigService | null = null
 
 let agentRunProxyRefreshedAt = 0
 let agentRunProxyRefreshPromise: Promise<string | null> | null = null
@@ -477,6 +480,13 @@ function errorToLogData(error: unknown): Record<string, unknown> {
   return { message: String(error) }
 }
 
+function persistToolApprovalSignatureCache(): void {
+  if (!toolApprovalCacheConfigService) return
+  const entries = Array.from(toolApprovalSignatureCache.entries())
+    .map(([approvalId, item]) => ({ approvalId, ...item }))
+  toolApprovalCacheConfigService.set('agentToolApprovalSignatures', entries)
+}
+
 function pruneToolApprovalSignatureCache(now = Date.now()): void {
   for (const [approvalId, item] of toolApprovalSignatureCache.entries()) {
     if (now - item.at > TOOL_APPROVAL_SIGNATURE_TTL_MS) toolApprovalSignatureCache.delete(approvalId)
@@ -486,6 +496,7 @@ function pruneToolApprovalSignatureCache(now = Date.now()): void {
     if (!oldest) break
     toolApprovalSignatureCache.delete(oldest)
   }
+  persistToolApprovalSignatureCache()
 }
 
 function rememberToolApprovalSignature(chunk: unknown): void {
@@ -634,6 +645,12 @@ function createPersonaVoiceCachePrewarmer(input: {
 }
 
 export function registerAiHandlers(ctx: MainProcessContext): void {
+  toolApprovalCacheConfigService = ctx.getConfigService()
+  for (const item of toolApprovalCacheConfigService?.get('agentToolApprovalSignatures') ?? []) {
+    toolApprovalSignatureCache.set(item.approvalId, { toolCallId: item.toolCallId, signature: item.signature, at: item.at })
+  }
+  pruneToolApprovalSignatureCache()
+
   void import('../../services/agent/conversationStore')
     .then(({ setAgentConversationChangeBroadcaster }) => {
       setAgentConversationChangeBroadcaster((event) => ctx.broadcastToWindows('agent:conversationUpdated', event))

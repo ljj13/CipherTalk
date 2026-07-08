@@ -255,6 +255,15 @@ if (gotSingleInstanceLock) {
       markStartupMilestone('startup:mcp-token-create-done')
     }
 
+    // 跨 AI utility 进程重启/App 重启保持稳定，否则待处理的工具审批签名会因密钥换新而验证失败；
+    // 写入 process.env 后经 getElectronWorkerEnv() 原样传给 utility 子进程（engine.ts 里已有读取该变量的兜底逻辑）
+    let agentToolApprovalSecret = configService.get('agentToolApprovalSecret')
+    if (!agentToolApprovalSecret) {
+      agentToolApprovalSecret = randomBytes(32).toString('base64url')
+      configService.set('agentToolApprovalSecret', agentToolApprovalSecret)
+    }
+    process.env.CT_AGENT_TOOL_APPROVAL_SECRET = agentToolApprovalSecret
+
     // 注册自定义协议用于加载本地视频
     markStartupMilestone('startup:local-protocols-register-start')
     registerLocalProtocols()
