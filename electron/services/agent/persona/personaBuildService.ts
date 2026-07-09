@@ -108,16 +108,24 @@ export async function buildPersonaFromSession(input: PersonaBuildInput): Promise
 
     sendProgress('indexing', role === 'self' ? '正在读取聊天记录' : '正在读取聊天记录', 5)
     const { chatSearchIndexService } = await import('../../search/chatSearchIndexService')
-    const messages = await chatSearchIndexService.listSessionMemoryMessages(sessionId, (p) => {
+    const { buildPersonaCorpus, MIN_FRIEND_MESSAGES, PROFILE_MAX_CHUNKS, mergeTurns, renderProfileChunks, extractPersonaPairs } =
+      await import('./personaCorpus')
+    let messages = await chatSearchIndexService.listSessionMemoryMessages(sessionId, (p) => {
       sendProgress('indexing', '正在读取聊天记录', 10, p.message)
     }, 6000)
+
+    // 最近 6000 条里被侧写者发言太少（如长期单方面发消息），扩大到全量历史再读一次
+    if (buildPersonaCorpus(messages, displayName, subjectIsSend).stats.friendMessageCount < MIN_FRIEND_MESSAGES) {
+      sendProgress('indexing', '近期发言不足，正在读取更早的聊天记录', 11)
+      messages = await chatSearchIndexService.listSessionMemoryMessages(sessionId, (p) => {
+        sendProgress('indexing', '近期发言不足，正在读取更早的聊天记录', 11, p.message)
+      })
+    }
 
     sendProgress('indexing', '正在转写语音补全语料', 12)
     await pretranscribeSessionVoices(sessionId, messages, sendProgress, logger)
 
     sendProgress('corpus', role === 'self' ? '正在分析"我"的说话风格' : '正在分析说话风格', 40)
-    const { buildPersonaCorpus, MIN_FRIEND_MESSAGES, PROFILE_MAX_CHUNKS, mergeTurns, renderProfileChunks, extractPersonaPairs } =
-      await import('./personaCorpus')
     const corpus = buildPersonaCorpus(messages, displayName, subjectIsSend)
 
     let groupCorpus: import('./personaGroupCorpus').PersonaGroupCorpus | null = null

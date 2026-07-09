@@ -315,6 +315,9 @@ export async function runAgent(
     const agent = new ToolLoopAgent({
       model: createLanguageModel(input.providerConfig, { promptCacheKey: prepared.promptCacheKey }),
       instructions: prepared.instructions,
+      // 必须放行 messages 里的 system：DeepSeek history 模式的本轮上下文和压缩摘要都在历史里，
+      // 不放行 AI SDK 会直接抛 InvalidPromptError（#243）
+      allowSystemInMessages: true,
       tools: prepared.tools,
       temperature: DEFAULT_AGENT_TEMPERATURE,
       reasoning: buildReasoningOption(input.providerConfig),
@@ -322,6 +325,8 @@ export async function runAgent(
       stopWhen: [isStepCount(MAX_STEPS), loopGuardCondition()],
       providerOptions: buildProviderOptions(input, prepared.promptCacheKey),
       toolApproval: buildAgentToolApproval(input, input.mcpTools?.map((item) => item.name) ?? []),
+      // @ts-expect-error AI SDK beta 的 ToolLoopAgentSettings 类型漏了此字段；settings 会原样透传给
+      // streamText（tool-loop-agent.ts prepareCall），运行时生效。SDK 补上类型后此行会报错，届时删掉本注释
       experimental_toolApprovalSecret: TOOL_APPROVAL_SECRET,
       timeout: { totalMs: AGENT_TOTAL_TIMEOUT_MS },
       telemetry: { functionId: 'agent-run' },
@@ -371,7 +376,6 @@ export async function runAgent(
     const result = await agent.stream({
       // 尾注入本轮上下文（当前时间/技能/相关记忆）：放消息末尾而非 system 前缀，跨轮才有 prompt cache 命中
       messages: prepared.turnMessage ? [...input.messages, prepared.turnMessage] : input.messages,
-      ...(prepared.turnMessage ? { allowSystemInMessages: true } : {}),
       abortSignal: signal,
       timeout: { totalMs: AGENT_TOTAL_TIMEOUT_MS },
     })
@@ -705,6 +709,7 @@ Deep reply-suggestion mode is connected to the full Agent toolset. You may searc
   const agent = new ToolLoopAgent({
     model: createLanguageModel(input.providerConfig, { promptCacheKey: prepared.promptCacheKey }),
     instructions,
+    allowSystemInMessages: true,
     tools: prepared.tools,
     temperature: input.style === 'likeme' ? 0.8 : DEFAULT_AGENT_TEMPERATURE,
     reasoning: buildReasoningOption(input.providerConfig),
@@ -722,7 +727,6 @@ Deep reply-suggestion mode is connected to the full Agent toolset. You may searc
   const result = await agent.generate({
     // 同主循环：本轮上下文尾注入，保住稳定前缀的 prompt cache
     messages: prepared.turnMessage ? [...messages, prepared.turnMessage] : messages,
-    ...(prepared.turnMessage ? { allowSystemInMessages: true } : {}),
     abortSignal: signal,
     timeout: { totalMs: REPLY_SUGGEST_TIMEOUT_MS },
   })
