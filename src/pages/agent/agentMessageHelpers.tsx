@@ -85,6 +85,9 @@ export const TOOL_LABELS: Record<string, string> = {
   apply_memory_fix: '修复记忆',
   persona_control: '数字分身',
   auto_memory: '自动记忆',
+  // 本地编码智能体（codex）的结构化事件
+  run_command: '运行命令',
+  file_change: '文件变更',
 }
 
 export type PersonaControlOutput = {

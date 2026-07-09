@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type ReactNode } from 'react'
 import { AlertDialog, Button as HeroButton, Label, Popover, Tabs } from '@heroui/react'
 import { ArrowsRotateLeft, ArrowUpRightFromSquare, ChevronRight, Code, Display, File, Folder, FolderOpen, ShieldExclamation, Square, Terminal, Xmark } from '@gravity-ui/icons'
-import type { CodeWorkspaceApprovalRequest, CodeWorkspaceFileItem, CodeWorkspaceState } from '@/types/electron'
+import type {
+  CodeWorkspaceApprovalRequest,
+  CodeWorkspaceFileItem,
+  CodeWorkspaceRef,
+  CodeWorkspaceState,
+} from '@/types/electron'
 
 export const CODE_WORKSPACE_FILE_REF_MIME = 'application/x-ciphertalk-code-workspace-file'
 
@@ -350,7 +355,7 @@ function WorkspacePanelContent({
     <Tabs
       className="flex h-[min(72vh,44rem)] w-[min(calc(100vw-2rem),52rem)] min-h-0 flex-col overflow-hidden"
       selectedKey={activeTab}
-      onSelectionChange={(key) => setActiveTab(key as 'preview' | 'logs')}
+      onSelectionChange={(key) => setActiveTab(key as CodeWorkspacePanelTab)}
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/70 px-3 py-2">
         <div className="min-w-0">

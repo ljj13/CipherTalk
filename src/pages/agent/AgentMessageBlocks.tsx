@@ -4,7 +4,7 @@
  */
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Card, Dropdown, Label } from '@heroui/react'
-import { ArrowsRotateLeft, Bulb, Check, ChevronDown, Copy, CurlyBrackets, FileText, ListCheck, PencilToLine, Picture, Wrench } from '@gravity-ui/icons'
+import { ArrowsRotateLeft, Bulb, Check, ChevronDown, Copy, CurlyBrackets, FileText, ListCheck, PencilToLine, Picture, Terminal, Wrench } from '@gravity-ui/icons'
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -18,6 +18,7 @@ export type AgentModelItem = {
   chef: string
   chefSlug: string
   id: string
+  kind?: 'local-agent'
   name: string
   modelDetail?: AIModelInfo
   disabled?: boolean
@@ -51,7 +52,9 @@ export const ModelItem = memo(
     return (
       <Dropdown.Item id={model.id} key={model.id} textValue={model.name}>
         <Dropdown.ItemIndicator />
-        {model.chefSlug && <AIProviderLogo providerId={model.chefSlug} alt={model.chef} className="shrink-0" size={20} />}
+        {model.kind === 'local-agent'
+          ? <Terminal className="size-5 shrink-0 text-muted" />
+          : model.chefSlug && <AIProviderLogo providerId={model.chefSlug} alt={model.chef} className="shrink-0" size={20} />}
         <Label className="min-w-0 flex-1 truncate text-left">{model.name}</Label>
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {model.modelDetail && <ModelCapabilityIcons detail={model.modelDetail} />}

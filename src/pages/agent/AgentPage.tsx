@@ -5,7 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from 'react'
 import { useChat } from '@ai-sdk/react'
-import { isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai'
+import { isToolUIPart, lastAssistantMessageIsCompleteWithApprovalResponses, type ChatStatus, type UIMessage } from 'ai'
 import { AlertDialog, Button as HeroButton, ButtonGroup, Dropdown, Header, Label, Modal, SearchField, Separator, Spinner, Surface, Switch, Toolbar, Tooltip, toast } from '@heroui/react'
 import { ArrowDownToLine, ArrowUpRightFromSquare, Bulb, Check, ChevronDown, CircleInfo, Clock, Display, Globe, LayoutSideContentLeft, ListCheck, PencilToLine, PencilToSquare, Terminal, TrashBin, Xmark } from '@gravity-ui/icons'
 import { toPng } from 'dom-to-image-more'
@@ -41,12 +41,20 @@ import { CODE_WORKSPACE_FILE_REF_MIME, CodeWorkspacePanel, CodeWorkspacePanelPop
 import { AgentApprovalBar, type ToolApprovalBarItem } from './AgentApprovalBar'
 import * as configService from '@/services/config'
 import { useTtsSpeaker } from '@/lib/ttsPlayer'
-import type { AgentConversationUpdatedEvent, AgentToolApprovalPolicy, CodeWorkspaceApprovalPolicy, CodeWorkspaceApprovalRequest, CodeWorkspaceEvent, CodeWorkspaceState } from '@/types/electron'
+import type {
+  AgentConversationUpdatedEvent,
+  AgentToolApprovalPolicy,
+  CodeWorkspaceApprovalPolicy,
+  CodeWorkspaceApprovalRequest,
+  CodeWorkspaceEvent,
+  CodeWorkspaceState,
+  LocalCodingAgentConfig,
+  LocalCodingAgentEvent,
+} from '@/types/electron'
 import { REASONING_EFFORT_OPTIONS, reasoningEffortLabel } from './agentPromptPresets'
 import {
   AgentPromptPrimaryAction,
   AgentToolApprovalPolicyDropdown,
-  CodeWorkspaceApprovalPolicyDropdown,
   PromptInputControllerBridge,
   PromptPresetButton,
   SlashCommandButton,
@@ -94,6 +102,9 @@ import { AGENT_PENDING_TITLE, ModelWaitingLine, SubAgentProgressPanel, mergeSubA
 import { ModelItem, type AgentModelItem } from './AgentMessageBlocks'
 import { AgentMessageItem } from './AgentMessageItem'
 import { AgentRecordsMenu } from './AgentRecordsMenu'
+import {
+  normalizeLocalCodingAgentConfig,
+} from '@/lib/localCodingAgent'
 
 // 没有图片/文件附件时给输入框更高的最小高度，避免空状态输入框过矮。
 function AgentPromptTextarea({ workspaceReferenceCount }: { workspaceReferenceCount: number }) {
@@ -138,6 +149,89 @@ function AgentGlassDefs({ onReady }: { onReady: () => void }) {
       </filter>
     </svg>
   )
+}
+
+function createAgentTextMessage(role: 'user' | 'assistant', text: string, id = `${role}-${Date.now()}-${Math.random().toString(36).slice(2)}`): UIMessage {
+  return {
+    id,
+    role,
+    parts: [{ type: 'text', text }],
+  } as UIMessage
+}
+
+function normalizeLocalAgentText(text: string): string {
+  return text
+    .replace(/\r\n/g, '\n')
+    .replace(/\n{4,}/g, '\n\n\n')
+    .trimEnd()
+}
+
+function shouldShowLocalAgentStdout(text: string): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if ((trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'))) return false
+  return true
+}
+
+// 把本地智能体的 activity 事件转成密语标准的消息 part：思考→reasoning，工具/命令→tool-*。
+// 这样就直接复用 buildRenderSegments/renderChainSegment 的折叠“执行过程”卡片，不必另写组件。
+function buildLocalAgentActivityPart(
+  event: Extract<LocalCodingAgentEvent, { type: 'activity' }>,
+  seq: number,
+): UIMessage['parts'][number] {
+  if (event.activity === 'reasoning') {
+    return { type: 'reasoning', text: event.text || '' } as UIMessage['parts'][number]
+  }
+  return {
+    type: `tool-${event.toolName || 'tool'}`,
+    toolCallId: `${event.jobId}-${seq}`,
+    state: 'output-available',
+    input: event.input,
+    output: event.output,
+  } as unknown as UIMessage['parts'][number]
+}
+
+function replaceMessageText(messages: UIMessage[], messageId: string, text: string): UIMessage[] {
+  return messages.map((message) => {
+    if (message.id !== messageId) return message
+    return {
+      ...message,
+      parts: [{ type: 'text', text }],
+    } as UIMessage
+  })
+}
+
+type LocalAgentPatchRequest = {
+  agentId: string
+  assistantMessageId: string
+  changedPaths: string[]
+  jobId: string
+  patch: string
+  scope: AgentScope
+  targetConversationId: number | null
+}
+
+type LocalAgentRunState = {
+  agentId: string
+  assistantMessageId: string
+  jobId: string
+  // 折叠链里的思考/工具卡片按到达顺序累积；最终回复正文单独放 finalText，重建时拼到 activityParts 之后。
+  activityParts: UIMessage['parts']
+  finalText: string
+  scope: AgentScope
+  targetConversationId: number | null
+}
+
+const LOCAL_AGENT_MODEL_ID_PREFIX = 'local-agent:'
+
+function localAgentIdFromModelId(modelId: string): string | null {
+  return modelId.startsWith(LOCAL_AGENT_MODEL_ID_PREFIX)
+    ? modelId.slice(LOCAL_AGENT_MODEL_ID_PREFIX.length)
+    : null
+}
+
+function localAgentModelId(agentId: string): string {
+  return `${LOCAL_AGENT_MODEL_ID_PREFIX}${agentId}`
 }
 
 export default function AgentPage() {
@@ -188,10 +282,6 @@ export default function AgentPage() {
       if (value === 'risk-based' || value === 'full-access') setAgentToolApprovalPolicy(value)
     })
   }, [])
-  const handleAgentToolApprovalPolicyChange = useCallback((policy: AgentToolApprovalPolicy) => {
-    setAgentToolApprovalPolicy(policy)
-    void window.electronAPI.config.set('agentToolApprovalPolicy', policy)
-  }, [])
   const [codeWorkspaceState, setCodeWorkspaceState] = useState<CodeWorkspaceState | null>(null)
   const [codeWorkspaceApproval, setCodeWorkspaceApproval] = useState<CodeWorkspaceApprovalRequest | null>(null)
   const [codeWorkspaceApprovalExpanded, setCodeWorkspaceApprovalExpanded] = useState(false)
@@ -221,6 +311,13 @@ export default function AgentPage() {
       setAgentNotice(`代码权限设置失败：${result.error || '未知错误'}`)
     }
   }, [])
+  // 输入框上只留一个审批策略下拉：AI SDK 工具审批和代码工作区审批风险模型不同，但用户只想调一个开关，
+  // 所以改一个值同时写两边配置（各自的风险判定逻辑仍分开，见 toolApproval.ts / codeWorkspaceService.ts）。
+  const handleAgentToolApprovalPolicyChange = useCallback((policy: AgentToolApprovalPolicy) => {
+    setAgentToolApprovalPolicy(policy)
+    void window.electronAPI.config.set('agentToolApprovalPolicy', policy)
+    void handleCodeWorkspaceApprovalPolicyChange(policy)
+  }, [handleCodeWorkspaceApprovalPolicyChange])
   const handleApproveCodeWorkspace = useCallback((requestId: string) => {
     setCodeWorkspaceApproval(null)
     void window.electronAPI.agentWorkspace.approve(requestId)
@@ -282,6 +379,30 @@ export default function AgentPage() {
   const subAgentProgressRef = useRef(subAgentProgress)
   subAgentProgressRef.current = subAgentProgress
   const [agentNotice, setAgentNotice] = useState('')
+  const [localAgentConfig, setLocalAgentConfig] = useState<LocalCodingAgentConfig | null>(null)
+  const [localAgentRunning, setLocalAgentRunning] = useState(false)
+  const [localAgentPatchRequest, setLocalAgentPatchRequest] = useState<LocalAgentPatchRequest | null>(null)
+  const [localAgentPatchApplying, setLocalAgentPatchApplying] = useState(false)
+  const localAgentRunRef = useRef<LocalAgentRunState | null>(null)
+  const loadLocalAgentConfig = useCallback(async () => {
+    const result = await window.electronAPI.localCodingAgent.getConfig()
+    const nextConfig = normalizeLocalCodingAgentConfig(result.success ? result.config : null)
+    setLocalAgentConfig(nextConfig)
+    return nextConfig
+  }, [])
+  useEffect(() => {
+    void loadLocalAgentConfig().catch(() => {
+      setLocalAgentConfig(normalizeLocalCodingAgentConfig(null))
+    })
+  }, [loadLocalAgentConfig])
+  const cancelLocalAgentRun = useCallback(async () => {
+    const jobId = localAgentRunRef.current?.jobId
+    localAgentRunRef.current = null
+    setLocalAgentRunning(false)
+    if (jobId) {
+      await window.electronAPI.localCodingAgent.cancel(jobId).catch(() => ({ success: false }))
+    }
+  }, [])
   const [usageDetailsModal, setUsageDetailsModal] = useState<AgentMessageMetadata | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const { speakingKey: speakingMessageId, speak: speakMessage, stop: stopSpeakingMessage } = useTtsSpeaker()
@@ -301,6 +422,15 @@ export default function AgentPage() {
     return map
   }, [providersInfo])
   const models = useMemo<AgentModelItem[]>(() => {
+    const localModels: AgentModelItem[] = localAgentConfig?.enabled
+      ? Object.entries(localAgentConfig.agents).map(([agentId, agent]) => ({
+          chef: '本地智能体',
+          chefSlug: '',
+          id: localAgentModelId(agentId),
+          kind: 'local-agent',
+          name: agent.name || agentId,
+        }))
+      : []
     const list = presets.map((preset) => ({
       chef: preset.provider || '其他',
       chefSlug: preset.provider || '',
@@ -313,9 +443,9 @@ export default function AgentPage() {
       })(),
     }))
     if (presets.some((preset) => presetMatchesCurrentConfig(preset, currentProviderId, currentProviderConfig))) {
-      return list
+      return [...list, ...localModels]
     }
-    if (!currentProviderId && !currentModelId) return list
+    if (!currentProviderId && !currentModelId) return [...list, ...localModels]
     const currentDetail = modelInfoByKey.get(`${currentProviderId}::${currentModelId}`) || modelInfoByKey.get(currentModelId)
     return [{
       chef: currentProviderId || 'custom',
@@ -324,20 +454,24 @@ export default function AgentPage() {
       name: currentModelId ? `当前配置 · ${currentModelId}` : '当前配置',
       modelDetail: currentDetail,
       disabled: currentDetail ? !currentDetail.capabilities.toolCall : false,
-    }, ...list]
-  }, [currentModelId, currentProviderConfig, currentProviderId, presets, modelInfoByKey])
+    }, ...list, ...localModels]
+  }, [currentModelId, currentProviderConfig, currentProviderId, localAgentConfig, presets, modelInfoByKey])
   const chefs = useMemo(() => [...new Set(models.map((model) => model.chef))], [models])
   const disabledModelKeys = useMemo(() => models.filter((model) => model.disabled).map((model) => model.id), [models])
   const selectedModelKeys = useMemo(() => new Set([selectedPresetId]), [selectedPresetId])
   const selectedModelData = models.find((model) => model.id === selectedPresetId)
+  const selectedLocalAgentId = localAgentIdFromModelId(selectedPresetId)
   const selectedModelSupportsTools = selectedModelData?.modelDetail
     ? selectedModelData.modelDetail.capabilities.toolCall
     : true
   useEffect(() => {
     const selected = models.find((model) => model.id === selectedPresetId)
-    if (!selected?.disabled) return
     const fallback = models.find((model) => !model.disabled)
-    if (fallback) setSelectedPresetId(fallback.id)
+    if (!selected) {
+      if (fallback) setSelectedPresetId(fallback.id)
+      return
+    }
+    if (selected.disabled && fallback) setSelectedPresetId(fallback.id)
   }, [models, selectedPresetId])
   const selectedModelConfig = useMemo<AgentModelConfig | null>(() => {
     if (!selectedPreset) return { reasoningEffort }
@@ -517,6 +651,8 @@ export default function AgentPage() {
   const lastStreamingSaveAtRef = useRef(0)
   const [modelOpen, setModelOpen] = useState(false)
   const busy = status === 'submitted' || status === 'streaming'
+  const effectiveBusy = busy || localAgentRunning
+  const effectiveStatus: ChatStatus = localAgentRunning ? 'streaming' : status
   useEffect(() => {
     const lastMessage = messages[messages.length - 1]
     const metadata = lastMessage?.metadata && typeof lastMessage.metadata === 'object'
@@ -527,7 +663,9 @@ export default function AgentPage() {
     }
     win.__ctAgentUiSmoke = {
       status,
-      busy,
+      busy: effectiveBusy,
+      selectedLocalAgentId,
+      localAgentRunning,
       messageCount: messages.length,
       lastMessage: lastMessage ? {
         id: lastMessage.id,
@@ -550,13 +688,13 @@ export default function AgentPage() {
         })),
       } : null,
     }
-  }, [busy, messages, status])
+  }, [effectiveBusy, localAgentRunning, messages, selectedLocalAgentId, status])
   const clientIdRef = useRef(`agent-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   const conversationUpdatedAtRef = useRef(0)
   const pendingConversationReloadRef = useRef<number | null>(null)
   const loadConversationByIdRef = useRef<((id: number, options?: { closeRecords?: boolean }) => Promise<boolean>) | null>(null)
   const busyRef = useRef(false)
-  busyRef.current = busy
+  busyRef.current = effectiveBusy
   const [memoryIntroStatus, setMemoryIntroStatus] = useState<AgentMemoryIntroStatus>('checking')
   const markMemoryIntroSatisfied = useCallback(() => {
     setMemoryIntroStatus('hidden')
@@ -638,7 +776,7 @@ export default function AgentPage() {
     }
     return ''
   }, [messages])
-  const shouldAnchorLatestUser = busy && !!latestUserMessageId
+  const shouldAnchorLatestUser = effectiveBusy && !!latestUserMessageId
   const lastAssistantMessageHasDelegateTool = useMemo(() => {
     const last = messages[messages.length - 1]
     return !!last && last.role === 'assistant' && last.parts.some((part) => (
@@ -682,7 +820,7 @@ export default function AgentPage() {
   const [shareError, setShareError] = useState('')
   const shareCardRef = useRef<HTMLDivElement | null>(null)
   // Agent 运行状态 → 桌宠动作：跑→run，报错→failed，收尾→done(挥手 2.6s)。
-  const petAgentState = busy ? 'running' : (agentNotice && !agentNotice.startsWith('状态：') ? 'failed' : 'idle')
+  const petAgentState = effectiveBusy ? 'running' : (agentNotice && !agentNotice.startsWith('状态：') ? 'failed' : 'idle')
   const petPrevBusyRef = useRef(false)
   useEffect(() => {
     if (petAgentState === 'idle' && petPrevBusyRef.current) {
@@ -879,6 +1017,31 @@ export default function AgentPage() {
     if (result?.success) void refreshConversationRecords()
   }, [refreshConversationRecords, saveConversationMessages])
 
+  const persistLocalAgentConversationMessages = useCallback(async (
+    targetId: number | null,
+    nextMessages: UIMessage[],
+    nextScope: AgentScope,
+    agentId: string,
+  ) => {
+    if (!targetId || nextMessages.length === 0) return
+    const result = await window.electronAPI.agent.saveConversationMessages({
+      id: targetId,
+      messages: nextMessages,
+      scope: nextScope,
+      modelProvider: 'local-coding-agent',
+      modelId: agentId,
+      baseUpdatedAt: conversationUpdatedAtRef.current,
+      mergeIfStale: true,
+      originClientId: clientIdRef.current,
+    })
+    if (result?.success) {
+      lastSavedMessagesRef.current = signatureAgentMessages(nextMessages)
+      const record = normalizeConversationRecord(result.conversation)
+      if (record) conversationUpdatedAtRef.current = Number(record.updatedAt || conversationUpdatedAtRef.current)
+      void refreshConversationRecords()
+    }
+  }, [refreshConversationRecords])
+
   const flushConversationMessagesToStorage = useCallback((options: { refreshRecords?: boolean } = {}) => {
     const targetId = conversationIdRef.current
     const currentMessages = messagesRef.current
@@ -946,6 +1109,97 @@ export default function AgentPage() {
     void refreshConversationRecords()
     return record.id
   }, [applyConversationId, refreshConversationRecords])
+
+  const createLocalAgentConversation = useCallback(async (scope: AgentScope, title: string, agentId: string): Promise<number | null> => {
+    const result = await window.electronAPI.agent.createConversation({
+      scope,
+      title,
+      modelProvider: 'local-coding-agent',
+      modelId: agentId,
+      originClientId: clientIdRef.current,
+    })
+    const record = result.success ? normalizeConversationRecord(result.conversation) : null
+    if (!record) return null
+    applyConversationId(record.id)
+    conversationUpdatedAtRef.current = Number(record.updatedAt || Date.now())
+    setConversationTitle(record.title)
+    void refreshConversationRecords()
+    return record.id
+  }, [applyConversationId, refreshConversationRecords])
+
+  // 从 run 的 activityParts + finalText 重建这条助手消息的 parts：折叠链在前，最终回复正文在后。
+  const rebuildLocalAgentMessage = useCallback((run: LocalAgentRunState) => {
+    const parts = run.finalText
+      ? [...run.activityParts, { type: 'text', text: run.finalText } as UIMessage['parts'][number]]
+      : [...run.activityParts]
+    const nextMessages = messagesRef.current.map((message) =>
+      message.id === run.assistantMessageId ? ({ ...message, parts } as UIMessage) : message)
+    setMessages(nextMessages)
+    messagesRef.current = nextMessages
+  }, [setMessages])
+
+  useEffect(() => {
+    return window.electronAPI.localCodingAgent.onEvent((event) => {
+      const run = localAgentRunRef.current
+      if (!run || event.jobId !== run.jobId) return
+
+      if (event.type === 'message') {
+        // 只有模型的最终回复进正文；密语的状态提示一律不入气泡。
+        run.finalText = normalizeLocalAgentText([run.finalText, event.text].filter(Boolean).join('\n\n'))
+        rebuildLocalAgentMessage(run)
+      } else if (event.type === 'stdout' && shouldShowLocalAgentStdout(event.text)) {
+        // 非 JSON 型 CLI（custom）的纯文本兜底。
+        run.finalText = normalizeLocalAgentText(`${run.finalText}${event.text}`)
+        rebuildLocalAgentMessage(run)
+      } else if (event.type === 'activity') {
+        run.activityParts = [...run.activityParts, buildLocalAgentActivityPart(event, run.activityParts.length)]
+        rebuildLocalAgentMessage(run)
+      }
+
+      if (event.type === 'diff') {
+        setLocalAgentPatchRequest(event.changedPaths.length > 0
+          ? {
+              agentId: run.agentId,
+              assistantMessageId: run.assistantMessageId,
+              changedPaths: event.changedPaths,
+              jobId: event.jobId,
+              patch: event.patch,
+              scope: run.scope,
+              targetConversationId: run.targetConversationId,
+            }
+          : null)
+      }
+
+      if (event.type === 'error') {
+        setAgentNotice(event.error)
+        setLocalAgentRunning(false)
+        const completedRun = localAgentRunRef.current
+        localAgentRunRef.current = null
+        if (completedRun) {
+          void persistLocalAgentConversationMessages(
+            completedRun.targetConversationId,
+            messagesRef.current,
+            completedRun.scope,
+            completedRun.agentId,
+          )
+        }
+      }
+
+      if (event.type === 'finished') {
+        setLocalAgentRunning(false)
+        const completedRun = localAgentRunRef.current
+        localAgentRunRef.current = null
+        if (completedRun) {
+          void persistLocalAgentConversationMessages(
+            completedRun.targetConversationId,
+            messagesRef.current,
+            completedRun.scope,
+            completedRun.agentId,
+          )
+        }
+      }
+    })
+  }, [rebuildLocalAgentMessage, persistLocalAgentConversationMessages])
 
   const restoreLoadedConversation = useCallback((
     loaded: AgentConversationLoaded,
@@ -1026,12 +1280,12 @@ export default function AgentPage() {
   }, [applyConversationId, loadConversationById, refreshConversationRecords, setMessages])
 
   useEffect(() => {
-    if (busy) return
+    if (effectiveBusy) return
     const pendingId = pendingConversationReloadRef.current
     if (!pendingId) return
     pendingConversationReloadRef.current = null
     void loadConversationById(pendingId, { closeRecords: false })
-  }, [busy, loadConversationById])
+  }, [effectiveBusy, loadConversationById])
 
   const shareFilteredRecords = useMemo(() => {
     const keyword = shareSearch.trim().toLowerCase()
@@ -1061,7 +1315,7 @@ export default function AgentPage() {
   }, [])
 
   const handleOpenShare = useCallback(async () => {
-    if (busy) {
+    if (effectiveBusy) {
       setAgentNotice('当前 Agent 正在输出，等这轮结束后再分享。')
       return
     }
@@ -1079,7 +1333,7 @@ export default function AgentPage() {
       const target = records.find((record) => record.id === currentId) || records[0]
       if (target) void loadShareConversation(target)
     })
-  }, [busy, loadShareConversation, refreshConversationRecords, saveCurrentConversationForShare])
+  }, [effectiveBusy, loadShareConversation, refreshConversationRecords, saveCurrentConversationForShare])
 
   const handleSaveShareImage = useCallback(async () => {
     if (!sharePreviewData || !shareCardRef.current) return
@@ -1138,8 +1392,108 @@ export default function AgentPage() {
       })
   }, [])
 
+  const submitLocalAgentMessage = useCallback(async (input: {
+    agentId: string
+    files: PromptInputMessage['files']
+    submitScope: AgentScope
+    text: string
+    titleText: string
+  }) => {
+    const workspace = codeWorkspaceRef.current
+    if (!workspace) {
+      setAgentNotice('请先选择代码工作区，再使用本地智能体。')
+      return
+    }
+    if (input.files.length > 0) {
+      setAgentNotice('本地智能体暂不处理图片或附件，请改用文本任务和代码工作区文件引用。')
+      return
+    }
+
+    const config = await loadLocalAgentConfig()
+    if (!config.enabled) {
+      setAgentNotice('请先在 设置 → AI 接入 → 本地智能体 中启用本地智能体。')
+      return
+    }
+    const agentId = input.agentId
+    const agent = config.agents[agentId]
+    if (!agent) {
+      setAgentNotice('本地智能体配置不完整，请到 设置 → AI 接入 → 本地智能体 检查配置。')
+      return
+    }
+
+    activeScopeRef.current = input.submitScope
+    setAgentNotice('')
+    setAgentProgress([])
+    setSubAgentProgress([])
+    setLocalAgentPatchRequest(null)
+
+    let targetConversationId = conversationIdRef.current
+    if (!targetConversationId) {
+      const fallback = buildFallbackConversationTitle(input.titleText || input.text)
+      setConversationTitle(fallback)
+      targetConversationId = await createLocalAgentConversation(input.submitScope, fallback, agentId)
+      if (!targetConversationId) {
+        setAgentNotice('创建本地智能体对话失败。')
+        return
+      }
+    }
+
+    const userMessage = createAgentTextMessage('user', input.text)
+    const assistantMessage = createAgentTextMessage('assistant', '')
+    const nextMessages = [...messagesRef.current, userMessage, assistantMessage]
+    setMessages(nextMessages)
+    messagesRef.current = nextMessages
+    lastSavedMessagesRef.current = ''
+    setMentions([])
+    setWorkspaceFileReferences([])
+    setLocalAgentRunning(true)
+    localAgentRunRef.current = {
+      agentId,
+      assistantMessageId: assistantMessage.id,
+      jobId: '',
+      activityParts: [],
+      finalText: '',
+      scope: input.submitScope,
+      targetConversationId,
+    }
+
+    const result = await window.electronAPI.localCodingAgent.run({
+      agentId,
+      mode: 'propose',
+      prompt: input.text,
+      workspace,
+      model: agent.model,
+    })
+
+    if (!result.success || !result.jobId) {
+      const errorText = result.error || '本地智能体启动失败'
+      setLocalAgentRunning(false)
+      setAgentNotice(errorText)
+      localAgentRunRef.current = null
+      const failedText = `${assistantMessage.parts[0]?.type === 'text' ? assistantMessage.parts[0].text : ''}\n${errorText}`.trim()
+      const failedMessages = replaceMessageText(messagesRef.current, assistantMessage.id, failedText)
+      setMessages(failedMessages)
+      messagesRef.current = failedMessages
+      await persistLocalAgentConversationMessages(targetConversationId, failedMessages, input.submitScope, agentId)
+      return
+    }
+
+    const pendingRun = localAgentRunRef.current
+    if (!pendingRun || pendingRun.assistantMessageId !== assistantMessage.id) {
+      await window.electronAPI.localCodingAgent.cancel(result.jobId).catch(() => ({ success: false }))
+      return
+    }
+    localAgentRunRef.current = { ...pendingRun, jobId: result.jobId }
+  }, [
+    createLocalAgentConversation,
+    loadLocalAgentConfig,
+    persistLocalAgentConversationMessages,
+    setMessages,
+  ])
+
   const handleNewConversation = useCallback(() => {
     if (busy) void stop()
+    if (localAgentRunning) void cancelLocalAgentRun()
     setMessages([])
     messagesRef.current = []
     setMentions([])
@@ -1159,12 +1513,13 @@ export default function AgentPage() {
     titleRequestSeqRef.current += 1
     applyConversationId(null)
     setRecordsOpen(false)
-  }, [applyConversationId, busy, setMessages, stop])
+  }, [applyConversationId, busy, cancelLocalAgentRun, localAgentRunning, setMessages, stop])
 
   const handleOpenRecord = useCallback((record: AgentConversationRecord) => {
     if (busy) void stop()
+    if (localAgentRunning) void cancelLocalAgentRun()
     void loadConversationById(record.id)
-  }, [busy, loadConversationById, stop])
+  }, [busy, cancelLocalAgentRun, loadConversationById, localAgentRunning, stop])
 
   const handleDeleteRecord = useCallback(async (record: AgentConversationRecord) => {
     try {
@@ -1458,6 +1813,10 @@ export default function AgentPage() {
   }, [restoreLoadedConversation])
 
   const handleSubmit = async (message: PromptInputMessage) => {
+    if (localAgentRunning) {
+      void cancelLocalAgentRun()
+      return
+    }
     if (busy) {
       void stop()
       setSubAgentProgress([])
@@ -1465,10 +1824,6 @@ export default function AgentPage() {
     }
     const currentMentions = mentions
     if (message.files.length === 0 && currentMentions.length === 0 && workspaceFileReferences.length === 0 && await runSlashCommandText(message.text)) {
-      return
-    }
-    if (!selectedModelSupportsTools) {
-      setAgentNotice('当前模型不支持工具调用，无法查询本地聊天记录。请切换到带“工具调用”能力的模型。')
       return
     }
     const isFirstUserMessage = messages.length === 0
@@ -1490,6 +1845,23 @@ export default function AgentPage() {
         ? { kind: 'session', sessionId: currentMentions[0].username, displayName: currentMentions[0].displayName }
         : { kind: 'global' }
     const submitScope: AgentScope = conversationIdRef.current ? activeScopeRef.current : computedScope
+
+    if (selectedLocalAgentId) {
+      await submitLocalAgentMessage({
+        agentId: selectedLocalAgentId,
+        files: message.files,
+        submitScope,
+        text,
+        titleText: firstMessageForTitle || currentWorkspaceFileReferences.map((ref) => ref.name || displayBasename(ref.path)).join(' '),
+      })
+      return
+    }
+
+    if (!selectedModelSupportsTools) {
+      setAgentNotice('当前模型不支持工具调用，无法查询本地聊天记录。请切换到带“工具调用”能力的模型。')
+      return
+    }
+
     activeScopeRef.current = submitScope
     submitScopeRef.current = submitScope
     runIsPlanRef.current = planModeRef.current
@@ -1525,7 +1897,7 @@ export default function AgentPage() {
   // 三个都用 messagesRef.current 而不是闭包里的 messages：后者每次流式 tick 都变，
   // 会导致这几个回调的引用跟着每 tick 重建，直接传给逐条消息的 memo 组件时白白让它们全部重渲染。
   const handleRegenerateAssistantMessage = useCallback((messageIndex: number) => {
-    if (busy || !selectedModelSupportsTools) return
+    if (effectiveBusy || !selectedModelSupportsTools) return
     const currentMessages = messagesRef.current
     const assistantMessage = currentMessages[messageIndex]
     if (!assistantMessage || assistantMessage.role !== 'assistant') return
@@ -1552,10 +1924,10 @@ export default function AgentPage() {
       setAgentRunPending(false)
     })
     void sendPromise
-  }, [busy, regenerate, selectedModelSupportsTools])
+  }, [effectiveBusy, regenerate, selectedModelSupportsTools])
 
   const handleRetryUserMessage = useCallback((messageIndex: number) => {
-    if (busy || !selectedModelSupportsTools) return
+    if (effectiveBusy || !selectedModelSupportsTools) return
     const currentMessages = messagesRef.current
     const userMessage = currentMessages[messageIndex]
     if (!userMessage || userMessage.role !== 'user') return
@@ -1576,10 +1948,10 @@ export default function AgentPage() {
       setAgentRunPending(false)
     })
     void sendPromise
-  }, [busy, regenerate, selectedModelSupportsTools, setMessages, stopSpeakingMessage])
+  }, [effectiveBusy, regenerate, selectedModelSupportsTools, setMessages, stopSpeakingMessage])
 
   const handleEditUserMessage = useCallback((messageIndex: number, text: string) => {
-    if (busy) return
+    if (effectiveBusy) return
     const currentMessages = messagesRef.current
     const userMessage = currentMessages[messageIndex]
     if (!userMessage || userMessage.role !== 'user') return
@@ -1590,11 +1962,11 @@ export default function AgentPage() {
     setAgentNotice('')
     setAgentProgress([])
     setSubAgentProgress([])
-  }, [busy, setMessages])
+  }, [effectiveBusy, setMessages])
 
   // 计划模式确认：关闭计划模式并让 Agent 按上一条计划开始执行（沿用当前会话 scope）
   const handleExecutePlan = useCallback(() => {
-    if (busy || !selectedModelSupportsTools) return
+    if (effectiveBusy || !selectedModelSupportsTools) return
     planModeRef.current = false
     runIsPlanRef.current = false
     setPlanMode(false)
@@ -1608,10 +1980,10 @@ export default function AgentPage() {
       setAgentRunPending(false)
     })
     void sendPromise
-  }, [busy, selectedModelSupportsTools, sendMessage])
+  }, [effectiveBusy, selectedModelSupportsTools, sendMessage])
 
   const handleToolApproval = useCallback((approvalId: string, approved: boolean) => {
-    if (!approvalId || busy) return
+    if (!approvalId || effectiveBusy) return
     setAgentNotice('')
     setAgentProgress([])
     setAgentRunPending(true)
@@ -1623,11 +1995,58 @@ export default function AgentPage() {
       approved,
       reason: approved ? '用户已确认' : '用户拒绝',
     })
-  }, [addToolApprovalResponse, busy])
+  }, [addToolApprovalResponse, effectiveBusy])
+
+  // 补丁应用/丢弃的结果属于密语状态，走气泡外的提示条，不改动助手消息（否则会抹掉折叠链的思考/工具卡片）。
+  const appendLocalAgentPatchActionResult = useCallback((_request: LocalAgentPatchRequest, text: string) => {
+    setAgentNotice(text)
+  }, [])
+
+  const handleApplyLocalAgentPatch = useCallback(async () => {
+    const request = localAgentPatchRequest
+    if (!request || localAgentPatchApplying) return
+    setLocalAgentPatchApplying(true)
+    setAgentNotice('')
+    try {
+      const result = await window.electronAPI.localCodingAgent.applyPatch(request.jobId)
+      if (!result.success) {
+        const message = result.error || '本地智能体补丁应用失败'
+        setAgentNotice(message)
+        await appendLocalAgentPatchActionResult(request, `补丁应用失败：${message}`)
+        return
+      }
+      const changedPaths = result.changedPaths?.length ? result.changedPaths : request.changedPaths
+      await appendLocalAgentPatchActionResult(request, `补丁已应用：\n${changedPaths.map((item) => `- ${item}`).join('\n')}`)
+      setLocalAgentPatchRequest(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '本地智能体补丁应用失败'
+      setAgentNotice(message)
+      await appendLocalAgentPatchActionResult(request, `补丁应用失败：${message}`)
+    } finally {
+      setLocalAgentPatchApplying(false)
+    }
+  }, [appendLocalAgentPatchActionResult, localAgentPatchApplying, localAgentPatchRequest])
+
+  const handleDiscardLocalAgentPatch = useCallback(async () => {
+    const request = localAgentPatchRequest
+    if (!request || localAgentPatchApplying) return
+    setLocalAgentPatchApplying(true)
+    setAgentNotice('')
+    try {
+      await window.electronAPI.localCodingAgent.discardPatch(request.jobId)
+      await appendLocalAgentPatchActionResult(request, '本地智能体补丁已丢弃。')
+      setLocalAgentPatchRequest(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '本地智能体补丁丢弃失败'
+      setAgentNotice(message)
+    } finally {
+      setLocalAgentPatchApplying(false)
+    }
+  }, [appendLocalAgentPatchActionResult, localAgentPatchApplying, localAgentPatchRequest])
 
   // 只有最后一条消息里可能挂着待确认的工具调用（见 toolApproval.ts：本轮结束即暂停等待用户响应）
   const pendingToolApprovals = useMemo<ToolApprovalBarItem[]>(() => {
-    if (busy) return []
+    if (effectiveBusy) return []
     const lastMessage = messages[messages.length - 1]
     if (!lastMessage || lastMessage.role !== 'assistant') return []
     const items: ToolApprovalBarItem[] = []
@@ -1643,7 +2062,7 @@ export default function AgentPage() {
       })
     }
     return items
-  }, [busy, messages])
+  }, [effectiveBusy, messages])
 
   const handleModelSelect = useCallback((id: string) => {
     const model = models.find((item) => item.id === id)
@@ -1834,7 +2253,7 @@ export default function AgentPage() {
                 <HeroButton
                   aria-label="分享对话"
                   className="size-9 p-0"
-                  isDisabled={busy}
+                  isDisabled={effectiveBusy}
                   isIconOnly
                   onPress={handleOpenShare}
                   size="md"
@@ -1842,7 +2261,7 @@ export default function AgentPage() {
                 >
                   <ArrowUpRightFromSquare className="size-4.5" />
                 </HeroButton>
-                <Tooltip.Content placement="bottom">{busy ? '输出结束后可分享' : '分享对话'}</Tooltip.Content>
+                <Tooltip.Content placement="bottom">{effectiveBusy ? '输出结束后可分享' : '分享对话'}</Tooltip.Content>
               </Tooltip>
               <Tooltip delay={0}>
                 <HeroButton
@@ -1893,7 +2312,7 @@ export default function AgentPage() {
           ) : (
             messages.map((message, messageIndex) => (
               <AgentMessageItem
-                busy={busy}
+                busy={effectiveBusy}
                 copied={copiedMessageId === message.id}
                 isLastMessage={messageIndex === messages.length - 1}
                 key={message.id}
@@ -1912,7 +2331,7 @@ export default function AgentPage() {
                 selectedModelSupportsTools={selectedModelSupportsTools}
                 sessionNameOf={sessionNameOf}
                 speaking={speakingMessageId === message.id}
-                status={status}
+                status={effectiveStatus}
                 subAgentProgress={subAgentProgress}
                 toolElapsedByKey={toolElapsedByKey}
               />
@@ -1944,6 +2363,35 @@ export default function AgentPage() {
       <div className="pointer-events-none absolute right-0 bottom-0 left-0 h-44">
         <div className="absolute right-0 bottom-3 left-0 grid place-items-center px-5">
           <div className="pointer-events-auto w-full max-w-4xl">
+        {localAgentPatchRequest && (
+          <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2 rounded-(--agent-radius,12px) border border-border bg-surface/90 px-3 py-2 text-xs shadow-lg">
+            <Terminal className="size-4 shrink-0 text-muted" />
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-foreground">本地智能体生成了补丁</div>
+              <div className="truncate text-muted-foreground">
+                {localAgentPatchRequest.changedPaths.slice(0, 4).join('、')}
+                {localAgentPatchRequest.changedPaths.length > 4 ? ` 等 ${localAgentPatchRequest.changedPaths.length} 个文件` : ''}
+              </div>
+            </div>
+            <HeroButton
+              isDisabled={localAgentPatchApplying}
+              onPress={handleApplyLocalAgentPatch}
+              size="sm"
+              variant="primary"
+            >
+              {localAgentPatchApplying ? <Spinner size="sm" /> : <Check className="size-3.5" />}
+              应用
+            </HeroButton>
+            <HeroButton
+              isDisabled={localAgentPatchApplying}
+              onPress={handleDiscardLocalAgentPatch}
+              size="sm"
+              variant="tertiary"
+            >
+              丢弃
+            </HeroButton>
+          </div>
+        )}
         <AgentApprovalBar
           codeWorkspaceApproval={codeWorkspaceApproval}
           onCodeWorkspaceApprove={handleApproveCodeWorkspace}
@@ -1983,7 +2431,7 @@ export default function AgentPage() {
               />
               <PromptInputTextarea
                 className="min-h-10 max-h-40 py-2 text-sm leading-5"
-                placeholder="问问你的聊天记录，Enter 发送，Shift + Enter 换行…"
+                placeholder={selectedLocalAgentId ? '让本地智能体处理当前代码工作区，Enter 发送，Shift + Enter 换行…' : '问问你的聊天记录，Enter 发送，Shift + Enter 换行…'}
               />
             </PromptInputBody>
 
@@ -2062,13 +2510,6 @@ export default function AgentPage() {
                   </HeroButton>
                 )}
 
-                {codeWorkspaceState?.workspace && (
-                  <CodeWorkspaceApprovalPolicyDropdown
-                    policy={codeWorkspaceState.workspace.approvalPolicy}
-                    onChange={handleCodeWorkspaceApprovalPolicyChange}
-                  />
-                )}
-
                 <AgentToolApprovalPolicyDropdown
                   policy={agentToolApprovalPolicy}
                   onChange={handleAgentToolApprovalPolicyChange}
@@ -2078,7 +2519,9 @@ export default function AgentPage() {
               <div className="flex items-center gap-2">
                 <Dropdown isOpen={modelOpen} onOpenChange={setModelOpen}>
                   <HeroButton aria-label="选择模型" className="max-w-56" size="sm" variant="tertiary">
-                    {selectedModelData?.chefSlug && (
+                    {selectedLocalAgentId ? (
+                      <Terminal className="size-4 shrink-0 text-muted" />
+                    ) : selectedModelData?.chefSlug && (
                       <AIProviderLogo providerId={selectedModelData.chefSlug} alt={selectedModelData.chef} className="shrink-0" size={18} />
                     )}
                     {selectedModelData?.name && (
@@ -2132,7 +2575,7 @@ export default function AgentPage() {
                   </Dropdown.Popover>
                 </Dropdown>
                 <ButtonGroup size="sm">
-                  <AgentPromptPrimaryAction busy={busy} status={status} workspaceReferenceCount={workspaceFileReferences.length} />
+                  <AgentPromptPrimaryAction busy={effectiveBusy} status={effectiveStatus} workspaceReferenceCount={workspaceFileReferences.length} />
                 </ButtonGroup>
               </div>
             </PromptInputFooter>

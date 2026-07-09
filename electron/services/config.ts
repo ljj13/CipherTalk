@@ -243,11 +243,48 @@ interface ConfigSchema {
   // 待处理工具审批的签名缓存落盘副本，App 完整重启后用它重建 aiHandlers.ts 里的内存 Map，
   // 否则重启后签名缓存清空、待确认卡片点了也会因"找不到缓存签名"而失败
   agentToolApprovalSignatures: Array<{ approvalId: string; toolCallId: string; signature: string; at: number }>
+  localCodingAgentConfig: {
+    enabled: boolean
+    activeAgent: string
+    agents: Record<string, {
+      kind: 'codex' | 'claude-cli' | 'opencode' | 'custom'
+      name: string
+      executablePath: string
+      argsTemplate?: string[]
+      env?: Record<string, string>
+      timeoutMs: number
+      model?: string
+    }>
+  }
 }
 
 const defaults: ConfigSchema = {
   agentToolApprovalSecret: '',
   agentToolApprovalSignatures: [],
+  localCodingAgentConfig: {
+    enabled: false,
+    activeAgent: 'codex',
+    agents: {
+      codex: {
+        kind: 'codex',
+        name: 'Codex CLI',
+        executablePath: '',
+        timeoutMs: 1_800_000,
+      },
+      claude: {
+        kind: 'claude-cli',
+        name: 'Claude Code',
+        executablePath: '',
+        timeoutMs: 1_800_000,
+      },
+      opencode: {
+        kind: 'opencode',
+        name: 'OpenCode',
+        executablePath: '',
+        timeoutMs: 1_800_000,
+      },
+    },
+  },
   dbPath: '',
   decryptKey: '',
   myWxid: '',

@@ -271,6 +271,45 @@ export interface CodeWorkspaceEvent {
   at: number
 }
 
+export type LocalCodingAgentKind = 'codex' | 'claude-cli' | 'opencode' | 'custom'
+export type LocalCodingAgentRunMode = 'inspect' | 'propose' | 'direct'
+
+export interface LocalCodingAgentDefinition {
+  kind: LocalCodingAgentKind
+  name: string
+  executablePath: string
+  argsTemplate?: string[]
+  env?: Record<string, string>
+  timeoutMs: number
+  model?: string
+}
+
+export interface LocalCodingAgentConfig {
+  enabled: boolean
+  activeAgent: string
+  agents: Record<string, LocalCodingAgentDefinition>
+}
+
+export type LocalCodingAgentEvent =
+  | { type: 'started'; jobId: string; agentId: string; mode: LocalCodingAgentRunMode; cwd: string; at: number }
+  | { type: 'stdout'; jobId: string; text: string; at: number }
+  | { type: 'stderr'; jobId: string; text: string; at: number }
+  | { type: 'message'; jobId: string; role: 'assistant' | 'tool' | 'system'; text: string; at: number }
+  | { type: 'activity'; jobId: string; activity: 'reasoning' | 'tool'; toolName?: string; input?: unknown; output?: unknown; text?: string; at: number }
+  | { type: 'diff'; jobId: string; patch: string; changedPaths: string[]; at: number }
+  | { type: 'finished'; jobId: string; exitCode: number | null; durationMs: number; at: number }
+  | { type: 'error'; jobId: string; error: string; at: number }
+
+export interface LocalCodingAgentDetectResult {
+  id: string
+  kind: LocalCodingAgentKind
+  name: string
+  executablePath: string
+  found: boolean
+  version?: string
+  error?: string
+}
+
 export interface StatsPartialError {
   dbName?: string
   dbPath?: string
@@ -1446,6 +1485,16 @@ export interface ElectronAPI {
     reject: (requestId: string, reason?: string) => Promise<{ success: boolean; error?: string }>
     onApprovalRequest: (callback: (request: CodeWorkspaceApprovalRequest) => void) => () => void
     onWorkspaceEvent: (callback: (event: CodeWorkspaceEvent) => void) => () => void
+  }
+  localCodingAgent: {
+    getConfig: () => Promise<{ success: boolean; config?: LocalCodingAgentConfig; error?: string }>
+    setConfig: (config: LocalCodingAgentConfig) => Promise<{ success: boolean; config?: LocalCodingAgentConfig; error?: string }>
+    detect: () => Promise<{ success: boolean; results?: LocalCodingAgentDetectResult[]; error?: string }>
+    run: (payload: { agentId: string; mode: LocalCodingAgentRunMode; prompt: string; workspace: CodeWorkspaceRef; model?: string }) => Promise<{ success: boolean; jobId?: string; error?: string }>
+    cancel: (jobId: string) => Promise<{ success: boolean; error?: string }>
+    applyPatch: (jobId: string) => Promise<{ success: boolean; changedPaths?: string[]; error?: string }>
+    discardPatch: (jobId: string) => Promise<{ success: boolean; changedPaths?: string[]; error?: string }>
+    onEvent: (callback: (event: LocalCodingAgentEvent) => void) => () => void
   }
   persona: {
     get: (sessionId: string) => Promise<{ success: boolean; persona?: PersonaRecordInfo | null; error?: string }>

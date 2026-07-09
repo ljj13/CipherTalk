@@ -39,9 +39,11 @@ import RerankTab from '../settings/tabs/RerankTab'
 import WebSearchTab from '../settings/tabs/WebSearchTab'
 import TtsTab from '../settings/tabs/TtsTab'
 import ImageGenTab from '../settings/tabs/ImageGenTab'
+import LocalCodingAgentSettings from './LocalCodingAgentSettings'
 
 type AiProviderProtocol = configService.AiProviderProtocol
 type PresetTab = 'name' | 'provider' | 'config'
+type ConfigMode = 'llm' | 'vector' | 'rerank' | 'webSearch' | 'tts' | 'imageGen' | 'localAgent'
 
 interface AISummarySettingsProps {
   showMessage: (text: string, success: boolean) => void
@@ -318,7 +320,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
   const [remoteModelDetails, setRemoteModelDetails] = useState<AIModelInfo[]>([])
   const [modelListError, setModelListError] = useState('')
   const [presets, setPresets] = useState<configService.AiConfigPreset[]>([])
-  const [configMode, setConfigMode] = useState<'llm' | 'vector' | 'rerank' | 'webSearch' | 'tts' | 'imageGen'>('llm')
+  const [configMode, setConfigMode] = useState<ConfigMode>('llm')
   const [showPresetDrawer, setShowPresetDrawer] = useState(false)
   const [showSavePresetDialog, setShowSavePresetDialog] = useState(false)
   const [presetName, setPresetName] = useState('')
@@ -751,19 +753,9 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
             <Typography.Heading level={2} className="text-lg">AI 接入配置</Typography.Heading>
             <Typography.Paragraph size="sm" color="muted" className="mt-1">管理第三方 AI 服务商、模型、API 密钥和代理连接。</Typography.Paragraph>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-            {configMode === 'llm' && (
-              <>
-                <Button type="button" variant="primary" size="sm" onPress={openPresetDialogFromCurrent}>
-                  <Plus width={16} height={16} /> 添加预设
-                </Button>
-                <Button type="button" variant="outline" size="sm" onPress={() => setShowPresetDrawer(true)}>
-                  <GearDot width={16} height={16} /> 预设管理
-                </Button>
-              </>
-            )}
+          <div className="ml-auto flex shrink-0 items-center justify-end">
             {/* 大模型 / 向量 / 重排 切换：同一套 UI 配置不同对象 */}
-            <Tabs className="shrink-0" selectedKey={configMode} onSelectionChange={(key) => setConfigMode(key as 'llm' | 'vector' | 'rerank' | 'webSearch' | 'tts' | 'imageGen')}>
+            <Tabs className="shrink-0" selectedKey={configMode} onSelectionChange={(key) => setConfigMode(key as ConfigMode)}>
               <Tabs.ListContainer>
                 <Tabs.List aria-label="配置类型">
                   <Tabs.Tab className="whitespace-nowrap" id="llm">大模型<Tabs.Indicator /></Tabs.Tab>
@@ -772,11 +764,23 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
                   <Tabs.Tab className="whitespace-nowrap" id="webSearch">联网<Tabs.Indicator /></Tabs.Tab>
                   <Tabs.Tab className="whitespace-nowrap" id="tts">语音<Tabs.Indicator /></Tabs.Tab>
                   <Tabs.Tab className="whitespace-nowrap" id="imageGen">作图<Tabs.Indicator /></Tabs.Tab>
+                  <Tabs.Tab className="whitespace-nowrap" id="localAgent">本地智能体<Tabs.Indicator /></Tabs.Tab>
                 </Tabs.List>
               </Tabs.ListContainer>
             </Tabs>
           </div>
         </div>
+
+        {configMode === 'llm' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button type="button" variant="primary" size="sm" onPress={openPresetDialogFromCurrent}>
+              <Plus width={16} height={16} /> 添加预设
+            </Button>
+            <Button type="button" variant="outline" size="sm" onPress={() => setShowPresetDrawer(true)}>
+              <GearDot width={16} height={16} /> 预设管理
+            </Button>
+          </div>
+        )}
 
         <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_330px]" style={{ display: configMode !== 'llm' ? 'none' : undefined }}>
           <Card>
@@ -1023,6 +1027,7 @@ function AISummarySettings({ showMessage }: AISummarySettingsProps) {
         {configMode === 'webSearch' && <WebSearchTab />}
         {configMode === 'tts' && <TtsTab />}
         {configMode === 'imageGen' && <ImageGenTab />}
+        {configMode === 'localAgent' && <LocalCodingAgentSettings showMessage={showMessage} />}
       </div>
 
       {settingsPagePortalHost && createPortal(

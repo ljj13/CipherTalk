@@ -4,7 +4,7 @@
 import { ArrowsRotateLeft, Bulb, ChartColumn, Clock, ClockArrowRotateLeft, Hand, LayoutHeaderCellsLarge, Link, ListCheck, Magnifier, PencilToSquare, Persons, QuoteOpen, ShieldCheck, ShieldExclamation } from '@gravity-ui/icons'
 import type { IconComponent } from '@/types/icon'
 import type { AgentReasoningEffort } from '@/features/aiagent/transport/ipcChatTransport'
-import type { AgentToolApprovalPolicy, CodeWorkspaceApprovalPolicy } from '@/types/electron'
+import type { AgentToolApprovalPolicy } from '@/types/electron'
 
 // 提示词预设：按 AI 助手的工具能力分组；需要限定联系人或群时，用户可在正文光标处用 @ 插入。
 export const PROMPT_PRESET_GROUPS = [
@@ -196,48 +196,13 @@ export const REASONING_EFFORT_OPTIONS: Array<{ value: AgentReasoningEffort; labe
   { value: 'xhigh', label: '超高' },
 ]
 
-export const CODE_WORKSPACE_APPROVAL_POLICY_OPTIONS: Array<{
-  value: CodeWorkspaceApprovalPolicy
-  label: string
-  description: string
-  icon: IconComponent
-}> = [
-  {
-    value: 'on-request',
-    label: '请求批准',
-    description: '读敏感文件、编辑文件和运行命令时始终询问',
-    icon: Hand,
-  },
-  {
-    value: 'risk-based',
-    label: '替我审批',
-    description: '仅对高风险操作请求批准',
-    icon: ShieldExclamation,
-  },
-  {
-    value: 'full-access',
-    label: '完全访问',
-    description: '本机文件读写和命令不再请求批准',
-    icon: ShieldCheck,
-  },
-]
-
 export function reasoningEffortLabel(value: AgentReasoningEffort, compact = false): string {
   const label = REASONING_EFFORT_OPTIONS.find((option) => option.value === value)?.label ?? '思考：自动'
   return compact ? label.replace(/^思考：/, '') : label
 }
 
-export function codeWorkspaceApprovalPolicyOption(policy?: CodeWorkspaceApprovalPolicy) {
-  return CODE_WORKSPACE_APPROVAL_POLICY_OPTIONS.find((option) => option.value === policy)
-    ?? CODE_WORKSPACE_APPROVAL_POLICY_OPTIONS[0]
-}
-
-export function codeWorkspaceApprovalPolicyToneClass(policy?: CodeWorkspaceApprovalPolicy) {
-  if (policy === 'risk-based') return 'text-blue-600 dark:text-blue-300'
-  if (policy === 'full-access') return 'text-amber-600 dark:text-amber-300'
-  return ''
-}
-
+// 输入框上唯一的审批策略开关：同时控制 AI SDK 工具审批（发送/导出/任务/MCP）和代码工作区审批
+// （读敏感文件/编辑/运行命令），两边风险判定逻辑分开，但用户只调一个值，见 AgentPage.tsx 的合并 handler。
 export const AGENT_TOOL_APPROVAL_POLICY_OPTIONS: Array<{
   value: AgentToolApprovalPolicy
   label: string
@@ -247,19 +212,19 @@ export const AGENT_TOOL_APPROVAL_POLICY_OPTIONS: Array<{
   {
     value: 'on-request',
     label: '请求批准',
-    description: '发送微信媒体/文件、导出、任务变更、MCP 调用时始终询问',
+    description: '发送微信媒体/文件、导出、任务变更、MCP 调用、代码工作区操作时始终询问',
     icon: Hand,
   },
   {
     value: 'risk-based',
     label: '替我审批',
-    description: '仅对高风险操作请求批准（发表情包、任务增删改自动放行）',
+    description: '仅对高风险操作请求批准（发表情包、任务增删改、低风险代码操作自动放行）',
     icon: ShieldExclamation,
   },
   {
     value: 'full-access',
     label: '完全访问',
-    description: '所有高风险工具调用不再请求批准',
+    description: '所有高风险工具调用和代码操作都不再请求批准',
     icon: ShieldCheck,
   },
 ]

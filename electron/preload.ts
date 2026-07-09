@@ -251,6 +251,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
 
+  localCodingAgent: {
+    getConfig: () => ipcRenderer.invoke('localCodingAgent:getConfig') as Promise<{ success: boolean; config?: unknown; error?: string }>,
+    setConfig: (config: unknown) => ipcRenderer.invoke('localCodingAgent:setConfig', config) as Promise<{ success: boolean; config?: unknown; error?: string }>,
+    detect: () => ipcRenderer.invoke('localCodingAgent:detect') as Promise<{ success: boolean; results?: unknown[]; error?: string }>,
+    run: (payload: unknown) => ipcRenderer.invoke('localCodingAgent:run', payload) as Promise<{ success: boolean; jobId?: string; error?: string }>,
+    cancel: (jobId: string) => ipcRenderer.invoke('localCodingAgent:cancel', jobId) as Promise<{ success: boolean; error?: string }>,
+    applyPatch: (jobId: string) => ipcRenderer.invoke('localCodingAgent:applyPatch', jobId) as Promise<{ success: boolean; changedPaths?: string[]; error?: string }>,
+    discardPatch: (jobId: string) => ipcRenderer.invoke('localCodingAgent:discardPatch', jobId) as Promise<{ success: boolean; changedPaths?: string[]; error?: string }>,
+    onEvent: (callback: (event: unknown) => void): (() => void) => {
+      const listener = (_e: unknown, event: unknown) => callback(event)
+      ipcRenderer.on('localCodingAgent:event', listener)
+      return () => ipcRenderer.removeListener('localCodingAgent:event', listener)
+    },
+  },
+
   // 克隆好友（数字分身画像；构建进度经 persona:buildProgress 推回）
   persona: {
     get: (sessionId: string) =>
