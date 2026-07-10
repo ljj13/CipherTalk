@@ -26,6 +26,7 @@ import {
   PromptInputTools,
   type PromptInputMessage,
 } from '@/components/ai-elements/prompt-input'
+import { ImagePreview, type ImagePreviewOriginRect } from '@/components/ImagePreview'
 import { PersonaChatTransport } from '../features/aiagent/transport/personaChatTransport'
 import { cn } from '../lib/utils'
 import { useTtsSpeaker } from '../lib/ttsPlayer'
@@ -344,19 +345,43 @@ function PersonaChatSkeleton() {
 }
 
 function PersonaMessageAttachment({ file, isMine }: { file: FileUIPart; isMine: boolean }) {
+  const [preview, setPreview] = useState<{ src: string; originRect: ImagePreviewOriginRect } | null>(null)
   const isImage = file.mediaType?.startsWith('image/') && file.url
   if (isImage) {
     return (
-      <img
-        alt={file.filename || '图片'}
-        className={cn(
-          'max-h-64 max-w-80 rounded-2xl object-contain shadow-xs',
-          isMine ? 'rounded-tr-sm' : 'rounded-tl-sm'
+      <>
+        <button
+          aria-label={`预览${file.filename || '图片'}`}
+          className="block w-fit cursor-zoom-in border-0 bg-transparent p-0 outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect()
+            setPreview({
+              src: file.url,
+              originRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+            })
+          }}
+          title="点击预览"
+          type="button"
+        >
+          <img
+            alt={file.filename || '图片'}
+            className={cn(
+              'max-h-64 max-w-80 rounded-2xl object-contain shadow-xs',
+              isMine ? 'rounded-tr-sm' : 'rounded-tl-sm'
+            )}
+            draggable={false}
+            loading="lazy"
+            src={file.url}
+          />
+        </button>
+        {preview && (
+          <ImagePreview
+            src={preview.src}
+            originRect={preview.originRect}
+            onClose={() => setPreview(null)}
+          />
         )}
-        draggable={false}
-        loading="lazy"
-        src={file.url}
-      />
+      </>
     )
   }
 

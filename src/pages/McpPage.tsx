@@ -62,7 +62,7 @@ type McpToolInfo = {
   inputSchema?: unknown
 }
 
-type TopTab = 'server' | 'integration'
+type TopTab = 'mcp' | 'skills'
 
 type ServerFormState = {
   name: string
@@ -192,7 +192,7 @@ function parseArgs(value: string): string[] | undefined {
 }
 
 function McpPage() {
-  const [topTab, setTopTab] = useState<TopTab>('server')
+  const [topTab, setTopTab] = useState<TopTab>('mcp')
 
   const [mcpEnabled, setMcpEnabled] = useState(false)
   const [mcpExposeMediaPaths, setMcpExposeMediaPaths] = useState(true)
@@ -260,7 +260,7 @@ function McpPage() {
   }, [])
 
   useEffect(() => {
-    if (topTab === 'integration') void loadIntegrationData()
+    void loadIntegrationData()
   }, [topTab, loadIntegrationData])
 
   const mcpServerJsonTemplate = useMemo(() => JSON.stringify({
@@ -722,7 +722,7 @@ function McpPage() {
     </AlertDialog>
   )
 
-  const renderSkillRow = (skill: SkillInfo, variant: 'external' | 'internal') => (
+  const renderSkillRow = (skill: SkillInfo) => (
     <Surface key={skill.name} variant="transparent" className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -733,45 +733,28 @@ function McpPage() {
         </div>
         <Description>{skill.description}</Description>
       </div>
-      {variant === 'external' ? (
-        <ButtonGroup variant="tertiary" size="sm">
-          <Button onPress={() => openSkillPanel(skill.name, 'preview')}>
-            <Eye width={14} height={14} />
-            预览
+      <div className="flex items-center gap-2">
+        <Button variant="tertiary" size="sm" onPress={() => openSkillPanel(skill.name, 'preview')}>
+          <Eye width={14} height={14} />
+          预览
+        </Button>
+        {!skill.builtin && (
+          <Button variant="tertiary" size="sm" onPress={() => openSkillPanel(skill.name, 'edit')}>
+            <Pencil width={14} height={14} />
+            编辑
           </Button>
-          <Button
-            isDisabled={exportingSkillZip === skill.name}
-            onPress={() => exportSkillZip(skill.name)}
-          >
-            <ButtonGroup.Separator />
-            <ArrowDownToLine width={14} height={14} />
-            {exportingSkillZip === skill.name ? '导出中...' : '导出 zip'}
-          </Button>
-        </ButtonGroup>
-      ) : (
-        <div className="flex items-center gap-2">
-          <Button variant="tertiary" size="sm" onPress={() => openSkillPanel(skill.name, 'preview')}>
-            <Eye width={14} height={14} />
-            预览
-          </Button>
-          {!skill.builtin && (
-            <Button variant="tertiary" size="sm" onPress={() => openSkillPanel(skill.name, 'edit')}>
-              <Pencil width={14} height={14} />
-              编辑
-            </Button>
-          )}
-          <Button
-            variant="tertiary"
-            size="sm"
-            isDisabled={exportingSkillZip === skill.name}
-            onPress={() => exportSkillZip(skill.name)}
-          >
-            <ArrowDownToLine width={14} height={14} />
-            {exportingSkillZip === skill.name ? '导出中...' : '导出'}
-          </Button>
-          {!skill.builtin && renderDeleteDialog('skill', skill.name)}
-        </div>
-      )}
+        )}
+        <Button
+          variant="tertiary"
+          size="sm"
+          isDisabled={exportingSkillZip === skill.name}
+          onPress={() => exportSkillZip(skill.name)}
+        >
+          <ArrowDownToLine width={14} height={14} />
+          {exportingSkillZip === skill.name ? '导出中...' : '导出'}
+        </Button>
+        {!skill.builtin && renderDeleteDialog('skill', skill.name)}
+      </div>
     </Surface>
   )
 
@@ -849,13 +832,13 @@ function McpPage() {
       <ScrollShadow hideScrollBar className="h-full min-h-0 pb-3" size={56}>
         <Tabs selectedKey={topTab} onSelectionChange={(key) => setTopTab(String(key) as TopTab)}>
           <Tabs.ListContainer>
-            <Tabs.List aria-label="MCP 页面">
-              <Tabs.Tab id="server">MCP 服务端<Tabs.Indicator /></Tabs.Tab>
-              <Tabs.Tab id="integration">集成中心<Tabs.Indicator /></Tabs.Tab>
+            <Tabs.List aria-label="MCP 与 Skills 管理">
+              <Tabs.Tab id="mcp">MCP<Tabs.Indicator /></Tabs.Tab>
+              <Tabs.Tab id="skills">Skills<Tabs.Indicator /></Tabs.Tab>
             </Tabs.List>
           </Tabs.ListContainer>
 
-          <Tabs.Panel id="server" className="pt-3">
+          <Tabs.Panel id="mcp" className="pt-3">
             <div className="flex flex-col gap-3">
               <section className="flex flex-col gap-3">
                 <div className="flex items-center justify-between gap-3">
@@ -925,33 +908,13 @@ function McpPage() {
               <Separator variant="tertiary" />
 
               <section className="flex flex-col gap-3">
-                <div>
-                  <Typography type="h5">外部 Skills</Typography>
-                  <Description>导出给外部 Agent 使用（Codex、Claude、Cursor 等）。</Description>
-                </div>
-                {skills.filter(s => s.builtin).length === 0 ? (
-                  <Alert status="default">
-                    <Alert.Indicator />
-                    <Alert.Content>
-                      <Alert.Description>暂无可导出的内置 Skills。</Alert.Description>
-                    </Alert.Content>
-                  </Alert>
-                ) : skills.filter(s => s.builtin).map(skill => renderSkillRow(skill, 'external'))}
-                <Description>导出 zip 后解压到对应 Agent 的 skills 目录即可使用。</Description>
-              </section>
-            </div>
-          </Tabs.Panel>
-
-          <Tabs.Panel id="integration" className="pt-3">
-            <div className="flex flex-col gap-3">
-              <section className="flex flex-col gap-3">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
                     <Typography type="h5">MCP 客户端</Typography>
                     <Description>连接外部 MCP 服务器并调用其工具。</Description>
                   </div>
                   <Button variant="tertiary" size="sm" onPress={openAddServer}>
-                    {serverPanelOpen && !editingServer ? <><Xmark width={14} height={14} /> 收起</> : <><Plus width={14} height={14} /> 添加服务器</>}
+                    {serverPanelOpen && !editingServer ? <><Xmark width={14} height={14} /> 收起</> : <><Plus width={14} height={14} /> 添加MCP</>}
                   </Button>
                 </div>
                 {mcpServers.length === 0 && (
@@ -965,14 +928,16 @@ function McpPage() {
                 {serverPanelOpen && !editingServer && renderServerForm()}
                 {mcpServers.map(renderServerRow)}
               </section>
+            </div>
+          </Tabs.Panel>
 
-              <Separator variant="tertiary" />
-
+          <Tabs.Panel id="skills" className="pt-3">
+            <div className="flex flex-col gap-3">
               <section className="flex flex-col gap-3">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <Typography type="h5">内部 Skills</Typography>
-                    <Description>管理和配置内部使用的 Skills。</Description>
+                    <Typography type="h5">Skills</Typography>
+                    <Description>管理 CipherTalk 使用的 Skills，也可以导出给外部 Agent。</Description>
                   </div>
                   <ButtonGroup variant="tertiary" size="sm">
                     <Button onPress={downloadSkillTemplate}>
@@ -993,7 +958,7 @@ function McpPage() {
                       <Alert.Description>暂无 Skills，可先下载模板后导入 zip。</Alert.Description>
                     </Alert.Content>
                   </Alert>
-                ) : skills.map(skill => renderSkillRow(skill, 'internal'))}
+                ) : skills.map(renderSkillRow)}
               </section>
             </div>
           </Tabs.Panel>
