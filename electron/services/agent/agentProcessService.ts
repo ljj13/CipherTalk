@@ -7,7 +7,7 @@ import { utilityProcess } from 'electron'
 import type { UtilityProcess } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
-import type { UIMessageChunk } from 'ai'
+import type { ModelMessage, UIMessageChunk } from 'ai'
 import { getAppPath, isElectronPackaged } from '../runtimePaths'
 import { getElectronWorkerEnv } from '../workerEnvironment'
 import { codeWorkspaceService } from './codeWorkspaceService'
@@ -36,6 +36,29 @@ function errorToLogData(error: unknown): Record<string, unknown> {
     return { name: error.name, message: error.message, stack: error.stack }
   }
   return { message: String(error) }
+}
+
+function fileDataUrl(data: unknown): URL | null {
+  if (data instanceof URL) return data
+  if (!data || typeof data !== 'object') return null
+  const tagged = data as { type?: unknown; url?: unknown }
+  return tagged.type === 'url' && tagged.url instanceof URL ? tagged.url : null
+}
+
+/** URL 实例无法可靠穿过 utilityProcess；改用 AI SDK FilePart 支持的 URL 字符串简写。 */
+function serializeModelMessages(messages: ModelMessage[]): ModelMessage[] {
+  return messages.map((message) => {
+    if (message.role !== 'user' || !Array.isArray(message.content)) return message
+    let changed = false
+    const content = message.content.map((part) => {
+      if (part.type !== 'file') return part
+      const url = fileDataUrl(part.data)
+      if (!url) return part
+      changed = true
+      return { ...part, data: url.href }
+    })
+    return changed ? { ...message, content } : message
+  })
 }
 
 function truncateLogText(text: string, maxLength = 2000): string {
@@ -94,7 +117,11 @@ export class AgentProcessService {
       signal.addEventListener('abort', () => { void this.call('abort', { runId }).catch(() => undefined) })
     }
     try {
-      await this.call<{ done: boolean }>('run', { runId, ...input })
+      await this.call<{ done: boolean }>('run', {
+        runId,
+        ...input,
+        messages: serializeModelMessages(input.messages),
+      })
     } finally {
       this.chunkHandlers.delete(runId)
       this.progressHandlers.delete(runId)
@@ -150,7 +177,11 @@ export class AgentProcessService {
       signal.addEventListener('abort', () => { void this.call('abort', { runId }).catch(() => undefined) })
     }
     try {
-      await this.call<{ done: boolean }>('personaChat', { runId, ...input })
+      await this.call<{ done: boolean }>('personaChat', {
+        runId,
+        ...input,
+        messages: serializeModelMessages(input.messages),
+      })
     } finally {
       this.chunkHandlers.delete(runId)
       this.progressHandlers.delete(runId)

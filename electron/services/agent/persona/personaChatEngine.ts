@@ -42,7 +42,7 @@ const FALLBACK_SPLIT_MIN_CHARS = 50
 const FALLBACK_MAX_BUBBLES = 5
 
 /** 模型点播表情包的标记：[表情:编号]，编号对应词典里 TA 常用的表情包。 */
-const STICKER_INTENT_RE = /^[\[【]\s*表情\s*[:：]\s*(\d+)\s*[\]】]/
+const STICKER_INTENT_RE = /[\[【]\s*表情\s*[:：]\s*(\d+)\s*[\]】]/
 /** 发给渲染端的表情包气泡前缀，后跟 JSON（cdnUrl/md5 等），渲染端显示成真实表情包图片。 */
 const STICKER_BUBBLE_PREFIX = '[表情包]'
 /** 表情包气泡的"挑选"延迟：不按字数算（JSON 很长但真人翻表情只要一两秒）。 */
@@ -56,23 +56,31 @@ function resolveStickerMarkers(text: string, stickers: PersonaSticker[]): string
   const bubbles = splitReplyBubbles(text)
   const out: string[] = []
   for (const bubble of bubbles) {
-    const match = bubble.match(STICKER_INTENT_RE)
-    if (!match) {
-      out.push(bubble)
-      continue
+    let rest = bubble
+    while (rest) {
+      const match = rest.match(STICKER_INTENT_RE)
+      if (!match) {
+        out.push(rest)
+        break
+      }
+
+      const markerIndex = match.index ?? 0
+      const before = rest.slice(0, markerIndex).trim()
+      if (before) out.push(before)
+
+      const sticker = stickers[Number(match[1]) - 1] || stickers[0]
+      if (sticker) {
+        out.push(`${STICKER_BUBBLE_PREFIX}${JSON.stringify({
+          cdnUrl: sticker.cdnUrl,
+          md5: sticker.md5,
+          productId: sticker.productId,
+          encryptUrl: sticker.encryptUrl,
+          aesKey: sticker.aesKey,
+        })}`)
+      }
+
+      rest = rest.slice(markerIndex + match[0].length).trim()
     }
-    const sticker = stickers[Number(match[1]) - 1] || stickers[0]
-    if (!sticker) continue
-    out.push(`${STICKER_BUBBLE_PREFIX}${JSON.stringify({
-      cdnUrl: sticker.cdnUrl,
-      md5: sticker.md5,
-      productId: sticker.productId,
-      encryptUrl: sticker.encryptUrl,
-      aesKey: sticker.aesKey,
-    })}`)
-    // 标记后跟了文字的（模型没单独占一条），拆成下一条气泡别丢
-    const rest = bubble.slice(match[0].length).trim()
-    if (rest) out.push(rest)
   }
   // 全是无法解析的标记被丢光时退回原文，至少别发空消息
   return out.length > 0 ? out.join(`\n${BURST_JOINER}\n`) : text
