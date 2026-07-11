@@ -162,6 +162,11 @@ export function registerPetHandlers(ctx: MainProcessContext): void {
     ctx.getWindowManager().petDragMove(Number(dx), Number(dy))
   })
 
+  // 松手：解除拖拽冻结并统一应用气泡扩窗/还原（含放大态自愈）
+  ipcMain.on('pet:dragEnd', () => {
+    ctx.getWindowManager().petDragEnd()
+  })
+
   ipcMain.handle('pet:toggleDesktopWindow', async (_, enabled: boolean) => {
     const manager = ctx.getWindowManager()
     if (enabled) manager.openPetWindow()

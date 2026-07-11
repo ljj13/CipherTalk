@@ -570,6 +570,7 @@ export interface ElectronAPI {
     showContextMenu: () => void
     dragStart: () => void
     dragMove: (dx: number, dy: number) => void
+    dragEnd: () => void
     onAgentState: (callback: (state: string) => void) => () => void
     onWindowMove: (callback: (x: number) => void) => () => void
     onBubbleFrame: (callback: (frame: { expanded: boolean; baseLeft: number; baseTop: number; baseWidth: number; baseHeight: number }) => void) => () => void

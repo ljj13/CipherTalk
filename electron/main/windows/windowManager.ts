@@ -303,8 +303,15 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
   let petBubbleExpanded = false
   // 程序化 setBounds 会触发 'move'，用时间窗抑制，避免桌宠误判成拖动而播跑动画
   let petSuppressMoveUntil = 0
-  // 手动拖拽起点：pet:dragStart 时的窗口位置，dragMove 的位移以此为基准
-  let petDragOrigin: { x: number; y: number } | null = null
+  // 手动拖拽起点：pet:dragStart 时的窗口 bounds，dragMove 的位移以此为基准。
+  // 必须连宽高一起记：Windows 缩放屏上 setPosition 每次调用都做 DIP↔物理像素往返换算，
+  // 尺寸的舍入误差会逐次累积，拖一段窗口就悄悄变大（右下角锚定的宠物随之向右下漂移）
+  let petDragOrigin: { x: number; y: number; width: number; height: number } | null = null
+  // 渲染端最近一次请求的气泡态 + 拖拽冻结标志：拖拽中 setBounds 会和 dragMove 的
+  // setPosition 打架，把透明窗口留在放大态挡住桌面点击，改为松手时统一应用
+  let petBubbleDesired = false
+  let petDragging = false
+  let petDraggingSince = 0
   let lastPetContextMenuAt = 0
 
   const closePetWindowInternal = (): void => {
@@ -314,6 +321,54 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     petWindow = null
     petBaseBounds = null
     petBubbleExpanded = false
+    petBubbleDesired = false
+    petDragging = false
+    petDragOrigin = null
+  }
+
+  // 应用气泡扩窗/还原（desired → 实际 bounds）。除状态标志外还校验实际窗口尺寸：
+  // 任何竞态把透明窗口留在放大态（挡住桌面点击且不可见）时，下一次应用都会自愈修复
+  const applyPetBubbleBounds = (): void => {
+    if (!petWindow || petWindow.isDestroyed()) return
+    const expanded = petBubbleDesired
+    const b = petWindow.getBounds()
+    const sizeIsExpanded = b.width !== PET_BASE_WIDTH || b.height !== PET_BASE_HEIGHT
+    if (expanded === petBubbleExpanded && sizeIsExpanded === expanded) return
+    petBubbleExpanded = expanded
+
+    const { workArea } = screen.getDisplayMatching(b)
+    // 宠物格基准：优先用扩窗时记下的；拖拽后已作废时按当前窗口右下角推导（宠物停在松手处）
+    const base = petBaseBounds ?? {
+      x: b.x + b.width - PET_BASE_WIDTH,
+      y: b.y + b.height - PET_BASE_HEIGHT,
+      width: PET_BASE_WIDTH,
+      height: PET_BASE_HEIGHT,
+    }
+    if (expanded) petBaseBounds = base
+    setPetWindowMaterial(expanded)
+    const baseRight = base.x + PET_BASE_WIDTH
+    const baseBottom = base.y + PET_BASE_HEIGHT
+    const width = expanded ? PET_BUBBLE_WIDTH : PET_BASE_WIDTH
+    const height = expanded ? PET_BUBBLE_HEIGHT : PET_BASE_HEIGHT
+    const minX = workArea.x
+    const minY = workArea.y
+    const maxX = Math.max(minX, workArea.x + workArea.width - width)
+    const maxY = Math.max(minY, workArea.y + workArea.height - height)
+    const x = Math.min(Math.max(expanded ? baseRight - width : base.x, minX), maxX)
+    const y = Math.min(Math.max(expanded ? baseBottom - height : base.y, minY), maxY)
+
+    petSuppressMoveUntil = Date.now() + 400
+    petWindow.setBounds({ x, y, width, height })
+    petWindow.webContents.send('pet:bubbleFrame', {
+      expanded,
+      baseLeft: base.x - x,
+      baseTop: base.y - y,
+      baseWidth: PET_BASE_WIDTH,
+      baseHeight: PET_BASE_HEIGHT,
+    })
+    if (!expanded) {
+      petBaseBounds = null
+    }
   }
 
   const closeReplyTileInternal = (): void => {
@@ -1527,65 +1582,47 @@ export function createWindowManager(ctx: MainProcessContext): WindowManager {
     },
 
     // 手动拖拽（代替 app-region: drag——它会吞掉宠物区域的左键 DOM 事件，点击对话打不开）：
-    // 按下时记录窗口原点，move 传按下点起算的累计位移
+    // 按下时记录窗口原点，move 传按下点起算的累计位移，松手时统一应用被冻结的气泡态
     petDragStart() {
       if (!petWindow || petWindow.isDestroyed()) return
-      const [x, y] = petWindow.getPosition()
-      petDragOrigin = { x, y }
+      const b = petWindow.getBounds()
+      petDragOrigin = { x: b.x, y: b.y, width: b.width, height: b.height }
+      petDragging = true
+      petDraggingSince = Date.now()
     },
 
     petDragMove(dx: number, dy: number) {
       if (!petWindow || petWindow.isDestroyed() || !petDragOrigin) return
       if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-      petWindow.setPosition(Math.round(petDragOrigin.x + dx), Math.round(petDragOrigin.y + dy))
+      // setBounds 显式带固定宽高（而不是 setPosition 只传位置）：同样的尺寸输入每次同样舍入，
+      // 缩放屏上的 DIP 换算误差不会逐次累积把窗口越拖越大
+      petWindow.setBounds({
+        x: Math.round(petDragOrigin.x + dx),
+        y: Math.round(petDragOrigin.y + dy),
+        width: petDragOrigin.width,
+        height: petDragOrigin.height,
+      })
+      // 拖走之后扩窗时记的基准位置作废；还原时按窗口右下角重推，宠物停在松手处不回跳
+      petBaseBounds = null
+    },
+
+    petDragEnd() {
+      petDragging = false
+      petDragOrigin = null
+      // 拖拽期间被冻结的扩窗/还原请求在这里统一落地；顺带自愈修复卡在放大态的窗口
+      applyPetBubbleBounds()
     },
 
     // 显示消息气泡时向右下角锚点扩窗腾出气泡空间，气泡消失后还原。仅尺寸变化，桌宠仍停在原处。
     setPetBubbleExpanded(expanded: boolean) {
-      if (!petWindow || petWindow.isDestroyed()) return
-      if (expanded === petBubbleExpanded) return
-      petBubbleExpanded = expanded
-
-      const b = petWindow.getBounds()
-      const display = screen.getDisplayMatching(b)
-      const { workArea } = display
-      if (expanded) {
-        petBaseBounds = { x: b.x, y: b.y, width: PET_BASE_WIDTH, height: PET_BASE_HEIGHT }
+      petBubbleDesired = expanded
+      if (petDragging) {
+        // 拖拽中冻结 setBounds，避免和 dragMove 的 setPosition 竞态把窗口留在放大态；
+        // 超时兜底：dragEnd 事件丢失（渲染端异常）时不至于永久冻结
+        if (Date.now() - petDraggingSince < 15000) return
+        petDragging = false
       }
-      setPetWindowMaterial(expanded)
-      const base = petBaseBounds ?? { x: b.x, y: b.y, width: PET_BASE_WIDTH, height: PET_BASE_HEIGHT }
-      const baseX = base.x
-      const baseY = base.y
-      const baseRight = baseX + PET_BASE_WIDTH
-      const baseBottom = baseY + PET_BASE_HEIGHT
-      const width = expanded ? PET_BUBBLE_WIDTH : PET_BASE_WIDTH
-      const height = expanded ? PET_BUBBLE_HEIGHT : PET_BASE_HEIGHT
-      const minX = workArea.x
-      const minY = workArea.y
-      const maxX = Math.max(minX, workArea.x + workArea.width - width)
-      const maxY = Math.max(minY, workArea.y + workArea.height - height)
-      const preferredX = expanded ? baseRight - width : baseX
-      const preferredY = expanded ? baseBottom - height : baseY
-      const x = Math.min(Math.max(preferredX, minX), maxX)
-      const y = Math.min(Math.max(preferredY, minY), maxY)
-
-      petSuppressMoveUntil = Date.now() + 400
-      petWindow.setBounds({
-        x,
-        y,
-        width,
-        height,
-      })
-      petWindow.webContents.send('pet:bubbleFrame', {
-        expanded,
-        baseLeft: baseX - x,
-        baseTop: baseY - y,
-        baseWidth: PET_BASE_WIDTH,
-        baseHeight: PET_BASE_HEIGHT,
-      })
-      if (!expanded) {
-        petBaseBounds = null
-      }
+      applyPetBubbleBounds()
     },
 
     setReplyTileEnabled(enabled: boolean) {

@@ -243,6 +243,8 @@ export default function PetWindow() {
     try {
       event.currentTarget.releasePointerCapture(event.pointerId)
     } catch { /* 已释放 */ }
+    // 松手必须通知主进程：解除气泡扩窗冻结并应用拖拽期间积压的状态
+    window.electronAPI.pet.dragEnd()
     if (!down.dragging && performance.now() - down.at <= SHORT_CLICK_MAX_MS) {
       triggerClickJump()
       setChatOpen((open) => !open)
@@ -635,7 +637,10 @@ export default function PetWindow() {
       )}
       <div
         className="flex flex-col items-center justify-end overflow-hidden pb-1"
-        onPointerCancel={() => { pointerDownRef.current = null }}
+        onPointerCancel={() => {
+          pointerDownRef.current = null
+          window.electronAPI.pet.dragEnd()
+        }}
         onPointerDown={handlePetPointerDown}
         onPointerMove={handlePetPointerMove}
         onPointerUp={handlePetPointerUp}

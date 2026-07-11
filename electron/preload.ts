@@ -80,6 +80,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     showContextMenu: () => ipcRenderer.send('pet:showContextMenu'),
     dragStart: () => ipcRenderer.send('pet:dragStart'),
     dragMove: (dx: number, dy: number) => ipcRenderer.send('pet:dragMove', dx, dy),
+    dragEnd: () => ipcRenderer.send('pet:dragEnd'),
     onAgentState: (callback: (state: string) => void) => {
       const listener = (_: any, state: string) => callback(state)
       ipcRenderer.on('pet:agentState', listener)
