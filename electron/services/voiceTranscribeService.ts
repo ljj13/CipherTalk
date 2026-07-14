@@ -3,13 +3,13 @@
  * 负责模型管理（下载、校验）和转写任务调度
  * 支持转写结果缓存
  */
-import { existsSync, mkdirSync, statSync, unlinkSync, createWriteStream, renameSync, type WriteStream } from 'fs'
-import { join } from 'path'
+import { existsSync, mkdirSync, realpathSync, statSync, unlinkSync, createWriteStream, renameSync, type WriteStream } from 'fs'
+import { dirname, join } from 'path'
 import * as https from 'https'
 import * as http from 'http'
 import Database from 'better-sqlite3'
 import { ConfigService } from './config'
-import { getAppDataPath } from './runtimePaths'
+import { getAppDataPath, getUserDataPath } from './runtimePaths'
 
 // 模型信息
 interface ModelInfo {
@@ -80,6 +80,10 @@ export class VoiceTranscribeService {
     private downloadTasks = new Map<string, Promise<{ success: boolean; modelPath?: string; tokensPath?: string; error?: string }>>()
     private downloadCancels = new Map<string, DownloadCancelState>()
     private cacheDb: Database.Database | null = null
+    /** 稳定主缓存路径（不跟账号 cachePath 走，避免换目录后整批重转写） */
+    private cacheDbPath: string | null = null
+    private primaryLegacyMigratedFor = new Set<string>()
+    private mergedLegacyCachePaths = new Set<string>()
 
     constructor() {
         this.initCacheDb()
@@ -107,18 +111,135 @@ export class VoiceTranscribeService {
     }
 
     /**
+     * 转写缓存固定落在 app userData，不跟微信账号的 cachePath。
+     * 旧版本曾把 stt-cache.db 写到 cachePath 或 appData/ciphertalk，启动时会合并进来。
+     */
+    private resolvePrimaryCacheDbPath(): string {
+        return join(getUserDataPath(), 'stt-cache.db')
+    }
+
+    private resolveLegacyCacheDbPaths(primaryPath: string): string[] {
+        const candidates: string[] = [
+            join(getAppDataPath(), 'ciphertalk', 'stt-cache.db'),
+            join(getUserDataPath(), 'stt-cache.db'),
+        ]
+        const accountCachePath = String(this.configService.get('cachePath') || '').trim()
+        if (accountCachePath) {
+            candidates.push(join(accountCachePath, 'stt-cache.db'))
+        }
+
+        const primaryReal = this.safeRealpath(primaryPath)
+        const seen = new Set<string>()
+        const result: string[] = []
+        for (const p of candidates) {
+            if (!p || !existsSync(p)) continue
+            const real = this.safeRealpath(p) || p
+            if (primaryReal && real === primaryReal) continue
+            if (seen.has(real)) continue
+            seen.add(real)
+            result.push(p)
+        }
+        return result
+    }
+
+    private safeRealpath(filePath: string): string | null {
+        try {
+            return realpathSync(filePath)
+        } catch {
+            return null
+        }
+    }
+
+    /**
+     * 把旧路径里的转写结果合并进主库（INSERT OR IGNORE，不覆盖已有）。
+     */
+    private mergeLegacyCacheDb(legacyPath: string): number | null {
+        if (!this.cacheDb || !existsSync(legacyPath)) return 0
+        let legacy: Database.Database | null = null
+        try {
+            legacy = new Database(legacyPath, { readonly: true, fileMustExist: true })
+            const hasTable = legacy.prepare(
+                "SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='transcript_cache' LIMIT 1"
+            ).get() as { ok?: number } | undefined
+            if (!hasTable) return 0
+
+            const rows = legacy.prepare(
+                'SELECT cache_key, session_id, create_time, transcript, created_at FROM transcript_cache'
+            ).all() as Array<{
+                cache_key: string
+                session_id: string
+                create_time: number
+                transcript: string
+                created_at: number
+            }>
+            if (rows.length === 0) return 0
+
+            const insert = this.cacheDb.prepare(`
+                INSERT OR IGNORE INTO transcript_cache
+                (cache_key, session_id, create_time, transcript, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            `)
+            const merge = this.cacheDb.transaction((items: typeof rows) => {
+                let added = 0
+                for (const row of items) {
+                    const sessionId = this.normalizeSessionId(row.session_id)
+                    const createTime = this.normalizeCreateTime(row.create_time)
+                    const cacheKey = row.cache_key?.startsWith('v2:')
+                        ? row.cache_key
+                        : this.getCacheKey(sessionId, createTime)
+                    const transcript = String(row.transcript || '')
+                    const info = insert.run(
+                        cacheKey,
+                        sessionId,
+                        createTime,
+                        transcript,
+                        Number(row.created_at) || Date.now(),
+                    )
+                    added += info.changes
+                }
+                return added
+            })
+            const added = merge(rows)
+            if (added > 0) {
+                console.log(`[VoiceTranscribe] 已从旧缓存合并 ${added} 条转写: ${legacyPath}`)
+            }
+            return added
+        } catch (e) {
+            console.error('[VoiceTranscribe] 合并旧转写缓存失败:', legacyPath, e)
+            return null
+        } finally {
+            try { legacy?.close() } catch { /* ignore */ }
+        }
+    }
+
+    private mergeLegacyCacheDbOnce(legacyPath: string): void {
+        const identity = this.safeRealpath(legacyPath) || legacyPath
+        if (this.mergedLegacyCachePaths.has(identity)) return
+        const merged = this.mergeLegacyCacheDb(legacyPath)
+        // 临时锁库等失败场景保留重试机会；无表或空库则视为已处理。
+        if (merged !== null) this.mergedLegacyCachePaths.add(identity)
+    }
+
+    /** 账号切换后按需合并该账号旧 cachePath；同一个真实文件整个进程只处理一次。 */
+    private ensureActiveAccountLegacyMerged(): void {
+        if (!this.cacheDbPath) return
+        for (const legacyPath of this.resolveLegacyCacheDbPaths(this.cacheDbPath)) {
+            this.mergeLegacyCacheDbOnce(legacyPath)
+        }
+    }
+
+    /**
      * 初始化缓存数据库
      */
     private initCacheDb(): void {
         try {
-            const cachePath = this.configService.get('cachePath')
-            const cacheDir = cachePath || join(getAppDataPath(), 'ciphertalk')
-
+            const dbPath = this.resolvePrimaryCacheDbPath()
+            const cacheDir = dirname(dbPath)
             if (!existsSync(cacheDir)) {
                 mkdirSync(cacheDir, { recursive: true })
             }
 
-            const dbPath = join(cacheDir, 'stt-cache.db')
+            this.cacheDbPath = dbPath
             this.cacheDb = new Database(dbPath)
 
             // 创建缓存表
@@ -138,37 +259,147 @@ export class VoiceTranscribeService {
                 ON transcript_cache(session_id, create_time)
             `)
 
-
+            // 合并历史碎片缓存，避免「以前转过、换目录后又全量重转」
+            for (const legacyPath of this.resolveLegacyCacheDbPaths(dbPath)) {
+                this.mergeLegacyCacheDbOnce(legacyPath)
+            }
         } catch (e) {
             console.error('[VoiceTranscribe] 缓存数据库初始化失败:', e)
             this.cacheDb = null
+            this.cacheDbPath = null
         }
+    }
+
+    private normalizeSessionId(sessionId: string): string {
+        return String(sessionId || '').trim()
+    }
+
+    private normalizeCreateTime(createTime: number): number {
+        const n = Number(createTime)
+        return Number.isFinite(n) ? Math.trunc(n) : 0
+    }
+
+    private normalizeLocalId(localId?: number): number {
+        const n = Number(localId)
+        return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0
+    }
+
+    private getAccountScopeId(): string {
+        return String(
+            this.configService.get('myWxid')
+            || this.configService.get('activeAccountId')
+            || 'default'
+        ).trim() || 'default'
     }
 
     /**
      * 生成缓存 key
      */
-    private getCacheKey(sessionId: string, createTime: number): string {
-        return `${sessionId}:${createTime}`
+    private getCacheKey(sessionId: string, createTime: number, localId?: number): string {
+        return [
+            'v2',
+            encodeURIComponent(this.getAccountScopeId()),
+            encodeURIComponent(this.normalizeSessionId(sessionId)),
+            this.normalizeCreateTime(createTime),
+            this.normalizeLocalId(localId),
+        ].join(':')
     }
 
-    /**
-     * 查询缓存
-     */
-    getCachedTranscript(sessionId: string, createTime: number): string | null {
-        if (!this.cacheDb) return null
+    private getLegacyCacheKey(sessionId: string, createTime: number): string {
+        return `${this.normalizeSessionId(sessionId)}:${this.normalizeCreateTime(createTime)}`
+    }
 
+    /** 把主库中的 v1 键归到当前账号，避免升级为全局库后跨账号命中。 */
+    private ensurePrimaryLegacyMigrated(): void {
+        if (!this.cacheDb) return
+        const accountId = this.getAccountScopeId()
+        if (accountId === 'default' || this.primaryLegacyMigratedFor.has(accountId)) return
         try {
-            const cacheKey = this.getCacheKey(sessionId, createTime)
+            const rows = this.cacheDb.prepare(`
+                SELECT cache_key, session_id, create_time, transcript, created_at
+                FROM transcript_cache
+                WHERE cache_key NOT LIKE 'v2:%'
+            `).all() as Array<{
+                cache_key: string
+                session_id: string
+                create_time: number
+                transcript: string
+                created_at: number
+            }>
+            if (rows.length > 0) {
+                const insert = this.cacheDb.prepare(`
+                    INSERT OR IGNORE INTO transcript_cache
+                    (cache_key, session_id, create_time, transcript, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                `)
+                const remove = this.cacheDb.prepare('DELETE FROM transcript_cache WHERE cache_key = ?')
+                this.cacheDb.transaction(() => {
+                    for (const row of rows) {
+                        insert.run(
+                            this.getCacheKey(row.session_id, row.create_time),
+                            this.normalizeSessionId(row.session_id),
+                            this.normalizeCreateTime(row.create_time),
+                            String(row.transcript || ''),
+                            Number(row.created_at) || Date.now(),
+                        )
+                        remove.run(row.cache_key)
+                    }
+                })()
+            }
+            this.primaryLegacyMigratedFor.add(accountId)
+        } catch (e) {
+            console.error('[VoiceTranscribe] 升级旧缓存键失败:', e)
+        }
+    }
+
+    private findCachedTranscript(
+        sessionId: string,
+        createTime: number,
+        localId?: number,
+        allowLegacy = localId === undefined,
+    ): string | null {
+        if (!this.cacheDb) return null
+        this.ensureActiveAccountLegacyMerged()
+        this.ensurePrimaryLegacyMigrated()
+        const exactKey = this.getCacheKey(sessionId, createTime, localId)
+        const keys = [exactKey]
+        if (allowLegacy && this.normalizeLocalId(localId) > 0) {
+            keys.push(this.getCacheKey(sessionId, createTime))
+        }
+        if (allowLegacy) keys.push(this.getLegacyCacheKey(sessionId, createTime))
+
+        for (const cacheKey of Array.from(new Set(keys))) {
             const row = this.cacheDb.prepare(
                 'SELECT transcript FROM transcript_cache WHERE cache_key = ?'
             ).get(cacheKey) as { transcript: string } | undefined
-
-            if (row) {
-
-                return row.transcript
+            if (!row) continue
+            const transcript = String(row.transcript || '')
+            if (cacheKey !== exactKey && this.normalizeLocalId(localId) > 0) {
+                this.saveTranscriptCache(sessionId, createTime, transcript, true, localId)
             }
-            return null
+            return transcript
+        }
+        return null
+    }
+
+    /**
+     * 是否已有转写缓存（含空结果占位；用于跳过重复 STT，与「有无可用文本」分开）。
+     */
+    hasCachedTranscript(sessionId: string, createTime: number, localId?: number, allowLegacy = localId === undefined): boolean {
+        try {
+            return this.findCachedTranscript(sessionId, createTime, localId, allowLegacy) !== null
+        } catch (e) {
+            console.error('[VoiceTranscribe] 查询缓存是否存在失败:', e)
+            return false
+        }
+    }
+
+    /**
+     * 查询缓存。null = 未转写过；空字符串 = 转过但结果为空（仍算已缓存）。
+     */
+    getCachedTranscript(sessionId: string, createTime: number, localId?: number, allowLegacy = localId === undefined): string | null {
+        try {
+            return this.findCachedTranscript(sessionId, createTime, localId, allowLegacy)
         } catch (e) {
             console.error('[VoiceTranscribe] 查询缓存失败:', e)
             return null
@@ -176,20 +407,23 @@ export class VoiceTranscribeService {
     }
 
     /**
-     * 保存到缓存
+     * 保存到缓存。allowEmpty=true 时允许写入空串，标记「已尝试、勿重复扣额度」。
      */
-    saveTranscriptCache(sessionId: string, createTime: number, transcript: string): void {
-        if (!this.cacheDb || !transcript) return
+    saveTranscriptCache(sessionId: string, createTime: number, transcript: string, allowEmpty = false, localId?: number): void {
+        if (!this.cacheDb) return
+        if (!transcript && !allowEmpty) return
 
         try {
-            const cacheKey = this.getCacheKey(sessionId, createTime)
+            this.ensureActiveAccountLegacyMerged()
+            this.ensurePrimaryLegacyMigrated()
+            const normalizedSessionId = this.normalizeSessionId(sessionId)
+            const normalizedCreateTime = this.normalizeCreateTime(createTime)
+            const cacheKey = this.getCacheKey(normalizedSessionId, normalizedCreateTime, localId)
             this.cacheDb.prepare(`
                 INSERT OR REPLACE INTO transcript_cache 
                 (cache_key, session_id, create_time, transcript, created_at)
                 VALUES (?, ?, ?, ?, ?)
-            `).run(cacheKey, sessionId, createTime, transcript, Date.now())
-
-
+            `).run(cacheKey, normalizedSessionId, normalizedCreateTime, transcript || '', Date.now())
         } catch (e) {
             console.error('[VoiceTranscribe] 保存缓存失败:', e)
         }

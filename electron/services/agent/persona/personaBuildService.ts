@@ -31,6 +31,9 @@ const MAX_VOICE_TRANSCRIBE = 400
 /**
  * 克隆前把会话里「还没转写过」的语音批量补转并写入转写缓存，
  * 让后续 buildPersonaCorpus 能把语音内容纳入文风/few-shot 语料（否则未转写语音会被直接丢弃）。
+ *
+ * 已转写的语音一律走 stt-cache，不会重复调用 STT（在线额度/本地算力都不重复花）。
+ * 重新克隆时若聊天记录只是多了新语音，只会补转「未缓存」的那部分。
  * STT 未就绪（模型没下/在线转写没配）时整体跳过、不阻断克隆；单条失败静默继续。
  */
 async function pretranscribeSessionVoices(
@@ -41,41 +44,105 @@ async function pretranscribeSessionVoices(
 ): Promise<void> {
   const { sttRuntimeService } = await import('../../sttRuntimeService')
   const { chatService } = await import('../../chatService')
-  const pending = messages.filter(
-    (m) => m.localType === 34 && !sttRuntimeService.getCachedTranscript(sessionId, m.createTime),
+
+  const voiceMessages = messages.filter((m) => m.localType === 34)
+  if (voiceMessages.length === 0) {
+    sendProgress('indexing', '无语音消息，跳过转写', 36)
+    return
+  }
+
+  const voiceCountByTime = new Map<number, number>()
+  for (const message of voiceMessages) {
+    voiceCountByTime.set(message.createTime, (voiceCountByTime.get(message.createTime) || 0) + 1)
+  }
+  const canUseLegacyCache = (message: { createTime: number }) => voiceCountByTime.get(message.createTime) === 1
+
+  // 只有时间戳唯一时才迁移旧缓存；同一秒多条语音必须按 localId 重新识别，避免串用文本。
+  const pending = voiceMessages.filter(
+    (m) => !sttRuntimeService.hasCachedTranscript(sessionId, m.createTime, m.localId, canUseLegacyCache(m)),
   )
-  if (pending.length === 0) return
+  const cachedCount = voiceMessages.length - pending.length
+
+  if (pending.length === 0) {
+    sendProgress(
+      'indexing',
+      '语音已全部缓存，跳过转写',
+      36,
+      `已复用 ${cachedCount} 条历史转写，不重复消耗识别额度`,
+    )
+    logger?.warn?.('Persona', '语音补转跳过：全部命中缓存', { sessionId, cachedCount })
+    return
+  }
+
+  // 最近的新语音优先：重新克隆通常是为了吃进新聊天记录
+  pending.sort((a, b) => b.createTime - a.createTime)
 
   const total = Math.min(pending.length, MAX_VOICE_TRANSCRIBE)
   if (pending.length > total) {
-    logger?.warn?.('Persona', '未转写语音过多，仅补转前一部分', { sessionId, pending: pending.length, limit: total })
+    logger?.warn?.('Persona', '未转写语音过多，仅补转最近一部分', {
+      sessionId,
+      pending: pending.length,
+      limit: total,
+      cachedCount,
+    })
   }
+
+  sendProgress(
+    'indexing',
+    '正在转写新语音补全语料',
+    12,
+    `已缓存 ${cachedCount} 条可跳过，待转写 ${total} 条${pending.length > total ? `（共 ${pending.length} 条未缓存）` : ''}`,
+  )
 
   let processed = 0
   let transcribed = 0
+  let cacheHitsDuringRun = 0
   for (let i = 0; i < total; i += 1) {
     const m = pending[i]
     try {
-      const voice = await chatService.getVoiceData(sessionId, String(m.localId), m.createTime)
-      if (voice.success && voice.data) {
-        const result = await sttRuntimeService.transcribeWavBuffer(Buffer.from(voice.data, 'base64'), {
-          cache: { sessionId, createTime: m.createTime },
-        })
-        if (result.errorCode === 'STT_NOT_READY') {
-          logger?.warn?.('Persona', '语音转写未就绪，跳过补转（不影响克隆）', { sessionId, error: result.error })
-          return
+      // 双保险：循环中再次查缓存（并发/边转边写时不重复打 STT）
+      if (sttRuntimeService.hasCachedTranscript(sessionId, m.createTime, m.localId, canUseLegacyCache(m))) {
+        cacheHitsDuringRun += 1
+      } else {
+        const voice = await chatService.getVoiceData(sessionId, String(m.localId), m.createTime)
+        if (voice.success && voice.data) {
+          const result = await sttRuntimeService.transcribeWavBuffer(Buffer.from(voice.data, 'base64'), {
+            cache: {
+              sessionId,
+              createTime: m.createTime,
+              localId: m.localId,
+              allowLegacyCache: canUseLegacyCache(m),
+            },
+          })
+          if (result.errorCode === 'STT_NOT_READY') {
+            logger?.warn?.('Persona', '语音转写未就绪，跳过补转（不影响克隆）', { sessionId, error: result.error })
+            return
+          }
+          if (result.cached) cacheHitsDuringRun += 1
+          else if (result.success && result.transcript) transcribed += 1
         }
-        if (result.success && result.transcript) transcribed += 1
       }
     } catch {
       // 单条语音补转失败静默跳过，继续下一条
     }
     processed += 1
     if (processed % 5 === 0 || processed === total) {
-      sendProgress('indexing', '正在转写语音补全语料', 12 + Math.round((processed / total) * 24), `已处理 ${processed}/${total} 条语音`)
+      sendProgress(
+        'indexing',
+        '正在转写新语音补全语料',
+        12 + Math.round((processed / total) * 24),
+        `新转写 ${transcribed}，缓存命中 ${cachedCount + cacheHitsDuringRun}，进度 ${processed}/${total}`,
+      )
     }
   }
-  logger?.warn?.('Persona', '语音补转完成', { sessionId, transcribed, processed })
+  logger?.warn?.('Persona', '语音补转完成', {
+    sessionId,
+    transcribed,
+    processed,
+    cachedCount,
+    cacheHitsDuringRun,
+    pending: pending.length,
+  })
 }
 
 export async function buildPersonaFromSession(input: PersonaBuildInput): Promise<PersonaBuildResult> {
@@ -122,7 +189,7 @@ export async function buildPersonaFromSession(input: PersonaBuildInput): Promise
       })
     }
 
-    sendProgress('indexing', '正在转写语音补全语料', 12)
+    sendProgress('indexing', '正在检查语音转写缓存', 12)
     await pretranscribeSessionVoices(sessionId, messages, sendProgress, logger)
 
     sendProgress('corpus', role === 'self' ? '正在分析"我"的说话风格' : '正在分析说话风格', 40)

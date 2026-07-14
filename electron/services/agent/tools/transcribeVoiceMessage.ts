@@ -4,6 +4,7 @@
  */
 import { tool } from 'ai'
 import { z } from 'zod'
+import { proxyAgentCapabilityCall } from '../agentCapabilityProxyClient'
 import { describeToolError } from './shared'
 
 export const transcribeVoiceMessage = tool({
@@ -19,52 +20,12 @@ export const transcribeVoiceMessage = tool({
   }),
   execute: async ({ sessionId, localId, createTime, force = false }) => {
     try {
-      const [{ chatService }, { sttRuntimeService }] = await Promise.all([
-        import('../../chatService'),
-        import('../../sttRuntimeService'),
-      ])
-
-      if (!force) {
-        const cached = sttRuntimeService.getCachedTranscript(sessionId, createTime)
-        if (cached) {
-          return {
-            transcript: cached,
-            cached: true,
-            sttMode: sttRuntimeService.getCurrentSttMode(),
-            sessionId,
-            localId,
-            createTime,
-          }
-        }
-      }
-
-      const voice = await chatService.getVoiceData(sessionId, String(localId), createTime)
-      if (!voice.success || !voice.data) {
-        const error = voice.error || '未找到语音数据'
-        return {
-          error,
-          errorCode: error.includes('未找到媒体数据库') ? 'DB_NOT_READY' : 'VOICE_DATA_UNAVAILABLE',
-        }
-      }
-
-      const result = await sttRuntimeService.transcribeWavBuffer(Buffer.from(voice.data, 'base64'), {
-        cache: { sessionId, createTime, force },
-      })
-      if (!result.success || !result.transcript) {
-        return {
-          error: result.error || '语音转写失败',
-          ...(result.errorCode ? { errorCode: result.errorCode } : {}),
-        }
-      }
-
-      return {
-        transcript: result.transcript,
-        cached: Boolean(result.cached),
-        sttMode: result.sttMode,
+      return await proxyAgentCapabilityCall('transcribe_voice_message', {
         sessionId,
         localId,
         createTime,
-      }
+        force,
+      })
     } catch (error) {
       return {
         error: describeToolError(error, 'transcribe_voice_message 执行失败'),

@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { BaseAIProvider, joinEndpoint, type ProviderKind } from './base'
 import { getAppPath, getUserDataPath, isElectronPackaged } from '../../runtimePaths'
+import { createProxyFetch, getResolvedProxyUrl } from '../proxyFetch'
 
 export type AIProviderProtocol = ProviderKind
 
@@ -565,7 +566,8 @@ export class CatalogAIProvider extends BaseAIProvider {
 
   private isOpenRouterEndpoint(): boolean {
     try {
-      return new URL(this.baseURL).hostname.toLowerCase().endsWith('openrouter.ai')
+      const hostname = new URL(this.baseURL).hostname.toLowerCase()
+      return hostname === 'openrouter.ai' || hostname.endsWith('.openrouter.ai')
     } catch {
       return false
     }
@@ -577,16 +579,22 @@ export class CatalogAIProvider extends BaseAIProvider {
     if (!result.success || !this.isOpenRouterEndpoint()) return result
 
     try {
-      const response = await fetch(joinEndpoint(this.baseURL, '/key'), {
+      const fetchImpl = createProxyFetch(getResolvedProxyUrl()) || fetch
+      const response = await fetchImpl(joinEndpoint(this.baseURL, '/key'), {
         headers: { Authorization: `Bearer ${this.apiKey}` },
         signal: AbortSignal.timeout(10000)
       })
       if (response.ok) return result
       const body = await response.text().catch(() => '')
       return { success: false, error: `API Key 无效（${response.status}）${body ? `: ${truncateKeyCheckBody(body)}` : ''}` }
-    } catch {
-      // /models 已证明网络可达，/key 探测自身异常时不误报失败
-      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const needsProxy = /ECONNREFUSED|ETIMEDOUT|ENOTFOUND|fetch failed|getaddrinfo|timeout/i.test(message)
+      return {
+        success: false,
+        error: `模型列表可达，但 OpenRouter API Key 校验请求失败: ${message}`,
+        ...(needsProxy ? { needsProxy: true } : {}),
+      }
     }
   }
 }

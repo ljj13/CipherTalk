@@ -14,6 +14,8 @@ type SttErrorCode = 'STT_NOT_READY' | 'INTERNAL_ERROR'
 type TranscribeCacheOptions = {
   sessionId: string
   createTime: number
+  localId?: number
+  allowLegacyCache?: boolean
   force?: boolean
 }
 
@@ -72,12 +74,16 @@ function isReadinessError(message?: string): boolean {
 class SttRuntimeService {
   private configService = new ConfigService()
 
-  getCachedTranscript(sessionId: string, createTime: number): string | null {
-    return voiceTranscribeService.getCachedTranscript(sessionId, createTime)
+  getCachedTranscript(sessionId: string, createTime: number, localId?: number, allowLegacy = localId === undefined): string | null {
+    return voiceTranscribeService.getCachedTranscript(sessionId, createTime, localId, allowLegacy)
   }
 
-  saveTranscriptCache(sessionId: string, createTime: number, transcript: string): void {
-    voiceTranscribeService.saveTranscriptCache(sessionId, createTime, transcript)
+  hasCachedTranscript(sessionId: string, createTime: number, localId?: number, allowLegacy = localId === undefined): boolean {
+    return voiceTranscribeService.hasCachedTranscript(sessionId, createTime, localId, allowLegacy)
+  }
+
+  saveTranscriptCache(sessionId: string, createTime: number, transcript: string, allowEmpty = false, localId?: number): void {
+    voiceTranscribeService.saveTranscriptCache(sessionId, createTime, transcript, allowEmpty, localId)
   }
 
   getCurrentSttMode(): SttMode {
@@ -118,8 +124,9 @@ class SttRuntimeService {
     const cache = options.cache
 
     if (cache && !cache.force) {
-      const cached = this.getCachedTranscript(cache.sessionId, cache.createTime)
-      if (cached) {
+      // 必须用 hasCached：空串也是有效缓存命中，避免重复扣在线 STT 额度
+      if (this.hasCachedTranscript(cache.sessionId, cache.createTime, cache.localId, cache.allowLegacyCache)) {
+        const cached = this.getCachedTranscript(cache.sessionId, cache.createTime, cache.localId, cache.allowLegacyCache) ?? ''
         return { success: true, transcript: cached, cached: true, sttMode }
       }
     }
@@ -149,7 +156,7 @@ class SttRuntimeService {
       }
     }
 
-    if (!result.success || !result.transcript) {
+    if (!result.success) {
       return {
         success: false,
         sttMode,
@@ -158,11 +165,22 @@ class SttRuntimeService {
       }
     }
 
+    const transcript = String(result.transcript || '').trim()
     if (cache) {
-      this.saveTranscriptCache(cache.sessionId, cache.createTime, result.transcript)
+      // 空结果也落库，标记「已尝试」，重克隆时不再重复调用 STT
+      this.saveTranscriptCache(cache.sessionId, cache.createTime, transcript, true, cache.localId)
     }
 
-    return { success: true, transcript: result.transcript, cached: false, sttMode }
+    if (!transcript) {
+      return {
+        success: false,
+        sttMode,
+        error: result.error || '语音转写结果为空',
+        errorCode: 'INTERNAL_ERROR'
+      }
+    }
+
+    return { success: true, transcript, cached: false, sttMode }
   }
 
   validateAudioFilePath(filePath: string): { valid: boolean; error?: string } {
