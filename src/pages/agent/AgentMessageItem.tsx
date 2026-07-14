@@ -12,7 +12,7 @@
  */
 import { memo } from 'react'
 import { Button as HeroButton } from '@heroui/react'
-import { Bulb, Magnifier, Persons, Play, Wrench } from '@gravity-ui/icons'
+import { Magnifier, Persons, Play, Wrench } from '@gravity-ui/icons'
 import type { ChatStatus, UIMessage } from 'ai'
 import {
   ChainOfThoughtSearchResult,
@@ -61,6 +61,7 @@ export type AgentMessageItemProps = {
   message: UIMessage
   messageIndex: number
   isLastMessage: boolean
+  isLatestAssistant: boolean
   busy: boolean
   status: ChatStatus
   runIsPlan: boolean
@@ -73,9 +74,6 @@ export type AgentMessageItemProps = {
   onCopyAssistant: (messageId: string, text: string) => void
   onCopyUser: (messageId: string, text: string) => void
   onSpeak: (messageId: string, text: string) => void
-  onOpenUsageDetails: (data: AgentMessageMetadata) => void
-  onRegenerate: (messageIndex: number) => void
-  onRetry: (messageIndex: number) => void
   onEdit: (messageIndex: number, text: string) => void
   onExecutePlan: () => void
   onPreviewGeneratedImage: (payload: AgentImagePreviewPayload) => void
@@ -85,6 +83,7 @@ function AgentMessageItemImpl({
   message,
   messageIndex,
   isLastMessage,
+  isLatestAssistant,
   busy,
   status,
   runIsPlan,
@@ -97,9 +96,6 @@ function AgentMessageItemImpl({
   onCopyAssistant,
   onCopyUser,
   onSpeak,
-  onOpenUsageDetails,
-  onRegenerate,
-  onRetry,
   onEdit,
   onExecutePlan,
   onPreviewGeneratedImage,
@@ -110,6 +106,8 @@ function AgentMessageItemImpl({
   const assistantText = message.role === 'assistant' ? messageTextOf(message) : ''
   const userMessageText = message.role === 'user' ? messageTextOf(message) : ''
   const assistantTextStreaming = message.role === 'assistant' && isLastMessage && status === 'streaming'
+  const persistedTrace = (message.metadata as AgentMessageMetadata | undefined)?.ciphertalk?.trace
+  const persistedProcessingElapsedMs = persistedTrace?.totalElapsedMs
   // 计划模式生成的消息：正文(执行计划)走 PlanCard 折叠卡片，不再走普通 Markdown 渲染。
   // 完成后看 metadata.planMode；流式期间 metadata 还没回来，靠在途标记 runIsPlan 判定。
   const isPlanMessage = message.role === 'assistant' && (
@@ -181,41 +179,36 @@ function AgentMessageItemImpl({
     )
   }
   const renderChainSegment = (segment: Array<{ part: AgentChainPart; index: number }>, segmentActive: boolean) => (
-    <MessageChainOfThought active={segmentActive} key={`chain-${segment[0]?.index ?? 0}`}>
+    <MessageChainOfThought
+      active={segmentActive}
+      key={`chain-${segment[0]?.index ?? 0}`}
+      persistedElapsedMs={persistedProcessingElapsedMs}
+    >
       {segment.map(({ part, index }) => {
         if (part.type === 'reasoning') {
           const reasoningActive = isReasoningStreaming && index === message.parts.length - 1
           return (
-            <ChainOfThoughtStep
-              icon={Bulb}
+            <MessageResponse
+              className="text-foreground text-sm"
+              isStreaming={reasoningActive}
               key={`chain-${index}`}
-              label={renderChainLabel('Reasoning', reasoningActive)}
-              status={reasoningActive ? 'active' : 'complete'}
+              showStreamingIndicator={false}
             >
-              <MessageResponse
-                className="text-muted-foreground text-sm"
-                isStreaming={reasoningActive}
-                showStreamingIndicator={false}
-              >
-                {part.text}
-              </MessageResponse>
-            </ChainOfThoughtStep>
+              {part.text}
+            </MessageResponse>
           )
         }
         const toolName = part.type.replace(/^tool-/, '')
-        const done = part.state === 'output-available' || part.state === 'output-error' || part.state === 'output-denied'
+        if (part.state === 'approval-requested' || part.state === 'approval-responded' || part.state === 'output-denied') {
+          return null
+        }
+        const done = part.state === 'output-available' || part.state === 'output-error'
+        const toolActive = segmentActive && !done
         const toolLabel = formatToolName(toolName)
         const elapsedMs = toolElapsedByKey[toolPartProgressKey(part, toolName)]
-        const stateLabel = part.state === 'approval-requested'
-          ? '等待确认'
-          : part.state === 'approval-responded'
-            ? '已确认'
-            : part.state === 'output-denied'
-              ? '已拒绝'
-              : ''
         const label = [
           toolLabel,
-          done && elapsedMs ? formatElapsed(elapsedMs) : stateLabel,
+          done && elapsedMs != null ? formatElapsed(elapsedMs) : '',
         ].filter(Boolean).join(' · ')
         const badges = collectToolBadges(part.input)
         const delegateTasks = toolName === 'delegate_analysis' ? getDelegateTasks(part) : undefined
@@ -227,8 +220,8 @@ function AgentMessageItemImpl({
           <ChainOfThoughtStep
             icon={toolName.includes('search') ? Magnifier : Wrench}
             key={`chain-${index}`}
-            label={renderChainLabel(label, !done)}
-            status={done ? 'complete' : 'active'}
+            label={renderChainLabel(label, toolActive)}
+            status={toolActive ? 'active' : 'complete'}
           >
             {badges.length > 0 && (
               <ChainOfThoughtSearchResults>
@@ -242,17 +235,11 @@ function AgentMessageItemImpl({
             {part.state === 'output-error' && part.errorText && (
               <p className="text-destructive text-xs">{part.errorText}</p>
             )}
-            {part.state === 'output-denied' && (
-              <p className="text-muted-foreground text-xs">用户拒绝了这次工具操作。</p>
-            )}
             {toolName === 'delegate_analysis' && subAgentEventsForMessage.length > 0 && (
               <SubAgentProgressPanel events={subAgentEventsForMessage} tasks={delegateTasks} />
             )}
             {toolName !== 'delegate_analysis' && (
-              <ToolIODetails
-                input={part.input}
-                output={part.state === 'output-available' ? part.output : undefined}
-              />
+              <ToolIODetails input={part.input} />
             )}
           </ChainOfThoughtStep>
         )
@@ -279,8 +266,8 @@ function AgentMessageItemImpl({
           {orderedSegments.map((segment, segmentIndex) => {
             const isLastSegment = segmentIndex === orderedSegments.length - 1
             if (segment.kind === 'chain') {
-              // 只有位于消息末尾、还在运行中的执行过程块保持展开；后面已经出正文的块自动收起。
-              const segmentActive = chainActive && isLastSegment
+              // 整轮运行期间过程保持展开；只有最终回答完全结束后，才统一收进“已处理”。
+              const segmentActive = chainActive
               return (
                 <div className="space-y-2" key={`chain-${segment.items[0]?.index ?? 0}`}>
                   {renderChainSegment(segment.items, segmentActive)}
@@ -329,15 +316,12 @@ function AgentMessageItemImpl({
           )}
           {message.role === 'assistant' && !(isLastMessage && busy) && (
             <MessageUsageStats
-              canRegenerate={selectedModelSupportsTools}
               copied={copied}
+              defaultVisible={isLatestAssistant}
               metadata={message.metadata}
               messageText={assistantDisplayText}
               onCopy={() => onCopyAssistant(message.id, assistantDisplayText)}
-              onOpenDetails={onOpenUsageDetails}
-              onRegenerate={() => onRegenerate(messageIndex)}
               onSpeak={() => onSpeak(message.id, assistantDisplayText)}
-              regenerating={busy}
               speaking={speaking}
             />
           )}
@@ -365,13 +349,10 @@ function AgentMessageItemImpl({
       )}
       {message.role === 'user' && (
         <UserMessageActions
-          canRetry={selectedModelSupportsTools}
           copied={copied}
           messageText={userMessageText}
           onCopy={() => onCopyUser(message.id, userMessageText)}
           onEdit={() => onEdit(messageIndex, userMessageText)}
-          onRetry={() => onRetry(messageIndex)}
-          retrying={busy}
         />
       )}
     </Message>
@@ -387,6 +368,7 @@ function propsAreEqual(prev: AgentMessageItemProps, next: AgentMessageItemProps)
   if (prev.message !== next.message) return false
   if (prev.messageIndex !== next.messageIndex) return false
   if (prev.isLastMessage !== next.isLastMessage) return false
+  if (prev.isLatestAssistant !== next.isLatestAssistant) return false
   if (prev.busy !== next.busy) return false
   if (prev.status !== next.status) return false
   if (prev.selectedModelSupportsTools !== next.selectedModelSupportsTools) return false

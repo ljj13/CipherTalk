@@ -4,7 +4,7 @@
  * 等待回复时头部只显示「对方正在输入…」，不暴露内部检索过程。
  * 历史挂 agent 会话存储（scope kind='persona'），打开恢复、每轮保存。
  */
-import { ArrowsRotateLeft, CircleCheck, CircleDashed, CircleExclamation, CircleInfo, Clock, ClockArrowRotateLeft, CommentSlash, FaceRobot, Microphone, PencilToLine, PencilToSquare, TrashBin } from '@gravity-ui/icons'
+import { ArrowsRotateLeft, CircleCheck, CircleDashed, CircleExclamation, Clock, ClockArrowRotateLeft, CommentSlash, FaceRobot, Microphone, PencilToLine, PencilToSquare, TrashBin } from '@gravity-ui/icons'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useChat } from '@ai-sdk/react'
@@ -33,8 +33,8 @@ import { useTtsSpeaker } from '../lib/ttsPlayer'
 import { parseWechatEmoji } from '../utils/wechatEmoji'
 import { getAIProviders, type AIModelInfo, type AIProviderInfo } from '../types/ai'
 import type { AgentConversationUpdatedEvent, PersonaBuildProgressInfo, PersonaRecordInfo } from '../types/electron'
-import { parseAgentMessageMetadata, type AgentMessageMetadata } from './agent/agentConversationHelpers'
-import { UsageDetailsModal, formatTokenCount } from './agent/AgentUsageStats'
+import { parseAgentMessageMetadata } from './agent/agentConversationHelpers'
+import { formatTokenCount } from './agent/AgentUsageStats'
 
 type Phase = 'loading' | 'confirm' | 'building' | 'chat'
 
@@ -395,13 +395,7 @@ function PersonaMessageAttachment({ file, isMine }: { file: FileUIPart; isMine: 
   )
 }
 
-function PersonaMessageUsageLine({
-  metadata,
-  onOpenDetails,
-}: {
-  metadata: unknown
-  onOpenDetails: (data: AgentMessageMetadata) => void
-}) {
+function PersonaMessageUsageLine({ metadata }: { metadata: unknown }) {
   const parsed = parseAgentMessageMetadata(metadata)
   if (!parsed?.usage) return null
 
@@ -417,16 +411,6 @@ function PersonaMessageUsageLine({
   return (
     <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted">
       {parts.length > 0 && <span>{parts.join(' · ')}</span>}
-      <Button
-        aria-label="查看用量详情"
-        className="h-6 min-w-6 px-1 text-muted hover:text-foreground"
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        onPress={() => onOpenDetails(parsed)}
-      >
-        <CircleInfo className="size-3.5" />
-      </Button>
     </div>
   )
 }
@@ -462,7 +446,6 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   const [historyRecords, setHistoryRecords] = useState<PersonaConversationRecord[]>([])
   const [recordPendingDelete, setRecordPendingDelete] = useState<PersonaConversationRecord | null>(null)
   const [providersInfo, setProvidersInfo] = useState<AIProviderInfo[]>([])
-  const [usageDetailsModal, setUsageDetailsModal] = useState<AgentMessageMetadata | null>(null)
   /** 待发缓冲：真人不会秒回——发出的消息先挂着，停顿几秒没有新消息了才一起交给 AI 回一轮 */
   const [pendingTexts, setPendingTexts] = useState<string[]>([])
   const pendingRef = useRef<string[]>([])
@@ -1599,10 +1582,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
                   )
                 })}
                 {!isMine && (
-                  <PersonaMessageUsageLine
-                    metadata={message.metadata}
-                    onOpenDetails={setUsageDetailsModal}
-                  />
+                  <PersonaMessageUsageLine metadata={message.metadata} />
                 )}
               </div>
               {isMine && <PersonaAvatar name="我" avatarUrl={myAvatarUrl} size={38} />}
@@ -1766,13 +1746,6 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
         </AlertDialog.Container>
       </AlertDialog.Backdrop>
 
-      {usageDetailsModal !== null && (
-        <UsageDetailsModal
-          data={usageDetailsModal}
-          modelInfoByKey={modelInfoByKey}
-          onClose={() => setUsageDetailsModal(null)}
-        />
-      )}
     </div>
   )
 }

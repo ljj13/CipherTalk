@@ -1,10 +1,9 @@
 /**
- * 消息用量/费用统计：token 明细格式化、按本地模型价格表估算费用、消息底部的操作条 + 详情弹窗。
+ * 消息用量/费用统计：token 明细格式化、按本地模型价格表估算费用、消息底部的操作条。
  * 从 AgentPage.tsx 拆出。
  */
 import type { ReactNode } from 'react'
-import { Button as HeroButton, Modal, Table } from '@heroui/react'
-import { ArrowsRotateLeft, Check, CircleInfo, Copy, Volume } from '@gravity-ui/icons'
+import { Check, Copy, Volume } from '@gravity-ui/icons'
 import type { UIMessage } from 'ai'
 import { MessageAction, MessageActions } from '@/components/ai-elements/message'
 import type { AIModelInfo } from '@/types/ai'
@@ -273,33 +272,27 @@ export function messageTextOf(message: UIMessage): string {
 }
 
 export function MessageUsageStats({
-  canRegenerate,
+  defaultVisible,
   metadata,
   messageText,
   copied,
-  regenerating,
   speaking,
   onCopy,
-  onOpenDetails,
-  onRegenerate,
   onSpeak,
 }: {
-  canRegenerate: boolean
+  defaultVisible: boolean
   metadata: unknown
   messageText: string
   copied: boolean
-  regenerating: boolean
   speaking: boolean
   onCopy: () => void
-  onOpenDetails: (data: AgentMessageMetadata) => void
-  onRegenerate: () => void
   onSpeak: () => void
 }) {
   const parsed = parseAgentMessageMetadata(metadata)
   if (!parsed && !messageText) return null
 
   return (
-    <div className="mt-3 border-border/60 border-t pt-2 text-[11px] leading-5 text-muted-foreground">
+    <div className={`mt-2 text-[11px] leading-5 text-muted-foreground transition-opacity ${defaultVisible ? 'opacity-100' : 'pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'}`}>
       <div className="flex items-center">
         <MessageActions className="shrink-0">
           <MessageAction
@@ -318,71 +311,8 @@ export function MessageUsageStats({
           >
             <Volume className={`size-3.5 ${speaking ? 'text-accent-foreground' : ''}`} />
           </MessageAction>
-          <MessageAction
-            disabled={!canRegenerate || regenerating}
-            label="重新生成"
-            onClick={onRegenerate}
-            tooltip="重新生成"
-          >
-            <ArrowsRotateLeft className={`size-3.5 ${regenerating ? 'animate-spin' : ''}`} />
-          </MessageAction>
-          <MessageAction
-            disabled={!parsed}
-            label="详情"
-            onClick={() => parsed && onOpenDetails(parsed)}
-            startsGroup
-            tooltip="详情"
-          >
-            <CircleInfo className="size-3.5" />
-          </MessageAction>
         </MessageActions>
       </div>
     </div>
-  )
-}
-
-export function UsageDetailsModal({
-  data,
-  modelInfoByKey,
-  onClose,
-}: {
-  data: AgentMessageMetadata
-  modelInfoByKey: Map<string, AIModelInfo>
-  onClose: () => void
-}) {
-  const rows = buildUsageDetailRows(data, modelInfoByKey)
-
-  return (
-    <Modal>
-      <Modal.Backdrop isOpen onOpenChange={(open) => { if (!open) onClose() }}>
-        <Modal.Container className="px-3 sm:px-6" placement="center">
-          <Modal.Dialog aria-label="AI 用量详情" className="w-fit! max-w-[calc(100vw-24px)]! overflow-hidden! border-0! bg-transparent! p-0! shadow-none! sm:max-w-260!">
-            <Table>
-              <Table.ScrollContainer className="max-h-[calc(100vh-124px)] overflow-auto">
-                <Table.Content aria-label="AI 用量详情" className="min-w-150">
-                  <Table.Header>
-                    <Table.Column isRowHeader>项目</Table.Column>
-                    <Table.Column>值</Table.Column>
-                    <Table.Column>说明</Table.Column>
-                  </Table.Header>
-                  <Table.Body>
-                    {rows.map((row) => (
-                      <Table.Row id={row.id} key={row.id}>
-                        <Table.Cell className="font-medium text-foreground">{row.label}</Table.Cell>
-                        <Table.Cell>{row.value}</Table.Cell>
-                        <Table.Cell className="text-muted-foreground">{row.note || ''}</Table.Cell>
-                      </Table.Row>
-                    ))}
-                  </Table.Body>
-                </Table.Content>
-              </Table.ScrollContainer>
-              <Table.Footer className="justify-end">
-                <HeroButton size="sm" variant="secondary" onPress={onClose}>关闭</HeroButton>
-              </Table.Footer>
-            </Table>
-          </Modal.Dialog>
-        </Modal.Container>
-      </Modal.Backdrop>
-    </Modal>
   )
 }

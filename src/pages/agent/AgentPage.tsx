@@ -96,7 +96,7 @@ import {
   type AgentConversationRecord,
   type AgentMessageMetadata,
 } from './agentConversationHelpers'
-import { UsageDetailsModal, formatTokenCount } from './AgentUsageStats'
+import { formatTokenCount } from './AgentUsageStats'
 import { AgentShareCard, buildAgentSharePreviewData, formatAgentShareFileDate, sanitizeAgentShareFileName, type AgentSharePreviewData } from './AgentShareCard'
 import { AGENT_PENDING_TITLE, ModelWaitingLine, SubAgentProgressPanel, mergeSubAgentProgress, shouldDisplayAgentProgress } from './AgentSubAgentProgress'
 import { ModelCapabilityIcons, ModelItem, type AgentModelItem } from './AgentMessageBlocks'
@@ -420,7 +420,6 @@ export default function AgentPage() {
       await window.electronAPI.localCodingAgent.cancel(jobId).catch(() => ({ success: false }))
     }
   }, [])
-  const [usageDetailsModal, setUsageDetailsModal] = useState<AgentMessageMetadata | null>(null)
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null)
   const { speakingKey: speakingMessageId, speak: speakMessage, stop: stopSpeakingMessage } = useTtsSpeaker()
   const promptInputControllerRef = useRef<PromptInputControllerProps | null>(null)
@@ -613,7 +612,7 @@ export default function AgentPage() {
       }
     }
 
-    if (progress.stage === 'tool_finished' && progress.toolName && progress.elapsedMs) {
+    if (progress.stage === 'tool_finished' && progress.toolName && progress.elapsedMs != null) {
       setToolElapsedByKey((prev) => {
         const key = toolProgressKey(progress.toolName!, progress.toolCallId)
         if (prev[key] === progress.elapsedMs) return prev
@@ -673,7 +672,7 @@ export default function AgentPage() {
     [handleAgentProgress]
   )
   // 流式 chunk 合并到每 50ms 更新一次 UI，避免 token 级高频重渲染拖卡滚动
-  const { messages, sendMessage, regenerate, setMessages, status, stop, addToolApprovalResponse } = useChat({
+  const { messages, sendMessage, setMessages, status, stop, addToolApprovalResponse } = useChat({
     transport,
     experimental_throttle: 50,
     sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
@@ -687,8 +686,14 @@ export default function AgentPage() {
   const lastStreamingSaveAtRef = useRef(0)
   const [modelOpen, setModelOpen] = useState(false)
   const busy = status === 'submitted' || status === 'streaming'
-  const effectiveBusy = busy || localAgentRunning
-  const effectiveStatus: ChatStatus = localAgentRunning ? 'streaming' : status
+  const awaitingToolApproval = useMemo(() => {
+    const lastMessage = messages[messages.length - 1]
+    return lastMessage?.role === 'assistant' && lastMessage.parts.some((part) => (
+      'state' in part && part.state === 'approval-requested'
+    ))
+  }, [messages])
+  const effectiveBusy = busy || localAgentRunning || agentRunPending || awaitingToolApproval
+  const effectiveStatus: ChatStatus = localAgentRunning || agentRunPending || awaitingToolApproval ? 'streaming' : status
   useEffect(() => {
     const lastMessage = messages[messages.length - 1]
     const metadata = lastMessage?.metadata && typeof lastMessage.metadata === 'object'
@@ -1964,62 +1969,6 @@ export default function AgentPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- handleSubmit 每次渲染都重建，纳入依赖会让 effect 每帧空跑
   }, [pendingAutoRun, mentions, busy, localAgentRunning, agentRunPending])
 
-  // 三个都用 messagesRef.current 而不是闭包里的 messages：后者每次流式 tick 都变，
-  // 会导致这几个回调的引用跟着每 tick 重建，直接传给逐条消息的 memo 组件时白白让它们全部重渲染。
-  const handleRegenerateAssistantMessage = useCallback((messageIndex: number) => {
-    if (effectiveBusy || !selectedModelSupportsTools) return
-    const currentMessages = messagesRef.current
-    const assistantMessage = currentMessages[messageIndex]
-    if (!assistantMessage || assistantMessage.role !== 'assistant') return
-    const userIndex = (() => {
-      for (let index = messageIndex - 1; index >= 0; index -= 1) {
-        if (currentMessages[index]?.role === 'user') return index
-      }
-      return -1
-    })()
-    if (userIndex < 0) return
-
-    stopSpeakingMessage()
-    setAgentNotice('')
-    setAgentProgress([])
-    setAgentRunPending(true)
-    setSubAgentProgress([])
-    runIsPlanRef.current = planModeRef.current
-    submitScopeRef.current = activeScopeRef.current
-    const nextMessages = currentMessages.slice(0, messageIndex)
-    messagesRef.current = nextMessages
-
-    const sendPromise = Promise.resolve(regenerate({ messageId: assistantMessage.id })).finally(() => {
-      submitScopeRef.current = null
-      setAgentRunPending(false)
-    })
-    void sendPromise
-  }, [effectiveBusy, regenerate, selectedModelSupportsTools])
-
-  const handleRetryUserMessage = useCallback((messageIndex: number) => {
-    if (effectiveBusy || !selectedModelSupportsTools) return
-    const currentMessages = messagesRef.current
-    const userMessage = currentMessages[messageIndex]
-    if (!userMessage || userMessage.role !== 'user') return
-
-    stopSpeakingMessage()
-    setAgentNotice('')
-    setAgentProgress([])
-    setAgentRunPending(true)
-    setSubAgentProgress([])
-    runIsPlanRef.current = planModeRef.current
-    submitScopeRef.current = activeScopeRef.current
-    const nextMessages = currentMessages.slice(0, messageIndex + 1)
-    setMessages(nextMessages)
-    messagesRef.current = nextMessages
-
-    const sendPromise = Promise.resolve(regenerate({ messageId: userMessage.id })).finally(() => {
-      submitScopeRef.current = null
-      setAgentRunPending(false)
-    })
-    void sendPromise
-  }, [effectiveBusy, regenerate, selectedModelSupportsTools, setMessages, stopSpeakingMessage])
-
   const handleEditUserMessage = useCallback((messageIndex: number, text: string) => {
     if (effectiveBusy) return
     const currentMessages = messagesRef.current
@@ -2053,7 +2002,7 @@ export default function AgentPage() {
   }, [effectiveBusy, selectedModelSupportsTools, sendMessage])
 
   const handleToolApproval = useCallback((approvalId: string, approved: boolean) => {
-    if (!approvalId || effectiveBusy) return
+    if (!approvalId || busy || localAgentRunning) return
     setAgentNotice('')
     setAgentProgress([])
     setAgentRunPending(true)
@@ -2065,7 +2014,7 @@ export default function AgentPage() {
       approved,
       reason: approved ? '用户已确认' : '用户拒绝',
     })
-  }, [addToolApprovalResponse, effectiveBusy])
+  }, [addToolApprovalResponse, busy, localAgentRunning])
 
   // 补丁应用/丢弃的结果属于密语状态，走气泡外的提示条，不改动助手消息（否则会抹掉折叠链的思考/工具卡片）。
   const appendLocalAgentPatchActionResult = useCallback((_request: LocalAgentPatchRequest, text: string) => {
@@ -2116,7 +2065,6 @@ export default function AgentPage() {
 
   // 只有最后一条消息里可能挂着待确认的工具调用（见 toolApproval.ts：本轮结束即暂停等待用户响应）
   const pendingToolApprovals = useMemo<ToolApprovalBarItem[]>(() => {
-    if (effectiveBusy) return []
     const lastMessage = messages[messages.length - 1]
     if (!lastMessage || lastMessage.role !== 'assistant') return []
     const items: ToolApprovalBarItem[] = []
@@ -2132,7 +2080,7 @@ export default function AgentPage() {
       })
     }
     return items
-  }, [effectiveBusy, messages])
+  }, [messages])
 
   const handleModelSelect = useCallback((id: string) => {
     const model = models.find((item) => item.id === id)
@@ -2282,6 +2230,13 @@ export default function AgentPage() {
   const sessionNameOf = useCallback((sessionId: string) => (
     sessionNameMap.get(sessionId) || sourceNameById[sessionId] || sessionId
   ), [sessionNameMap, sourceNameById])
+  let latestAssistantMessageId = ''
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === 'assistant') {
+      latestAssistantMessageId = messages[index].id
+      break
+    }
+  }
 
   return (
     <Surface
@@ -2439,6 +2394,7 @@ export default function AgentPage() {
                 busy={effectiveBusy}
                 copied={copiedMessageId === message.id}
                 isLastMessage={messageIndex === messages.length - 1}
+                isLatestAssistant={message.id === latestAssistantMessageId}
                 key={message.id}
                 message={message}
                 messageIndex={messageIndex}
@@ -2446,10 +2402,7 @@ export default function AgentPage() {
                 onCopyUser={handleCopyUserMessage}
                 onEdit={handleEditUserMessage}
                 onExecutePlan={handleExecutePlan}
-                onOpenUsageDetails={setUsageDetailsModal}
                 onPreviewGeneratedImage={setGeneratedImagePreview}
-                onRegenerate={handleRegenerateAssistantMessage}
-                onRetry={handleRetryUserMessage}
                 onSpeak={handleSpeakAssistantMessage}
                 runIsPlan={runIsPlanRef.current}
                 selectedModelSupportsTools={selectedModelSupportsTools}
@@ -2770,13 +2723,6 @@ export default function AgentPage() {
       </div>
           </div>
         </div>
-      )}
-      {usageDetailsModal !== null && (
-        <UsageDetailsModal
-          data={usageDetailsModal}
-          modelInfoByKey={modelInfoByKey}
-          onClose={() => setUsageDetailsModal(null)}
-        />
       )}
       <AlertDialog.Backdrop
         isOpen={recordPendingDelete !== null}

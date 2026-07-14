@@ -143,6 +143,8 @@ export function renderChainLabel(label: string, active: boolean) {
 }
 
 export function formatElapsed(ms: number) {
+  if (ms < 1) return '<1ms'
+  if (ms < 1000) return `${Math.round(ms)}ms`
   return `${Math.round(ms / 100) / 10}s`
 }
 

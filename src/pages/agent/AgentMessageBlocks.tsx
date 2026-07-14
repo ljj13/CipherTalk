@@ -4,7 +4,7 @@
  */
 import { memo, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Card, Dropdown, Label } from '@heroui/react'
-import { ArrowsRotateLeft, Bulb, Check, ChevronDown, Copy, CurlyBrackets, FileText, ListCheck, PencilToLine, Picture, Terminal, Wrench } from '@gravity-ui/icons'
+import { Bulb, Check, ChevronDown, Copy, CurlyBrackets, FileText, ListCheck, PencilToLine, Picture, Terminal, Wrench } from '@gravity-ui/icons'
 import {
   ChainOfThought,
   ChainOfThoughtContent,
@@ -134,7 +134,7 @@ export function CompactionMarker({ data }: { data: CompactionPartData }) {
   )
 }
 
-// 工具调用的原始参数/返回：默认收起，用户想看点开就有。数据大时截断，避免刷屏。
+// 工具调用参数：默认收起，用户想看点开就有。数据大时截断，避免刷屏。
 const TOOL_IO_CHAR_CAP = 4000
 
 function formatToolValue(value: unknown): string {
@@ -154,11 +154,10 @@ function ToolIOSection({ label, text }: { label: string; text: string }) {
   )
 }
 
-export function ToolIODetails({ input, output }: { input?: unknown; output?: unknown }) {
+export function ToolIODetails({ input }: { input?: unknown }) {
   const [open, setOpen] = useState(false)
   const inputText = formatToolValue(input)
-  const outputText = formatToolValue(output)
-  if (!inputText && !outputText) return null
+  if (!inputText) return null
   return (
     <div className="mt-1">
       <button
@@ -171,23 +170,27 @@ export function ToolIODetails({ input, output }: { input?: unknown; output?: unk
         {open ? '收起调用详情' : '查看调用详情'}
       </button>
       {open && (
-        <>
-          <ToolIOSection label="参数" text={inputText} />
-          <ToolIOSection label="结果" text={outputText} />
-        </>
+        <ToolIOSection label="参数" text={inputText} />
       )}
     </div>
   )
 }
 
-// 进行中默认展开（让用户看到 AI 正在干啥），结束后自动收起；用户手动点过则尊重用户的选择。
-export function MessageChainOfThought({ active, children }: { active: boolean; children: ReactNode }) {
+// 外层进行中自动展开、结束后自动收起；内部步骤详情各自保持默认收起。
+export function MessageChainOfThought({
+  active,
+  children,
+  persistedElapsedMs,
+}: {
+  active: boolean
+  children: ReactNode
+  persistedElapsedMs?: number
+}) {
   const [open, setOpen] = useState(active)
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const startedAtRef = useRef<number | null>(active ? Date.now() : null)
-  const userToggledRef = useRef(false)
   useEffect(() => {
-    if (!userToggledRef.current) setOpen(active)
+    setOpen(active)
   }, [active])
   useEffect(() => {
     if (!active) {
@@ -206,33 +209,34 @@ export function MessageChainOfThought({ active, children }: { active: boolean; c
     const timer = window.setInterval(updateElapsed, 1000)
     return () => window.clearInterval(timer)
   }, [active])
-  const elapsedText = elapsedSeconds >= 60
-    ? `${Math.floor(elapsedSeconds / 60)}分${elapsedSeconds % 60}秒`
-    : `${elapsedSeconds}秒`
+  const displayedSeconds = active
+    ? elapsedSeconds
+    : typeof persistedElapsedMs === 'number' && Number.isFinite(persistedElapsedMs)
+      ? Math.max(0, Math.floor(persistedElapsedMs / 1000))
+      : null
+  const elapsedText = displayedSeconds === null
+    ? ''
+    : displayedSeconds >= 60
+      ? `${Math.floor(displayedSeconds / 60)}分${displayedSeconds % 60}秒`
+      : `${displayedSeconds}秒`
   return (
-    <ChainOfThought onOpenChange={(value) => { userToggledRef.current = true; setOpen(value) }} open={open}>
-      <ChainOfThoughtHeader>{active ? '处理中' : '已处理'} {elapsedText}</ChainOfThoughtHeader>
+    <ChainOfThought onOpenChange={setOpen} open={open}>
+      <ChainOfThoughtHeader>{active ? '处理中' : '已处理'}{elapsedText ? ` ${elapsedText}` : ''}</ChainOfThoughtHeader>
       <ChainOfThoughtContent>{children}</ChainOfThoughtContent>
     </ChainOfThought>
   )
 }
 
 export function UserMessageActions({
-  canRetry,
   copied,
   messageText,
-  retrying,
   onCopy,
   onEdit,
-  onRetry,
 }: {
-  canRetry: boolean
   copied: boolean
   messageText: string
-  retrying: boolean
   onCopy: () => void
   onEdit: () => void
-  onRetry: () => void
 }) {
   if (!messageText) return null
 
@@ -247,15 +251,6 @@ export function UserMessageActions({
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
         </MessageAction>
         <MessageAction
-          disabled={!canRetry || retrying}
-          label="重试"
-          onClick={onRetry}
-          tooltip="重试"
-        >
-          <ArrowsRotateLeft className={`size-3.5 ${retrying ? 'animate-spin' : ''}`} />
-        </MessageAction>
-        <MessageAction
-          disabled={retrying}
           label="编辑"
           onClick={onEdit}
           tooltip="编辑"

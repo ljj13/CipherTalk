@@ -111,7 +111,8 @@ export const ChainOfThoughtHeader = memo(
       <Collapsible className="w-fit max-w-full" onOpenChange={setIsOpen} open={isOpen}>
         <CollapsibleTrigger
           className={cn(
-            "inline-flex w-fit max-w-full items-center gap-2 text-muted-foreground text-sm transition-colors hover:text-foreground",
+            "inline-flex w-fit max-w-full items-center gap-2 rounded-md px-1 py-0.5 text-muted-foreground text-sm hover:bg-muted/40 hover:text-foreground",
+            isOpen && "text-foreground",
             className
           )}
           {...props}
@@ -121,7 +122,7 @@ export const ChainOfThoughtHeader = memo(
           </span>
           <ChevronDown
             className={cn(
-              "size-4 transition-transform",
+              "size-4 transition-transform duration-200 ease-out",
               isOpen ? "rotate-180" : "rotate-0"
             )}
           />
@@ -153,29 +154,51 @@ export const ChainOfThoughtStep = memo(
     status = "complete",
     children,
     ...props
-  }: ChainOfThoughtStepProps) => (
-    <div
-      className={cn(
-        "flex gap-2 text-sm",
-        stepStatusStyles[status],
-        "fade-in-0 slide-in-from-top-2 animate-in",
-        className
-      )}
-      {...props}
-    >
-      <div className="relative mt-0.5">
-        <Icon className="size-4" />
-        <div className="absolute top-7 bottom-0 left-1/2 -mx-px w-px bg-border" />
-      </div>
-      <div className="flex-1 space-y-2 overflow-hidden">
-        <div>{label}</div>
-        {description && (
-          <div className="text-muted-foreground text-xs">{description}</div>
+  }: ChainOfThoughtStepProps) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const hasDetails = Boolean(children || description);
+
+    return (
+      <div
+        className={cn(
+          "flex gap-2 text-sm",
+          stepStatusStyles[status],
+          "fade-in-0 slide-in-from-top-2 animate-in",
+          className
         )}
-        {children}
+        {...props}
+      >
+        <div className="relative mt-0.5">
+          <Icon className="size-4" />
+          <div className="absolute top-7 bottom-0 left-1/2 -mx-px w-px bg-border" />
+        </div>
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <Collapsible onOpenChange={setIsOpen} open={isOpen}>
+            <CollapsibleTrigger
+              className={cn(
+                "flex w-full min-w-0 items-center gap-1.5 text-left",
+                hasDetails ? "cursor-pointer" : "cursor-default"
+              )}
+              disabled={!hasDetails}
+            >
+              <span className="min-w-0 truncate">{label}</span>
+              {hasDetails && (
+                <ChevronDown className={cn("size-3.5 shrink-0 transition-transform duration-200", isOpen && "rotate-180")} />
+              )}
+            </CollapsibleTrigger>
+            {hasDetails && (
+              <CollapsibleContent className="overflow-hidden data-[state=closed]:animate-[ct-chain-collapse_220ms_cubic-bezier(0.4,0,0.2,1)] data-[state=open]:animate-[ct-chain-expand_220ms_cubic-bezier(0.4,0,0.2,1)]">
+                <div className="space-y-2 pt-2">
+                  {description && <div className="text-muted-foreground text-xs">{description}</div>}
+                  {children}
+                </div>
+              </CollapsibleContent>
+            )}
+          </Collapsible>
+        </div>
       </div>
-    </div>
-  )
+    );
+  }
 );
 
 export type ChainOfThoughtSearchResultsProps = ComponentProps<"div">;
@@ -215,8 +238,8 @@ export const ChainOfThoughtContent = memo(
       <Collapsible open={isOpen}>
         <CollapsibleContent
           className={cn(
-            "mt-2 space-y-3",
-            "data-[state=closed]:fade-out-0 data-[state=closed]:slide-out-to-top-2 data-[state=open]:slide-in-from-top-2 text-popover-foreground outline-none data-[state=closed]:animate-out data-[state=open]:animate-in",
+            "mt-2 space-y-3 overflow-hidden text-popover-foreground outline-none will-change-[height,opacity]",
+            "data-[state=closed]:animate-[ct-chain-collapse_220ms_cubic-bezier(0.4,0,0.2,1)] data-[state=open]:animate-[ct-chain-expand_220ms_cubic-bezier(0.4,0,0.2,1)]",
             className
           )}
           {...props}
