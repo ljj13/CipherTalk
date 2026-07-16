@@ -227,6 +227,7 @@ export function AgentPromptPrimaryAction({ busy, status }: { busy: boolean; stat
   return (
     <HoldToTalkSubmit
       holdDisabled={busy}
+      voiceInputEnabled={!textInput.value.trim()}
       status={status}
       onTranscript={(text) => {
         const current = textInput.value

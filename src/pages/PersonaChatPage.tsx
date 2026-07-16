@@ -29,11 +29,11 @@ import { ImagePreview, type ImagePreviewOriginRect } from '@/components/ImagePre
 import { PersonaChatTransport } from '../features/aiagent/transport/personaChatTransport'
 import { cn } from '../lib/utils'
 import { useTtsSpeaker } from '../lib/ttsPlayer'
-import { startVoiceCall, type VoiceCallSession } from '../lib/voiceCallSession'
+import { createRealtimePcmPlayer, startRealtimeMicrophone, type RealtimeMicrophone, type RealtimePcmPlayer } from '../lib/realtimeVoiceCall'
 import { HoldToTalkSubmit } from '@/components/ai-elements/hold-to-talk-submit'
 import { parseWechatEmoji } from '../utils/wechatEmoji'
 import { getAIProviders, type AIModelInfo, type AIProviderInfo } from '../types/ai'
-import type { AgentConversationUpdatedEvent, PersonaBuildProgressInfo, PersonaRecordInfo } from '../types/electron'
+import type { AgentConversationUpdatedEvent, PersonaBuildProgressInfo, PersonaRecordInfo, VoiceRealtimeEvent } from '../types/electron'
 import { parseAgentMessageMetadata } from './agent/agentConversationHelpers'
 import { formatTokenCount } from './agent/AgentUsageStats'
 
@@ -143,6 +143,34 @@ function messageFileParts(message: UIMessage): FileUIPart[] {
 
 function messageText(message: UIMessage): string {
   return messageTextParts(message).join('\n')
+}
+
+function buildRealtimeDialogContext(messages: UIMessage[]): Array<{ role: 'user' | 'assistant'; text: string }> {
+  const items = messages
+    .map((message) => ({ role: message.role, text: messageText(message).trim() }))
+    .filter((item): item is { role: 'user' | 'assistant'; text: string } =>
+      (item.role === 'user' || item.role === 'assistant') && Boolean(item.text))
+  const pairs: Array<{ role: 'user' | 'assistant'; text: string }> = []
+  for (let i = 0; i + 1 < items.length; i += 1) {
+    if (items[i].role === 'user' && items[i + 1].role === 'assistant') {
+      pairs.push(items[i], items[i + 1])
+      i += 1
+    }
+  }
+  return pairs.slice(-40)
+}
+
+function createRealtimeMessage(role: 'user' | 'assistant', text: string): UIMessage {
+  return {
+    id: `realtime-${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    role,
+    parts: [{ type: 'text', text }],
+  }
+}
+
+function formatCallDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60)
+  return `${String(minutes).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
 }
 
 /** 语音气泡标记（与 personaChatEngine 的提示词约定一致）：行首 [语音]/【语音】。 */
@@ -439,12 +467,23 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   // 语音发问后自动朗读这一轮回复（打字发的消息不自动播）
   const autoPlayReplyRef = useRef(false)
   const wasBusyRef = useRef(false)
-  // 语音通话模式（打电话式：常开麦 + VAD 自动断句）
+  // 豆包端到端 Realtime 通话：麦克风持续上行，服务端 VAD/ASR/LLM/TTS。
   const [callActive, setCallActive] = useState(false)
-  const [callPhase, setCallPhase] = useState<'connecting' | 'listening' | 'recognizing' | 'thinking' | 'speaking'>('listening')
-  const callSessionRef = useRef<VoiceCallSession | null>(null)
+  const [callPhase, setCallPhase] = useState<'connecting' | 'listening' | 'user-speaking' | 'thinking' | 'speaking'>('listening')
+  const [callMuted, setCallMuted] = useState(false)
+  const [callLevel, setCallLevel] = useState(0)
+  const [callLiveText, setCallLiveText] = useState('')
+  const [callDuration, setCallDuration] = useState(0)
+  const [callStartedAt, setCallStartedAt] = useState(0)
+  const callIdRef = useRef('')
+  const callMicrophoneRef = useRef<RealtimeMicrophone | null>(null)
+  const callPlayerRef = useRef<RealtimePcmPlayer | null>(null)
+  const callEventOffRef = useRef<(() => void) | null>(null)
+  const callAsrTextRef = useRef('')
+  const callReplyTextRef = useRef('')
+  const callReplyIdRef = useRef('')
+  const callDropAudioRef = useRef(false)
   const callActiveRef = useRef(false)
-  const handleCallUtteranceRef = useRef<(wavBase64: string) => void>(() => {})
   const [speakingStyleOpen, setSpeakingStyleOpen] = useState(false)
   const [speakingStyleSaving, setSpeakingStyleSaving] = useState(false)
   const [speakingStyleDraft, setSpeakingStyleDraft] = useState<SpeakingStyleDraft>(EMPTY_SPEAKING_STYLE_DRAFT)
@@ -458,6 +497,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
   const [providersInfo, setProvidersInfo] = useState<AIProviderInfo[]>([])
   /** 待发缓冲：真人不会秒回——发出的消息先挂着，停顿几秒没有新消息了才一起交给 AI 回一轮 */
   const [pendingTexts, setPendingTexts] = useState<string[]>([])
+  const [inputHasText, setInputHasText] = useState(false)
   const pendingRef = useRef<string[]>([])
   const inputValueRef = useRef('')
   const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -604,6 +644,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
     stopVoiceRef.current()
     pendingRef.current = []
     inputValueRef.current = ''
+    setInputHasText(false)
     shouldStickToBottomRef.current = true
     clearScheduledScroll()
     loadingOlderRef.current = false
@@ -670,7 +711,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
       }
     }
   }
-  // 本轮回复流结束后：语音发问自动朗读一次；通话模式则播完继续听下一句
+  // 非 Realtime 的按住说话模式：本轮文本回复结束后自动朗读一次。
   useEffect(() => {
     const wasBusy = wasBusyRef.current
     wasBusyRef.current = busy
@@ -682,28 +723,38 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
       const firstVoice = bubbles.findIndex((bubble) => bubble.isVoice)
       if (firstVoice >= 0) await handlePlayVoice(last.id, bubbles, firstVoice)
     }
-    if (callActiveRef.current) {
-      setCallPhase('speaking')
-      void playReply().finally(() => {
-        if (callActiveRef.current) {
-          setCallPhase('listening')
-          callSessionRef.current?.resume()
-        }
-      })
-    } else if (autoPlayReplyRef.current) {
+    if (autoPlayReplyRef.current) {
       autoPlayReplyRef.current = false
       void playReply()
     }
   }, [busy, messages])
 
-  // 切会话/卸载时挂断通话，释放麦克风
+  // 切会话/卸载时挂断 Realtime，释放麦克风、播放器与主进程 WebSocket。
   useEffect(() => {
     return () => {
       callActiveRef.current = false
-      callSessionRef.current?.stop()
-      callSessionRef.current = null
+      callMicrophoneRef.current?.stop()
+      callMicrophoneRef.current = null
+      callPlayerRef.current?.close()
+      callPlayerRef.current = null
+      callEventOffRef.current?.()
+      callEventOffRef.current = null
+      const callId = callIdRef.current
+      callIdRef.current = ''
+      if (callId) void window.electronAPI.voiceRealtime.stop(callId)
     }
   }, [sessionId])
+
+  useEffect(() => {
+    if (!callActive || !callStartedAt) {
+      setCallDuration(0)
+      return
+    }
+    const update = () => setCallDuration(Math.max(0, Math.floor((Date.now() - callStartedAt) / 1000)))
+    update()
+    const timer = setInterval(update, 1000)
+    return () => clearInterval(timer)
+  }, [callActive, callStartedAt])
 
   // AI 已经开始逐条吐气泡后就不再显示"正在输入"指示器，否则像凭空多了一条带头像的消息
   const lastMessage = messages[messages.length - 1]
@@ -884,6 +935,7 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
     const wechatPushes = shouldPushToWechat
       ? messages
         .filter((message) => message.role === 'assistant' && typeof message.id === 'string' && message.id.trim())
+        .filter((message) => !message.id.startsWith('realtime-'))
         .filter((message) => !wechatKnownAssistantMessageIdsRef.current.has(message.id) && !wechatPushPendingMessageIdsRef.current.has(message.id))
         .map((message) => ({ messageId: message.id, bubbles: wechatPushBubblesFromMessage(message) }))
         .filter((item) => item.bubbles.length > 0)
@@ -1206,69 +1258,174 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
     armFlushTimer()
   }
 
-  // 通话模式：立即发送（绕过打字用的 2-4s 待发缓冲，避免通话时发闷）
-  const sendNow = async (rawText: string) => {
+  const appendRealtimeMessage = (role: 'user' | 'assistant', rawText: string) => {
     const text = rawText.trim()
     if (!text) return
-    await ensureConversation()
-    clearPending()
-    await sendMessage({ parts: [{ type: 'text' as const, text }] })
+    setMessages((previous) => {
+      const last = previous[previous.length - 1]
+      if (last?.role === role && messageText(last).trim() === text) return previous
+      return [...previous, createRealtimeMessage(role, text)]
+    })
   }
 
-  // 通话模式：VAD 断句拿到一句话 → 转写 → 立即发送（回复的播放/续听在 busy→idle 的 effect 里）
-  const handleCallUtterance = async (wavBase64: string) => {
+  const flushRealtimeTranscripts = () => {
+    if (callAsrTextRef.current.trim()) appendRealtimeMessage('user', callAsrTextRef.current)
+    if (callReplyTextRef.current.trim()) appendRealtimeMessage('assistant', callReplyTextRef.current)
+    callAsrTextRef.current = ''
+    callReplyTextRef.current = ''
+  }
+
+  const cleanupRealtimeCall = async (notifyMain: boolean) => {
+    const callId = callIdRef.current
+    callActiveRef.current = false
+    setCallActive(false)
+    callIdRef.current = ''
+    callMicrophoneRef.current?.stop()
+    callMicrophoneRef.current = null
+    callPlayerRef.current?.close()
+    callPlayerRef.current = null
+    callEventOffRef.current?.()
+    callEventOffRef.current = null
+    flushRealtimeTranscripts()
+    callReplyIdRef.current = ''
+    callDropAudioRef.current = false
+    setCallMuted(false)
+    setCallLevel(0)
+    setCallLiveText('')
+    setCallStartedAt(0)
+    if (notifyMain && callId) await window.electronAPI.voiceRealtime.stop(callId).catch(() => undefined)
+  }
+
+  const handleRealtimeEvent = (event: VoiceRealtimeEvent) => {
     if (!callActiveRef.current) return
-    const session = callSessionRef.current
-    session?.pause() // 分身说话期间别听，避免外放回声自触发
-    setCallPhase('recognizing')
-    try {
-      const res = await window.electronAPI.stt.transcribeBuffer(wavBase64)
-      if (!callActiveRef.current) return
-      const text = res.success ? String(res.transcript || '').trim() : ''
-      if (!text) {
+    switch (event.type) {
+      case 'connected':
         setCallPhase('listening')
-        session?.resume()
-        return
+        break
+      case 'speech-started': {
+        const interrupted = callPlayerRef.current?.interrupt()
+        callDropAudioRef.current = true
+        setCallPhase('user-speaking')
+        if (interrupted?.replyId && interrupted.audioEndMs > 0 && callIdRef.current) {
+          void window.electronAPI.voiceRealtime.truncate(callIdRef.current, interrupted.replyId, interrupted.audioEndMs)
+        }
+        break
       }
-      setCallPhase('thinking')
-      await sendNow(text)
-    } catch {
-      if (callActiveRef.current) {
+      case 'asr':
+        callAsrTextRef.current = event.text
+        setCallLiveText(event.text)
+        setCallPhase('user-speaking')
+        break
+      case 'asr-ended':
+        if (callAsrTextRef.current.trim()) appendRealtimeMessage('user', callAsrTextRef.current)
+        callAsrTextRef.current = ''
+        setCallLiveText('')
+        setCallPhase('thinking')
+        break
+      case 'chat': {
+        const incoming = event.text.trim()
+        const current = callReplyTextRef.current
+        if (incoming) {
+          callReplyTextRef.current = !current || incoming.startsWith(current)
+            ? incoming
+            : current.endsWith(incoming)
+              ? current
+              : `${current}${incoming}`
+          setCallLiveText(callReplyTextRef.current)
+        }
+        if (event.replyId) callReplyIdRef.current = event.replyId
+        setCallPhase('thinking')
+        break
+      }
+      case 'chat-ended':
+        if (callReplyTextRef.current.trim()) appendRealtimeMessage('assistant', callReplyTextRef.current)
+        callReplyTextRef.current = ''
+        setCallLiveText('')
+        break
+      case 'tts-start':
+        callDropAudioRef.current = false
+        callReplyIdRef.current = event.replyId || callReplyIdRef.current
+        callPlayerRef.current?.beginResponse(callReplyIdRef.current || undefined)
+        setCallPhase('speaking')
+        break
+      case 'audio':
+        if (!callDropAudioRef.current) {
+          callPlayerRef.current?.enqueue(event.audioBase64, event.sampleRate, event.channels)
+          setCallPhase('speaking')
+        }
+        break
+      case 'tts-ended':
+        callDropAudioRef.current = false
         setCallPhase('listening')
-        session?.resume()
-      }
+        break
+      case 'error':
+        setVoiceCloneStatus({ ok: false, text: `实时通话中断：${event.error}` })
+        void cleanupRealtimeCall(false)
+        break
+      case 'ended':
+        void cleanupRealtimeCall(false)
+        break
     }
   }
-  handleCallUtteranceRef.current = handleCallUtterance // 每次渲染刷新，供常驻的通话会话回调取最新闭包
 
   const startCall = async () => {
-    if (callActive) return
+    if (callActiveRef.current) return
     stopVoice()
+    setVoiceCloneStatus(null)
     setCallPhase('connecting')
+    setCallMuted(false)
+    setCallLiveText('')
+    setCallActive(true)
+    callActiveRef.current = true
+    const callId = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `call-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    callIdRef.current = callId
+
     try {
-      const session = await startVoiceCall({
-        onUtterance: (wav) => handleCallUtteranceRef.current(wav),
-        onError: (err) => setVoiceCloneStatus({ ok: false, text: err.message }),
+      callPlayerRef.current = createRealtimePcmPlayer()
+      callEventOffRef.current = window.electronAPI.voiceRealtime.onEvent(callId, handleRealtimeEvent)
+      await ensureConversation()
+      clearPending()
+      const started = await window.electronAPI.voiceRealtime.start({
+        callId,
+        sessionId,
+        dialogContext: buildRealtimeDialogContext(messages),
       })
-      callSessionRef.current = session
-      callActiveRef.current = true
-      setCallActive(true)
+      if (!started.success) throw new Error(started.error || '豆包 Realtime 会话启动失败')
+      if (!callActiveRef.current || callIdRef.current !== callId) return
+
+      callMicrophoneRef.current = await startRealtimeMicrophone({
+        onPacket: (packet) => {
+          if (callActiveRef.current && callIdRef.current === callId) {
+            window.electronAPI.voiceRealtime.sendAudio(callId, packet)
+          }
+        },
+        onLevel: setCallLevel,
+        onError: (error) => setVoiceCloneStatus({ ok: false, text: `麦克风异常：${error.message}` }),
+      })
+      setCallStartedAt(Date.now())
       setCallPhase('listening')
-    } catch (e) {
-      setVoiceCloneStatus({ ok: false, text: `无法开始通话：${e instanceof Error ? e.message : String(e)}` })
-      setCallActive(false)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setVoiceCloneStatus({ ok: false, text: `无法开始实时通话：${message}` })
+      await cleanupRealtimeCall(true)
     }
   }
 
   const endCall = () => {
-    callActiveRef.current = false
-    setCallActive(false)
-    callSessionRef.current?.stop()
-    callSessionRef.current = null
+    void cleanupRealtimeCall(true)
     stopVoice()
   }
 
+  const toggleCallMute = () => {
+    const next = !callMuted
+    setCallMuted(next)
+    callMicrophoneRef.current?.setMuted(next)
+  }
+
   const handlePromptSubmit = async (message: PromptInputMessage) => {
+    setInputHasText(false)
     if (busy) {
       stop()
       return
@@ -1740,6 +1897,10 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
             maxFiles={6}
             maxFileSize={8 * 1024 * 1024}
             multiple
+            onReset={() => {
+              inputValueRef.current = ''
+              setInputHasText(false)
+            }}
             onSubmit={handlePromptSubmit}
           >
             <PromptInputHeader className="flex-col items-stretch gap-1.5 px-3 pt-2 pb-0">
@@ -1752,7 +1913,9 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
                 className="min-h-13 pt-3 pb-2 text-base"
                 placeholder={`给「${displayName}」发消息，Enter 发送，Shift + Enter 换行…`}
                 onChange={(event) => {
-                  inputValueRef.current = event.currentTarget.value
+                  const nextValue = event.currentTarget.value
+                  inputValueRef.current = nextValue
+                  setInputHasText(Boolean(nextValue.trim()))
                 }}
               />
             </PromptInputBody>
@@ -1764,19 +1927,22 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
                     <PromptInputActionAddAttachments label="添加图片" />
                   </PromptInputActionMenuContent>
                 </PromptInputActionMenu>
-                {/* 语音通话：打电话式，常开麦自动断句（语音输入合并到发送按钮长按） */}
-                <button
-                  type="button"
+                {/* 豆包端到端 Realtime 语音通话 */}
+                <Button
+                  isIconOnly
                   aria-label="语音通话"
-                  disabled={busy}
-                  onClick={() => void startCall()}
-                  className="grid size-9 shrink-0 place-items-center rounded-full text-muted transition-colors hover:bg-surface/60 disabled:opacity-40"
+                  isDisabled={busy}
+                  onPress={() => void startCall()}
+                  size="sm"
+                  variant="ghost"
+                  className="shrink-0"
                 >
                   <Smartphone width={18} height={18} />
-                </button>
+                </Button>
               </PromptInputTools>
               <HoldToTalkSubmit
                 holdDisabled={busy}
+                voiceInputEnabled={!inputHasText}
                 status={busy ? 'streaming' : undefined}
                 onTranscript={(text) => {
                   void handleSendText(text).then(() => { autoPlayReplyRef.current = true })
@@ -1789,29 +1955,62 @@ export default function PersonaChatPage({ sessionId: sessionIdProp, embedded = f
         </div>
       </div>
 
-      {/* 语音通话浮层（打电话式：常开麦 + VAD 自动断句） */}
+      {/* 豆包端到端 Realtime 通话浮层 */}
       {callActive && (() => {
         const meta = {
           connecting: { label: '接通中…', icon: <CircleDashed width={16} height={16} className="animate-spin" /> },
-          listening: { label: '请说，聆听中…', icon: <Microphone width={16} height={16} className="text-danger" /> },
-          recognizing: { label: '识别中…', icon: <CircleDashed width={16} height={16} className="animate-spin" /> },
-          thinking: { label: '对方正在想…', icon: <CircleDashed width={16} height={16} className="animate-spin" /> },
+          listening: { label: callMuted ? '麦克风已静音' : '聆听中…', icon: <Microphone width={16} height={16} className={callMuted ? 'text-muted' : 'text-danger'} /> },
+          'user-speaking': { label: '正在听你说…', icon: <Microphone width={16} height={16} className="text-danger" /> },
+          thinking: { label: '对方正在回应…', icon: <CircleDashed width={16} height={16} className="animate-spin" /> },
           speaking: { label: '对方说话中…', icon: <Volume width={16} height={16} className="text-accent" /> },
         }[callPhase]
         return (
-          <div className="absolute inset-0 z-50 grid place-items-center bg-black/55 backdrop-blur-sm">
-            <div className="flex w-72 flex-col items-center gap-5 rounded-3xl bg-surface/90 px-6 py-8 shadow-2xl">
-              <PersonaAvatar name={displayName} avatarUrl={avatarUrl} size={88} />
-              <div className="text-lg font-semibold text-foreground">{displayName || sessionId}</div>
-              <div className="flex items-center gap-2 text-sm text-muted">{meta.icon}<span>{meta.label}</span></div>
-              <button
-                type="button"
-                onClick={endCall}
-                aria-label="挂断"
-                className="mt-1 grid size-14 place-items-center rounded-full bg-danger text-white shadow-lg transition-colors hover:bg-danger/90"
-              >
-                <CircleXmarkFill width={26} height={26} />
-              </button>
+          <div className="absolute inset-0 z-50 flex flex-col items-center bg-background/96 px-6 py-10 backdrop-blur-xl">
+            <div className="text-sm tabular-nums text-muted">{callStartedAt ? formatCallDuration(callDuration) : '正在建立安全连接'}</div>
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-4">
+              <PersonaAvatar name={displayName} avatarUrl={avatarUrl} size={104} />
+              <div className="text-xl font-semibold text-foreground">{displayName || sessionId}</div>
+              <div className="flex h-6 items-center gap-2 text-sm text-muted">{meta.icon}<span>{meta.label}</span></div>
+              <div className="flex h-9 items-center gap-1" aria-hidden="true">
+                {[0.45, 0.7, 1, 0.65, 0.4].map((weight, index) => (
+                  <span
+                    key={index}
+                    className="w-1 rounded-full bg-accent transition-[height,opacity] duration-75"
+                    style={{ height: `${Math.max(4, Math.round(callLevel * weight * 32))}px`, opacity: callMuted ? 0.25 : 0.55 + weight * 0.35 }}
+                  />
+                ))}
+              </div>
+              <div className="h-10 max-w-md text-center text-sm leading-5 text-muted">
+                {callLiveText || ' '}
+              </div>
+            </div>
+            <div className="flex h-20 items-center gap-8">
+              <div className="flex flex-col items-center gap-2">
+                <Button
+                  isIconOnly
+                  aria-label={callMuted ? '打开麦克风' : '静音麦克风'}
+                  onPress={toggleCallMute}
+                  size="lg"
+                  variant={callMuted ? 'secondary' : 'outline'}
+                  className="rounded-full"
+                >
+                  <Microphone width={22} height={22} />
+                </Button>
+                <span className="text-xs text-muted">{callMuted ? '取消静音' : '静音'}</span>
+              </div>
+              <div className="flex flex-col items-center gap-2">
+                <Button
+                  isIconOnly
+                  onPress={endCall}
+                  aria-label="挂断"
+                  size="lg"
+                  variant="danger"
+                  className="rounded-full"
+                >
+                  <CircleXmarkFill width={26} height={26} />
+                </Button>
+                <span className="text-xs text-muted">挂断</span>
+              </div>
             </div>
           </div>
         )

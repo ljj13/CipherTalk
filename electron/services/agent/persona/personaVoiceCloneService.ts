@@ -16,6 +16,7 @@ import {
   resolveAliyunQwenCustomizationEndpoint,
 } from '../../ai/aliyunQwenTtsProtocol'
 import { VOLCENGINE_DEFAULT_TTS_ENDPOINT } from '../../ai/volcengineTtsProtocol'
+import { sttRuntimeService } from '../../sttRuntimeService'
 import type { PersonaRecord, PersonaTtsVoiceBinding } from './personaTypes'
 import { personaStore } from './personaStore'
 
@@ -60,6 +61,7 @@ interface VoiceSample {
   audioBytes: number
   sampleCount: number
   sampleSeconds: number
+  text: string
 }
 
 interface CloneStatus {
@@ -99,6 +101,8 @@ interface AliyunQwenVoiceCloneLogContext {
 
 const VOLCENGINE_VOICE_CLONE_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
 const VOLCENGINE_VOICE_STATUS_ENDPOINT = 'https://openspeech.bytedance.com/api/v3/tts/get_voice'
+const VOLCENGINE_REALTIME_VOICE_CLONE_ENDPOINT = 'https://openspeech.bytedance.com/api/v1/mega_tts/audio/upload'
+const VOLCENGINE_REALTIME_VOICE_STATUS_ENDPOINT = 'https://openspeech.bytedance.com/api/v1/mega_tts/status'
 // 合成用：存进音色 binding.model；大模型语音合成 V3 接口靠 X-Api-Resource-Id 选版本（seed-icl-2.0=声音复刻 2.0）。
 // 音色复刻/查询接口（voice_clone、get_voice）按官方文档不传 X-Api-Resource-Id，只用 X-Api-Key 鉴权。
 const VOLCENGINE_VOICE_RESOURCE_ID = 'seed-icl-2.0'
@@ -124,7 +128,8 @@ function sleep(ms: number): Promise<void> {
 function makeCustomSpeakerId(sessionId: string): string {
   const digest = createHash('sha1').update(sessionId).digest('hex').slice(0, 12)
   const nonce = `${Date.now().toString(36)}${randomUUID().replace(/-/g, '').slice(0, 8)}`
-  return `custom_zh_ciphertalk_${digest}_${nonce}`
+  // 豆包端到端 Realtime SC2.0 只接受 S_ / saturn_ 前缀的克隆音色。
+  return `S_ciphertalk_${digest}_${nonce}`
 }
 
 function makeXiaomiVoiceId(sessionId: string, sampleHash: string): string {
@@ -251,7 +256,7 @@ function isSameWavFormat(a: ParsedWav, b: ParsedWav): boolean {
   return a.sampleRate === b.sampleRate && a.channels === b.channels && a.bitsPerSample === b.bitsPerSample
 }
 
-async function collectVoiceSample(sessionId: string, options: { minSeconds?: number; actionLabel?: string } = {}): Promise<VoiceSample> {
+async function collectVoiceSample(sessionId: string, options: { minSeconds?: number; actionLabel?: string; requireTranscript?: boolean } = {}): Promise<VoiceSample> {
   const requestedMinSeconds = Number(options.minSeconds)
   const minSeconds = Number.isFinite(requestedMinSeconds) && requestedMinSeconds > 0
     ? requestedMinSeconds
@@ -271,9 +276,10 @@ async function collectVoiceSample(sessionId: string, options: { minSeconds?: num
     throw new Error('没有找到对方发来的语音消息，无法复刻声音')
   }
 
-  const samples: ParsedWav[] = []
+  const samples: Array<{ audio: ParsedWav; text: string }> = []
   let base: ParsedWav | null = null
   let totalSeconds = 0
+  let transcriptFailures = 0
 
   for (const message of candidates) {
     const localId = Number(message.localId || 0)
@@ -286,7 +292,23 @@ async function collectVoiceSample(sessionId: string, options: { minSeconds?: num
       if (parsed.durationSeconds < 1) continue
       if (!base) base = parsed
       if (!isSameWavFormat(base, parsed)) continue
-      samples.push(parsed)
+      let transcript = ''
+      if (options.requireTranscript) {
+        const result = await sttRuntimeService.transcribeWavBuffer(Buffer.from(voice.data, 'base64'), {
+          cache: {
+            sessionId,
+            createTime: Number(message.createTime || 0),
+            localId,
+            allowLegacyCache: true,
+          },
+        })
+        transcript = result.success ? String(result.transcript || '').trim() : ''
+        if (!transcript) {
+          transcriptFailures += 1
+          continue
+        }
+      }
+      samples.push({ audio: parsed, text: transcript })
       totalSeconds += parsed.durationSeconds
       if (totalSeconds >= VOICE_CLONE_TARGET_SECONDS) break
     } catch {
@@ -295,6 +317,9 @@ async function collectVoiceSample(sessionId: string, options: { minSeconds?: num
   }
 
   if (!base || samples.length === 0) {
+    if (options.requireTranscript && transcriptFailures > 0) {
+      throw new Error('豆包 Realtime 声音复刻需要训练音频对应文本，但所选语音均未能转写；请先确认 STT 模型或在线转写配置可用')
+    }
     throw new Error('没有可用的 PCM WAV 语音样本')
   }
   if (totalSeconds < minSeconds) {
@@ -305,7 +330,7 @@ async function collectVoiceSample(sessionId: string, options: { minSeconds?: num
   const pcmParts: Buffer[] = []
   samples.forEach((sample, index) => {
     if (index > 0) pcmParts.push(silence)
-    pcmParts.push(sample.pcm)
+    pcmParts.push(sample.audio.pcm)
   })
 
   const audio = buildWav(base, Buffer.concat(pcmParts))
@@ -314,6 +339,7 @@ async function collectVoiceSample(sessionId: string, options: { minSeconds?: num
     audioBytes: audio.length,
     sampleCount: samples.length,
     sampleSeconds: Number(totalSeconds.toFixed(1)),
+    text: samples.map((sample) => sample.text).filter(Boolean).join('。'),
   }
 }
 
@@ -363,6 +389,21 @@ function sanitizeVolcengineRequestBody(body: Record<string, unknown>): Record<st
         dataBase64Chars: typeof audio.data === 'string' ? audio.data.length : 0,
       }
       : undefined,
+  }
+}
+
+function sanitizeVolcengineRealtimeCloneBody(body: Record<string, unknown>): Record<string, unknown> {
+  const audios = Array.isArray(body.audios) ? body.audios : []
+  return {
+    ...body,
+    audios: audios.map((item) => {
+      const audio = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+      return {
+        audio_format: audio.audio_format,
+        audioBase64Chars: typeof audio.audio_bytes === 'string' ? audio.audio_bytes.length : 0,
+        textChars: typeof audio.text === 'string' ? audio.text.length : 0,
+      }
+    }),
   }
 }
 
@@ -480,6 +521,61 @@ async function postVolcengineJson(
     })
     throw error
   }
+  return payload
+}
+
+async function postVolcengineRealtimeCloneJson(
+  url: string,
+  accessKey: string,
+  body: Record<string, unknown>,
+  logContext: VolcengineVoiceCloneLogContext,
+): Promise<any> {
+  const fetchImpl = createProxyFetch(getResolvedProxyUrl()) || fetch
+  const requestId = randomUUID()
+  const requestLog = {
+    operation: logContext.operation,
+    sessionId: logContext.sessionId,
+    displayName: logContext.displayName,
+    endpoint: endpointPath(url),
+    requestId,
+    accessKeyLength: String(accessKey || '').length,
+    accessKeyHash: apiKeyFingerprint(accessKey),
+    resourceIdHeader: VOLCENGINE_VOICE_RESOURCE_ID,
+    speakerId: logContext.speakerId,
+    sample: logContext.sample,
+    body: sanitizeVolcengineRealtimeCloneBody(body),
+  }
+  logInfo(logContext.logger, '豆包 Realtime 声音复刻请求开始', requestLog)
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Authorization: `Bearer;${accessKey}`,
+      'Resource-Id': VOLCENGINE_VOICE_RESOURCE_ID,
+      'X-Api-Request-Id': requestId,
+    },
+    body: JSON.stringify(body),
+  }) as Response
+  const logId = response.headers.get('x-tt-logid') || response.headers.get('X-Tt-Logid') || ''
+  const text = await response.text().catch(() => '')
+  let payload: any = null
+  try { payload = text ? JSON.parse(text) : {} } catch { payload = { message: text } }
+  const responseLog = {
+    ...requestLog,
+    httpStatus: response.status,
+    httpStatusText: response.statusText,
+    ok: response.ok,
+    xTtLogid: logId,
+    responseBody: safeJsonPreview(payload),
+  }
+  if (!response.ok) {
+    logContext.logger?.error?.('PersonaVoice', '豆包 Realtime 声音复刻 HTTP 请求失败', responseLog)
+    const detail = formatApiError(payload) || response.statusText
+    throw new Error(`豆包 Realtime 声音复刻 HTTP ${response.status}: ${detail}${logId ? ` · X-Tt-Logid: ${logId}` : ''}`)
+  }
+  ensureVolcengineOk(payload)
+  logInfo(logContext.logger, '豆包 Realtime 声音复刻 HTTP 请求完成', responseLog)
   return payload
 }
 
@@ -609,6 +705,58 @@ async function cloneVolcengineVoice(
   throw new Error(lastStatus.message || '豆包声音复刻超时，请稍后重试或到官方控制台查看状态')
 }
 
+async function cloneVolcengineRealtimeVoice(
+  appId: string,
+  accessKey: string,
+  speakerId: string,
+  sample: VoiceSample,
+  logContext: Omit<VolcengineVoiceCloneLogContext, 'operation' | 'speakerId' | 'sample'>,
+): Promise<CloneResult> {
+  if (!sample.text.trim()) throw new Error('豆包 Realtime 声音复刻缺少训练音频对应文本')
+  const requestContext = {
+    ...logContext,
+    speakerId,
+    sample: {
+      audioBytes: sample.audioBytes,
+      sampleCount: sample.sampleCount,
+      sampleSeconds: sample.sampleSeconds,
+    },
+  }
+  const uploadPayload = await postVolcengineRealtimeCloneJson(
+    VOLCENGINE_REALTIME_VOICE_CLONE_ENDPOINT,
+    accessKey,
+    {
+      speaker_id: speakerId,
+      appid: appId,
+      audios: [{
+        audio_bytes: sample.audioBase64,
+        text: sample.text,
+        audio_format: 'wav',
+      }],
+      model_type: VOLCENGINE_VOICE_MODEL_TYPE,
+      source: 2,
+    },
+    { ...requestContext, operation: 'realtime-clone' },
+  )
+
+  const startedAt = Date.now()
+  let lastStatus = extractCloneStatus(uploadPayload, speakerId)
+  if (lastStatus.status === 2 || lastStatus.status === 4) return { speakerId, status: lastStatus }
+  while (Date.now() - startedAt < VOICE_CLONE_TIMEOUT_MS) {
+    await sleep(VOICE_CLONE_POLL_INTERVAL_MS)
+    const statusPayload = await postVolcengineRealtimeCloneJson(
+      VOLCENGINE_REALTIME_VOICE_STATUS_ENDPOINT,
+      accessKey,
+      { appid: appId, speaker_id: speakerId },
+      { ...requestContext, operation: 'realtime-status' },
+    )
+    lastStatus = extractCloneStatus(statusPayload, speakerId)
+    if (lastStatus.status === 2 || lastStatus.status === 4) return { speakerId, status: lastStatus }
+    if (lastStatus.status === 3) throw new Error(lastStatus.message || '豆包 Realtime 声音复刻失败')
+  }
+  throw new Error(lastStatus.message || '豆包 Realtime 声音复刻超时，请稍后重试或到官方控制台查看状态')
+}
+
 async function cloneAliyunQwenVoice(
   apiKey: string,
   baseURL: string,
@@ -707,7 +855,11 @@ export async function clonePersonaVoiceFromSession(input: PersonaVoiceCloneInput
     if (!provider) {
       return { success: false, error: '未配置小米、豆包或通义 TTS API Key，请先在 TTS 设置里填写至少一个服务商密钥' }
     }
-    if (!String(cfg.providers[provider]?.apiKey || '').trim()) {
+    const volcengineConfig = cfg.providers.volcengine
+    const hasVolcengineRealtimeCredentials = provider === 'volcengine' &&
+      Boolean(String(volcengineConfig.realtimeAppId || '').trim()) &&
+      Boolean(String(volcengineConfig.realtimeAccessKey || '').trim())
+    if (!String(cfg.providers[provider]?.apiKey || '').trim() && !hasVolcengineRealtimeCredentials) {
       return { success: false, error: getMissingProviderKeyMessage(provider) }
     }
 
@@ -720,9 +872,10 @@ export async function clonePersonaVoiceFromSession(input: PersonaVoiceCloneInput
       protocol: providerConfig.protocol,
       apiKeyLength: String(providerConfig.apiKey || '').length,
       apiKeyHash: apiKeyFingerprint(providerConfig.apiKey),
+      realtimeRegistration: hasVolcengineRealtimeCredentials,
     })
 
-    const sample = await collectVoiceSample(sessionId)
+    const sample = await collectVoiceSample(sessionId, { requireTranscript: hasVolcengineRealtimeCredentials })
     logInfo(logger, '声音复刻样本收集完成', {
       sessionId,
       displayName,
@@ -798,7 +951,16 @@ export async function clonePersonaVoiceFromSession(input: PersonaVoiceCloneInput
         displayName,
       }
       const speakerId = makeCustomSpeakerId(sessionId)
-      const clone = await cloneVolcengineVoice(volcengine.apiKey, speakerId, sample, cloneContext)
+      const realtimeAppId = String(volcengine.realtimeAppId || '').trim()
+      const clone = hasVolcengineRealtimeCredentials
+        ? await cloneVolcengineRealtimeVoice(
+            realtimeAppId,
+            String(volcengine.realtimeAccessKey || '').trim(),
+            speakerId,
+            sample,
+            cloneContext,
+          )
+        : await cloneVolcengineVoice(volcengine.apiKey, speakerId, sample, cloneContext)
       voice = {
         provider: 'volcengine',
         protocol: 'volcengine-bidirectional',
@@ -806,6 +968,9 @@ export async function clonePersonaVoiceFromSession(input: PersonaVoiceCloneInput
         baseURL: volcengine.baseURL || VOLCENGINE_DEFAULT_TTS_ENDPOINT,
         model: VOLCENGINE_VOICE_RESOURCE_ID,
         voice: clone.speakerId,
+        ...(hasVolcengineRealtimeCredentials
+          ? { realtimeAppId, realtimeResourceId: VOLCENGINE_VOICE_RESOURCE_ID }
+          : {}),
         displayName,
         sampleCount: sample.sampleCount,
         sampleSeconds: sample.sampleSeconds,

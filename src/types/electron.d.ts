@@ -59,6 +59,10 @@ export type TtsProtocol = 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliy
 export interface TtsProviderConfig {
   protocol: TtsProtocol
   apiKey: string
+  /** 豆包端到端 Realtime 专用，其他 TTS provider 留空。 */
+  realtimeAppId?: string
+  /** 豆包 Realtime 的 X-Api-Access-Key，不等同于 V3 TTS 的 X-Api-Key。 */
+  realtimeAccessKey?: string
   baseURL: string
   model: string
   voice: string
@@ -102,6 +106,19 @@ export interface TtsStreamResult extends TtsSpeakResult {
   sampleRate?: number
   channels?: number
 }
+
+export type VoiceRealtimeEvent =
+  | { type: 'connected'; dialogId?: string }
+  | { type: 'speech-started'; questionId?: string }
+  | { type: 'asr'; text: string; interim: boolean }
+  | { type: 'asr-ended' }
+  | { type: 'chat'; text: string; questionId?: string; replyId?: string }
+  | { type: 'chat-ended'; questionId?: string; replyId?: string }
+  | { type: 'tts-start'; text?: string; questionId?: string; replyId?: string }
+  | { type: 'audio'; audioBase64: string; sampleRate: 24000; channels: 1 }
+  | { type: 'tts-ended'; questionId?: string; replyId?: string; statusCode?: string }
+  | { type: 'ended' }
+  | { type: 'error'; error: string; errorCode?: number }
 
 export interface TtsSpeakOptions {
   config?: Partial<TtsConfig>
@@ -404,6 +421,8 @@ export interface PersonaTtsVoiceBindingInfo {
   baseURL: string
   model: string
   voice: string
+  realtimeAppId?: string
+  realtimeResourceId?: string
   displayName?: string
   sampleCount?: number
   sampleSeconds?: number
@@ -1556,6 +1575,17 @@ export interface ElectronAPI {
     speak: (text: string, options?: TtsSpeakOptions) => Promise<TtsSpeakResult>
     stream?: (streamId: string, text: string, options: TtsSpeakOptions | undefined, callback: (event: TtsStreamEvent) => void) => Promise<TtsStreamResult>
     cancelStream?: (streamId: string) => Promise<{ success: boolean }>
+  }
+  voiceRealtime: {
+    start: (payload: {
+      callId: string
+      sessionId: string
+      dialogContext?: Array<{ role: 'user' | 'assistant'; text: string; timestamp?: number }>
+    }) => Promise<{ success: boolean; callId?: string; error?: string }>
+    sendAudio: (callId: string, audio: Uint8Array) => void
+    truncate: (callId: string, replyId: string, audioEndMs: number) => Promise<{ success: boolean; error?: string }>
+    stop: (callId: string) => Promise<{ success: boolean; error?: string }>
+    onEvent: (callId: string, callback: (event: VoiceRealtimeEvent) => void) => () => void
   }
   imageGen: {
     getConfig: () => Promise<{ success: boolean; config?: ImageGenConfig; available?: boolean; error?: string }>

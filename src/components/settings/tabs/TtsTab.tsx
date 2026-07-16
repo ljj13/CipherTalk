@@ -56,6 +56,8 @@ const DEFAULT_XIAOMI_CFG: TtsProviderConfig = {
 const DEFAULT_VOLCENGINE_CFG: TtsProviderConfig = {
   protocol: 'volcengine-bidirectional',
   apiKey: '',
+  realtimeAppId: '',
+  realtimeAccessKey: '',
   baseURL: VOLCENGINE_DEFAULT_TTS.endpoint,
   model: VOLCENGINE_DEFAULT_TTS.resourceId,
   voice: VOLCENGINE_DEFAULT_TTS.speaker,
@@ -86,7 +88,7 @@ const DEFAULT_CFG: TtsConfig = {
 
 const PROVIDER_OPTIONS: Array<{ value: TtsProviderId; label: string; hint: string }> = [
   { value: 'xiaomi', label: '小米MiMo', hint: '小米MiMo 语音合成：api-key + /chat/completions + audio 参数，内置模型与预置音色' },
-  { value: 'volcengine', label: '火山引擎 / 豆包', hint: '使用火山引擎 openspeech V3 双向流式协议：X-Api-Key + Resource ID + Speaker' },
+  { value: 'volcengine', label: '火山引擎 / 豆包', hint: '支持声音复刻、流式 TTS 与端到端 Realtime 通话；三项产品使用各自对应的控制台凭据' },
   { value: 'aliyun-qwen', label: '通义千问 / 百炼', hint: '使用百炼 Qwen-TTS Realtime WebSocket：Bearer API Key + response.audio.delta PCM 分片' },
 ]
 
@@ -189,6 +191,8 @@ function normalizeProviderConfig(provider: TtsProviderId, config: Partial<TtsPro
     ...config,
     protocol: defaults.protocol,
     apiKey: String(config.apiKey ?? defaults.apiKey ?? ''),
+    realtimeAppId: String(config.realtimeAppId ?? defaults.realtimeAppId ?? ''),
+    realtimeAccessKey: String(config.realtimeAccessKey ?? defaults.realtimeAccessKey ?? ''),
     baseURL: String(config.baseURL ?? defaults.baseURL ?? ''),
     model: String(config.model ?? defaults.model ?? ''),
     voice: String(config.voice ?? defaults.voice ?? ''),
@@ -209,12 +213,14 @@ function normalizeTtsConfig(config: Partial<TtsConfig> = {}): TtsConfig {
     'aliyun-qwen': normalizeProviderConfig('aliyun-qwen', rawProviders['aliyun-qwen']),
   }
 
-  if (config.protocol || config.apiKey != null || config.baseURL != null || config.model != null || config.voice != null || config.instructions != null || config.speed != null) {
+  if (config.protocol || config.apiKey != null || config.realtimeAppId != null || config.realtimeAccessKey != null || config.baseURL != null || config.model != null || config.voice != null || config.instructions != null || config.speed != null) {
     const flatProvider = normalizeProviderId(config.activeProvider, getProviderIdForProtocol(config.protocol))
     providers[flatProvider] = normalizeProviderConfig(flatProvider, {
       ...providers[flatProvider],
       protocol: config.protocol,
       apiKey: config.apiKey,
+      realtimeAppId: config.realtimeAppId,
+      realtimeAccessKey: config.realtimeAccessKey,
       baseURL: config.baseURL,
       model: config.model,
       voice: config.voice,
@@ -237,6 +243,8 @@ function syncActiveProviderConfig(config: TtsConfig): TtsConfig {
   const activeConfig = normalizeProviderConfig(config.activeProvider, {
     protocol: config.protocol,
     apiKey: config.apiKey,
+    realtimeAppId: config.realtimeAppId,
+    realtimeAccessKey: config.realtimeAccessKey,
     baseURL: config.baseURL,
     model: config.model,
     voice: config.voice,
@@ -510,7 +518,7 @@ export default function TtsTab() {
         </Select>
 
         <TextField fullWidth onChange={(v) => patch({ apiKey: v })} value={cfg.apiKey}>
-          <Label>API Key</Label>
+          <Label>{isVolcengine ? 'TTS / 声音复刻 API Key' : 'API Key'}</Label>
           <InputGroup fullWidth variant="secondary">
             <InputGroup.Input
               placeholder={isVolcengine ? '火山引擎新版控制台 X-Api-Key' : isAliyunQwen ? 'DASHSCOPE_API_KEY' : 'MIMO_API_KEY'}
@@ -519,12 +527,31 @@ export default function TtsTab() {
           </InputGroup>
           <Description>
             {isVolcengine
-              ? '从豆包语音官方控制台获取 X-Api-Key，仅保存在本地。'
+              ? '用于流式 TTS 与声音复刻的 X-Api-Key，仅保存在本地；端到端通话使用下方独立凭据。'
               : isAliyunQwen
                 ? '从阿里云百炼 / DashScope 获取 API Key，请求时使用 Authorization: Bearer，仅保存在本地。'
                 : '从小米MiMo控制台获取 API Key，请求时会使用 api-key 请求头，仅保存在本地。'}
           </Description>
         </TextField>
+
+        {isVolcengine && (
+          <div className="grid gap-4 md:grid-cols-2">
+            <TextField fullWidth onChange={(value) => patch({ realtimeAppId: value })} value={cfg.realtimeAppId || ''}>
+              <Label>Realtime App ID</Label>
+              <InputGroup fullWidth variant="secondary">
+                <InputGroup.Input placeholder="火山引擎控制台 APP ID" />
+              </InputGroup>
+              <Description>用于端到端实时语音握手的 X-Api-App-ID。</Description>
+            </TextField>
+            <TextField fullWidth onChange={(value) => patch({ realtimeAccessKey: value })} value={cfg.realtimeAccessKey || ''}>
+              <Label>Realtime Access Key</Label>
+              <InputGroup fullWidth variant="secondary">
+                <InputGroup.Input placeholder="火山引擎控制台 Access Token" type="password" />
+              </InputGroup>
+              <Description>用于 X-Api-Access-Key，与上方新版 TTS X-Api-Key 分开保存。</Description>
+            </TextField>
+          </div>
+        )}
 
         {isVolcengine ? (
           <ComboBox

@@ -160,6 +160,8 @@ interface ConfigSchema {
     activeProvider: 'xiaomi' | 'volcengine' | 'aliyun-qwen'
     protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
     apiKey: string
+    realtimeAppId?: string
+    realtimeAccessKey?: string
     baseURL: string
     model: string
     voice: string
@@ -169,6 +171,8 @@ interface ConfigSchema {
       xiaomi: {
         protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
         apiKey: string
+        realtimeAppId?: string
+        realtimeAccessKey?: string
         baseURL: string
         model: string
         voice: string
@@ -178,6 +182,8 @@ interface ConfigSchema {
       volcengine: {
         protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
         apiKey: string
+        realtimeAppId?: string
+        realtimeAccessKey?: string
         baseURL: string
         model: string
         voice: string
@@ -187,6 +193,8 @@ interface ConfigSchema {
       'aliyun-qwen': {
         protocol: 'xiaomi-mimo-tts' | 'volcengine-bidirectional' | 'aliyun-qwen-realtime'
         apiKey: string
+        realtimeAppId?: string
+        realtimeAccessKey?: string
         baseURL: string
         model: string
         voice: string
@@ -387,6 +395,8 @@ const defaults: ConfigSchema = {
       volcengine: {
         protocol: 'volcengine-bidirectional',
         apiKey: '',
+        realtimeAppId: '',
+        realtimeAccessKey: '',
         baseURL: 'wss://openspeech.bytedance.com/api/v3/tts/bidirection',
         model: 'seed-tts-2.0',
         voice: 'zh_female_shuangkuaisisi_uranus_bigtts',

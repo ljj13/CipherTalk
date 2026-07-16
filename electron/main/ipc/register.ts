@@ -28,6 +28,7 @@ import { registerSystemHandlers } from './systemHandlers'
 import { registerWcdbHandlers } from './wcdbHandlers'
 import { registerWindowHandlers } from './windowHandlers'
 import { registerWxKeyHandlers } from './wxKeyHandlers'
+import { registerVoiceRealtimeHandlers } from './voiceRealtimeHandlers'
 
 export function registerModularIpcHandlers(ctx: MainProcessContext): void {
   registerConfigHandlers(ctx)
@@ -53,6 +54,7 @@ export function registerModularIpcHandlers(ctx: MainProcessContext): void {
   registerLogHandlers(ctx)
   registerLocalCodingAgentHandlers(ctx)
   registerSttHandlers(ctx)
+  registerVoiceRealtimeHandlers()
   registerAiHandlers(ctx)
   registerAgentWorkspaceHandlers(ctx)
   registerPetHandlers(ctx)

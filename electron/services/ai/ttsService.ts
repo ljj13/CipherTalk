@@ -134,6 +134,8 @@ const DEFAULT_XIAOMI_TTS_PROVIDER: TtsProviderConfig = {
 const DEFAULT_VOLCENGINE_TTS_PROVIDER: TtsProviderConfig = {
   protocol: 'volcengine-bidirectional',
   apiKey: '',
+  realtimeAppId: '',
+  realtimeAccessKey: '',
   baseURL: VOLCENGINE_DEFAULT_TTS_ENDPOINT,
   model: 'seed-tts-2.0',
   voice: VOLCENGINE_RESOURCE_DEFAULT_SPEAKERS['seed-tts-2.0'],
@@ -268,6 +270,8 @@ function normalizeProviderConfig(provider: TtsProviderId, config: Partial<TtsPro
     ...config,
     protocol: defaults.protocol,
     apiKey: String(config.apiKey ?? defaults.apiKey ?? ''),
+    realtimeAppId: String(config.realtimeAppId ?? defaults.realtimeAppId ?? ''),
+    realtimeAccessKey: String(config.realtimeAccessKey ?? defaults.realtimeAccessKey ?? ''),
     baseURL: String(config.baseURL ?? defaults.baseURL ?? ''),
     model: String(config.model ?? defaults.model ?? ''),
     voice: String(config.voice ?? defaults.voice ?? ''),
@@ -280,7 +284,7 @@ function normalizeProviderConfig(provider: TtsProviderId, config: Partial<TtsPro
 }
 
 function hasFlatProviderPatch(value: Partial<TtsConfig>): boolean {
-  return ['protocol', 'apiKey', 'baseURL', 'model', 'voice', 'instructions', 'speed']
+  return ['protocol', 'apiKey', 'realtimeAppId', 'realtimeAccessKey', 'baseURL', 'model', 'voice', 'instructions', 'speed']
     .some((key) => Object.prototype.hasOwnProperty.call(value, key))
 }
 
@@ -302,6 +306,8 @@ function normalizeTtsConfig(raw: Partial<TtsConfig> = {}): TtsConfig {
       ...providers[flatProvider],
       protocol: raw.protocol,
       apiKey: raw.apiKey,
+      realtimeAppId: raw.realtimeAppId,
+      realtimeAccessKey: raw.realtimeAccessKey,
       baseURL: raw.baseURL,
       model: raw.model,
       voice: raw.voice,

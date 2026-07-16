@@ -109,6 +109,10 @@ export interface PersonaTtsVoiceBinding {
   model: string
   /** 豆包为 speaker_id；小米为本地样本 ID；通义为声音复刻返回的 voice。 */
   voice: string
+  /** 使用端到端声音复刻接口时绑定的 App ID，用于防止跨 App 误用 Speaker。 */
+  realtimeAppId?: string
+  /** 端到端声音复刻资源，SC2.0 固定为 seed-icl-2.0。 */
+  realtimeResourceId?: string
   displayName?: string
   sampleCount?: number
   sampleSeconds?: number
