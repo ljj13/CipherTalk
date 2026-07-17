@@ -10,6 +10,7 @@ import type { LanguageModel, ToolSet } from 'ai'
 import type { FilesV4 } from '@ai-sdk/provider'
 import { createProxyFetch } from '../ai/proxyFetch'
 import { withOpenAIResponsesSanitizer } from '../ai/openaiResponsesSanitizer'
+import { withOpenAICompatibleStreamSanitizer } from '../ai/openaiCompatibleStreamSanitizer'
 import { withGoogleExplicitCache } from './googleCacheFetch'
 import { isArkBaseURL, withArkContextCache } from './arkContextFetch'
 import type { AgentProviderConfig } from './types'
@@ -118,6 +119,7 @@ export function createLanguageModel(config: AgentProviderConfig, options: AgentL
     return createOpenAI({ apiKey, baseURL, name, headers, fetch: withOpenAIResponsesSanitizer(fetch) }).responses(model as any)
   }
 
+  const compatibleFetch = isArkBaseURL(baseURL) ? withArkContextCache(fetch) : fetch
   return createOpenAICompatible({
     name,
     apiKey,
@@ -125,7 +127,7 @@ export function createLanguageModel(config: AgentProviderConfig, options: AgentL
     headers,
     includeUsage: true,
     // 火山方舟端点：system 前缀自动走 context 缓存，见 arkContextFetch.ts
-    fetch: isArkBaseURL(baseURL) ? withArkContextCache(fetch) : fetch,
+    fetch: withOpenAICompatibleStreamSanitizer(compatibleFetch),
     transformRequestBody: (args) => injectOpenAICompatiblePromptCacheKey(args, options.promptCacheKey),
   }).chatModel(model)
 }

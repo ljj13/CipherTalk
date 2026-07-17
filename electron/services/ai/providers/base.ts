@@ -4,6 +4,7 @@ import { createGoogle } from '@ai-sdk/google'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
 import { createProxyFetch, getResolvedProxyUrl } from '../proxyFetch'
+import { withOpenAICompatibleStreamSanitizer } from '../openaiCompatibleStreamSanitizer'
 import { withOpenAIResponsesSanitizer } from '../openaiResponsesSanitizer'
 
 export namespace OpenAI {
@@ -416,7 +417,7 @@ export abstract class BaseAIProvider implements AIProvider {
       baseURL: this.baseURL,
       headers,
       includeUsage: true,
-      fetch
+      fetch: withOpenAICompatibleStreamSanitizer(fetch)
     }).chatModel(model)
   }
 
