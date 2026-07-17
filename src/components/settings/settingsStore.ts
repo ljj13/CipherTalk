@@ -93,11 +93,28 @@ export const DEFAULT_SETTINGS_CONFIG: SettingsConfig = {
 
 const CONFIG_KEYS = Object.keys(DEFAULT_SETTINGS_CONFIG) as (keyof SettingsConfig)[]
 
+export const ACCOUNT_CONFIG_KEYS = [
+  'decryptKey',
+  'dbPath',
+  'wxid',
+  'cachePath',
+  'imageXorKey',
+  'imageAesKey',
+  'displayName',
+  'wechatNumber',
+  'phone',
+  'editingAccountId'
+] as const satisfies readonly (keyof SettingsConfig)[]
+
 // 逐字段浅比较 —— 比 JSON.stringify 更快,且不受 key 顺序影响。
 // sttLanguages 是数组,单独按元素比较。
-function isDirty(config: SettingsConfig, initial: SettingsConfig | null): boolean {
+export function hasSettingsChanges(
+  config: SettingsConfig,
+  initial: SettingsConfig | null,
+  keys: readonly (keyof SettingsConfig)[] = CONFIG_KEYS
+): boolean {
   if (!initial) return false
-  for (const key of CONFIG_KEYS) {
+  for (const key of keys) {
     if (key === 'sttLanguages') {
       const a = config.sttLanguages
       const b = initial.sttLanguages
@@ -109,6 +126,10 @@ function isDirty(config: SettingsConfig, initial: SettingsConfig | null): boolea
   return false
 }
 
+function isDirty(config: SettingsConfig, initial: SettingsConfig | null): boolean {
+  return hasSettingsChanges(config, initial)
+}
+
 interface SettingsStore {
   config: SettingsConfig
   initialConfig: SettingsConfig | null
@@ -118,6 +139,7 @@ interface SettingsStore {
 
   setField: <K extends keyof SettingsConfig>(key: K, value: SettingsConfig[K]) => void
   setFields: (partialConfig: Partial<SettingsConfig>) => void
+  rebaseFields: (partialConfig: Partial<SettingsConfig>) => void
   setLoading: (isLoading: boolean) => void
   setSaving: (isSaving: boolean) => void
   hydrate: (config: SettingsConfig) => void
@@ -142,6 +164,16 @@ export const useSettingsStore = create<SettingsStore>()((set) => ({
     set((state) => {
       const config = { ...state.config, ...partialConfig }
       return { config, hasUnsavedChanges: isDirty(config, state.initialConfig) }
+    }),
+
+  // 载入已持久化的局部配置时,同步更新这些字段的基线,保留其它字段的未保存状态。
+  rebaseFields: (partialConfig) =>
+    set((state) => {
+      const config = { ...state.config, ...partialConfig }
+      const initialConfig = state.initialConfig
+        ? { ...state.initialConfig, ...partialConfig }
+        : null
+      return { config, initialConfig, hasUnsavedChanges: isDirty(config, initialConfig) }
     }),
 
   setLoading: (isLoading) => set({ isLoading }),

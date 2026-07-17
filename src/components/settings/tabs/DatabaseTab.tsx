@@ -6,7 +6,7 @@ import { useAppStore } from '../../../stores/appStore'
 import type { AccountProfile } from '../../../types/account'
 import { dialog } from '../../../services/ipc'
 import * as configService from '../../../services/config'
-import { useSettingsStore } from '../settingsStore'
+import { ACCOUNT_CONFIG_KEYS, hasSettingsChanges, useSettingsStore } from '../settingsStore'
 
 interface DatabaseTabProps {
   showMessage: (text: string, success: boolean) => void
@@ -47,16 +47,17 @@ function DatabaseTab({ showMessage }: DatabaseTabProps) {
   const displayName = useSettingsStore(s => s.config.displayName)
   const wechatNumber = useSettingsStore(s => s.config.wechatNumber)
   const phone = useSettingsStore(s => s.config.phone)
-  const hasUnsavedChanges = useSettingsStore(s => s.hasUnsavedChanges)
+  const hasUnsavedAccountChanges = useSettingsStore(s => (
+    hasSettingsChanges(s.config, s.initialConfig, ACCOUNT_CONFIG_KEYS)
+  ))
   const setField = useSettingsStore(s => s.setField)
-  const setFields = useSettingsStore(s => s.setFields)
+  const rebaseFields = useSettingsStore(s => s.rebaseFields)
   const setDecryptKey = (value: string) => setField('decryptKey', value)
   const setDbPath = (value: string) => setField('dbPath', value)
   const setWxid = (value: string) => setField('wxid', value)
   const setCachePath = (value: string) => setField('cachePath', value)
   const setImageXorKey = (value: string) => setField('imageXorKey', value)
   const setImageAesKey = (value: string) => setField('imageAesKey', value)
-  const setEditingAccountId = (value: string) => setField('editingAccountId', value)
 
   const [accountsList, setAccountsList] = useState<AccountProfile[]>([])
   const [activeAccountId, setActiveAccountId] = useState('')
@@ -101,7 +102,7 @@ function DatabaseTab({ showMessage }: DatabaseTabProps) {
   }
 
   const applyAccountToForm = (account: AccountProfile | null) => {
-    setFields({
+    rebaseFields({
       editingAccountId: account?.id || '',
       decryptKey: account?.decryptKey || '',
       dbPath: account?.dbPath || '',
@@ -290,8 +291,8 @@ function DatabaseTab({ showMessage }: DatabaseTabProps) {
       return
     }
 
-    if (hasUnsavedChanges) {
-      showMessage('请先保存当前账号表单，再执行切换', false)
+    if (hasUnsavedAccountChanges) {
+      showMessage('当前账号配置有未保存的修改，请先保存再执行切换', false)
       return
     }
 

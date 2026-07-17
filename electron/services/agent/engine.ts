@@ -25,7 +25,6 @@ import { formatAgentError } from './errorFormat'
 import type { AgentMcpToolDescriptor, AgentProgressReporter, AgentProviderConfig, AgentRunInput, AgentSkillContextItem, AgentToolProfile, AgentTraceMetadata, AgentTraceTool } from './types'
 import type { CodeWorkspaceRef } from './codeWorkspaceTypes'
 
-const MAX_STEPS = 24
 const DEFAULT_AGENT_TEMPERATURE = 0.2
 const REPLY_DEEP_MAX_STEPS = 10
 const AGENT_TOTAL_TIMEOUT_MS = 3_600_000
@@ -422,8 +421,8 @@ export async function runAgent(
       tools: prepared.tools,
       temperature: DEFAULT_AGENT_TEMPERATURE,
       reasoning: buildReasoningOption(input.providerConfig),
-      // 最后一个预算步骤会在 prepareStep 中禁用工具并强制收尾，避免撞上上限时只留下推理过程。
-      stopWhen: [isStepCount(MAX_STEPS)],
+      // 不设步数上限，由模型自行决定何时收尾；兜底靠总超时 + prepareStep 里的死循环强制收尾。
+      stopWhen: [],
       providerOptions: buildProviderOptions(input, prepared.promptCacheKey),
       toolApproval: buildAgentToolApproval(input, input.mcpTools?.map((item) => item.name) ?? []),
       // @ts-expect-error AI SDK beta 的 ToolLoopAgentSettings 类型漏了此字段；settings 会原样透传给
@@ -462,7 +461,7 @@ export async function runAgent(
       // 每步先做 >90% AI 压缩（折叠早期历史为摘要并发持久标记），再叠加确定性裁剪 + query_sql 门控状态
       prepareStep: async ({ messages, steps }) => {
         const runtimeContext = buildToolRuntimeContext(steps)
-        const forceFinalAnswer = steps.length >= MAX_STEPS - 1 || hasRepeatedToolCallLoop(steps)
+        const forceFinalAnswer = hasRepeatedToolCallLoop(steps)
         return {
           messages: await aiCompactStep({
             messages,

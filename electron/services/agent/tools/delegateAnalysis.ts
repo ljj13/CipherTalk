@@ -3,7 +3,7 @@
  *
  * 把「读大量消息」的子任务交给独立的 ToolLoopAgent 跑完，只把结论 + 出处回给主 Agent，
  * 子任务翻的原始消息不进主上下文（配合 compaction，进一步压住上下文体积）。
- * 支持一次传入最多 4 个互相独立的子任务并发执行；子 Agent 用 buildBaseTools（不含本工具，避免递归委托），带步数上限 + 死循环检测。
+ * 支持一次传入最多 10 个互相独立的子任务并发执行；子 Agent 用 buildBaseTools（不含本工具，避免递归委托），带步数上限 + 死循环检测。
  * 出处：从子 Agent 各工具结果里聚合 evidence 回传，让主 Agent 也能给可点 Sources（带出处硬要求）。
  */
 import { ToolLoopAgent, isStepCount, tool, type ToolSet } from 'ai'
@@ -19,8 +19,8 @@ import { describeToolError, type AgentEvidenceItem } from './shared'
 import type { AgentProviderConfig, AgentScope } from '../types'
 
 const SUB_AGENT_MAX_STEPS = 12
-const MAX_DELEGATE_TASKS = 4
-const DEFAULT_DELEGATE_CONCURRENCY = 4
+const MAX_DELEGATE_TASKS = 10
+const DEFAULT_DELEGATE_CONCURRENCY = 10
 const MAX_DELEGATED_EVIDENCE = 15
 const DEFAULT_SUB_AGENT_TEMPERATURE = 0.2
 const MAX_PROGRESS_DETAIL_LENGTH = 180
