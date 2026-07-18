@@ -74,6 +74,8 @@ import {
 } from './AgentMentions'
 import { describeToolApprovalRequest, extractSources, getPersonaControlOutput, toolProgressKey } from './agentMessageHelpers'
 import { createLiquidGlassMap, type GlassFilterMap } from '@/utils/liquidGlass'
+import { LottieView, type DotLottie } from '@/components/LottieView'
+import welcomeLottieUrl from '@/assets/lottie/Welcome.lottie?url'
 import {
   buildFallbackConversationTitle,
   finiteNumber,
@@ -2244,6 +2246,17 @@ export default function AgentPage() {
   }
   // 新对话（还没有任何消息）时输入框居中展示，发出首条消息后回到底部
   const promptCentered = messages.length === 0
+  // 居中态输入框上方的欢迎 Lottie：进入对话后隐藏并暂停，回到新对话再续播
+  const welcomeLottieInstanceRef = useRef<DotLottie | null>(null)
+  const handleWelcomeLottieRef = useCallback((instance: DotLottie | null) => {
+    welcomeLottieInstanceRef.current = instance
+  }, [])
+  useEffect(() => {
+    const instance = welcomeLottieInstanceRef.current
+    if (!instance) return
+    if (promptCentered) instance.play()
+    else instance.pause()
+  }, [promptCentered])
 
   return (
     <Surface
@@ -2443,12 +2456,17 @@ export default function AgentPage() {
           <div className={`pointer-events-auto w-full transition-[max-width] duration-500 ease-in-out ${promptCentered ? 'max-w-2xl' : 'max-w-4xl'}`}>
         <div
           aria-hidden={!promptCentered}
-          className={`overflow-hidden text-center transition-all duration-500 ease-in-out ${
-            promptCentered ? 'mb-6 max-h-28 opacity-100' : 'mb-0 max-h-0 opacity-0'
+          className={`overflow-hidden transition-all duration-500 ease-in-out ${
+            promptCentered ? 'mb-4 max-h-64 opacity-100' : 'mb-0 max-h-0 opacity-0'
           }`}
         >
-          <div className="font-semibold text-2xl text-foreground">开始查询聊天记录</div>
-          <div className="mt-2 text-muted-foreground text-sm">输入问题后，助手会基于本地聊天数据回答</div>
+          <LottieView
+            autoplay
+            className="mx-auto h-56 w-56"
+            dotLottieRefCallback={handleWelcomeLottieRef}
+            loop
+            src={welcomeLottieUrl}
+          />
         </div>
         {localAgentPatchRequest && (
           <div className="mb-2 flex min-w-0 flex-wrap items-center gap-2 rounded-(--agent-radius,12px) border border-border bg-surface/90 px-3 py-2 text-xs shadow-lg">
