@@ -35,6 +35,45 @@ const PROMPT_OPTIMIZE_CONTEXT_MAX_MESSAGES = 4
 const PROMPT_OPTIMIZE_CONTEXT_MESSAGE_MAX_CHARS = 1000
 const TOOL_APPROVAL_SECRET = process.env.CT_AGENT_TOOL_APPROVAL_SECRET || randomBytes(32).toString('base64url')
 
+const RENDERABLE_FILE_TOOL_NAMES = new Set([
+  'generate_image',
+  'send_sticker',
+  'send_random_image',
+  'send_media_from_history',
+  'inspect_media_image',
+])
+const RENDERABLE_CANVAS_TOOL_NAMES = new Set([
+  'canvas_create',
+  'canvas_edit',
+  'canvas_replace',
+  'canvas_rename',
+])
+
+function agentTemperatureOption(
+  config: AgentProviderConfig,
+  temperature: number,
+): { temperature?: number } {
+  if (config.providerKind !== 'openai-responses') return { temperature }
+  const model = config.model.trim().toLowerCase()
+  const reasoningModel = model.startsWith('o1')
+    || model.startsWith('o3')
+    || model.startsWith('o4-mini')
+    || (model.startsWith('gpt-5') && !model.startsWith('gpt-5-chat'))
+  if (!reasoningModel) return { temperature }
+
+  const supportsTemperatureWithNoReasoning = [
+    'gpt-5.1',
+    'gpt-5.2',
+    'gpt-5.3',
+    'gpt-5.4',
+    'gpt-5.5',
+    'gpt-5.6',
+  ].some((prefix) => model.startsWith(prefix))
+  return supportsTemperatureWithNoReasoning && config.reasoningEffort === 'none'
+    ? { temperature }
+    : {}
+}
+
 const FINAL_ANSWER_INSTRUCTION = `
 工具调用阶段已经结束。现在必须直接给用户完整的最终答复：
 - 禁止继续调用工具，禁止只输出推理过程，也不要再说“接下来继续查”或“稍后整理”。
@@ -162,6 +201,19 @@ function finiteTokenCount(value: unknown): number | undefined {
 
 function recordOf(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function isRenderableToolOutput(toolName: string | undefined, output: unknown): boolean {
+  if (!toolName) return false
+  const value = recordOf(output)
+  if (!value || value.error) return false
+  if (RENDERABLE_FILE_TOOL_NAMES.has(toolName)) {
+    return typeof value.filePath === 'string' && value.filePath.trim().length > 0
+  }
+  if (RENDERABLE_CANVAS_TOOL_NAMES.has(toolName)) {
+    return value.success === true && typeof value.canvasId === 'string' && value.canvasId.trim().length > 0
+  }
+  return false
 }
 
 function nestedNumber(value: unknown, path: string[]): number | undefined {
@@ -424,7 +476,7 @@ export async function runAgent(
       // 不放行 AI SDK 会直接抛 InvalidPromptError（#243）
       allowSystemInMessages: true,
       tools: prepared.tools,
-      temperature: DEFAULT_AGENT_TEMPERATURE,
+      ...agentTemperatureOption(input.providerConfig, DEFAULT_AGENT_TEMPERATURE),
       reasoning: buildReasoningOption(input.providerConfig),
       // 不设步数上限，由模型自行决定何时收尾；兜底靠总超时 + prepareStep 里的死循环强制收尾。
       stopWhen: [],
@@ -513,6 +565,7 @@ export async function runAgent(
     let perfFirstOutputSeen = false
     const toolNames = new Map<string, string>()
     const pendingToolCalls = new Map<string, { toolName: string; input?: unknown }>()
+    const renderableToolOutputs = new Set<string>()
     for await (const chunk of toUIMessageStream({
       stream: result.stream,
       tools: prepared.tools,
@@ -550,6 +603,13 @@ export async function runAgent(
       if (chunk.type === 'text-delta') assistantText += chunk.delta
       if (chunk.type === 'tool-approval-request') awaitingToolApproval = true
       trackToolChunk(chunk, toolNames, pendingToolCalls)
+      if (
+        chunk.type === 'tool-output-available'
+        && chunk.preliminary !== true
+        && isRenderableToolOutput(toolNames.get(chunk.toolCallId), chunk.output)
+      ) {
+        renderableToolOutputs.add(toolNames.get(chunk.toolCallId)!)
+      }
       onChunk(chunk)
     }
     const primaryFinalText = (await result.text).trim()
@@ -568,13 +628,17 @@ export async function runAgent(
 
     // stopWhen 命中步数/循环护栏时，最后一步可能仍是 tool-calls，AI SDK 会正常结束但没有最终 text。
     // 用已有响应消息做一次禁用工具的收尾；审批等待和用户取消属于正常的无正文状态，不应触发。
-    if (!primaryFinalText && !awaitingToolApproval && !signal?.aborted) {
-      if (primaryFinishReason === 'content-filter') {
-        throw new Error('模型响应被内容安全策略拦截，未生成最终答复。')
-      }
-      if (primaryFinishReason === 'error') {
-        throw new Error('模型在生成最终答复前返回错误。')
-      }
+    const needsTextRecovery = !primaryFinalText && !awaitingToolApproval && !signal?.aborted
+    if (needsTextRecovery && primaryFinishReason === 'content-filter') {
+      throw new Error('模型响应被内容安全策略拦截，未生成最终答复。')
+    }
+    if (needsTextRecovery && primaryFinishReason === 'error') {
+      throw new Error('模型在生成最终答复前返回错误。')
+    }
+    if (needsTextRecovery && renderableToolOutputs.size > 0) {
+      perf('可展示工具产物已交付，允许无文本完成', Array.from(renderableToolOutputs).join('、'))
+    }
+    if (needsTextRecovery && renderableToolOutputs.size === 0) {
       perf('检测到空最终答复', `${trace.steps.length} 步`)
       reportAgentProgress({
         stage: 'searching',
@@ -908,7 +972,7 @@ export async function generateReplySuggestions(
         messages,
         reasoning: buildReasoningOption(input.providerConfig),
         // Keep the likeme style a little more lively, matching persona chat.
-        ...(input.style === 'likeme' ? { temperature: 0.8 } : {}),
+        ...(input.style === 'likeme' ? agentTemperatureOption(input.providerConfig, 0.8) : {}),
         abortSignal: signal,
         timeout: REPLY_SUGGEST_TIMEOUT_MS,
       })).text
@@ -983,7 +1047,7 @@ Deep reply-suggestion mode is connected to the full Agent toolset. You may searc
     instructions,
     allowSystemInMessages: true,
     tools: prepared.tools,
-    temperature: input.style === 'likeme' ? 0.8 : DEFAULT_AGENT_TEMPERATURE,
+    ...agentTemperatureOption(input.providerConfig, input.style === 'likeme' ? 0.8 : DEFAULT_AGENT_TEMPERATURE),
     reasoning: buildReasoningOption(input.providerConfig),
     stopWhen: [isStepCount(REPLY_DEEP_MAX_STEPS), loopGuardCondition()],
     providerOptions: buildProviderOptions(agentInput, prepared.promptCacheKey),
