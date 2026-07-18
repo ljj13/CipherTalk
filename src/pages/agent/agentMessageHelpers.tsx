@@ -408,55 +408,60 @@ function ProviderSourceIcon({ item }: { item: ProviderSourceItem }) {
 
 export function MessageProviderSources({ items }: { items: ProviderSourceItem[] }) {
   if (items.length === 0) return null
-  const primaryUrl = items.find((item): item is Extract<ProviderSourceItem, { kind: 'url' }> => item.kind === 'url')
-  const remainingCount = Math.max(0, items.length - 1)
   return (
-    <div className="not-prose my-2 flex w-full max-w-xl items-center gap-2 overflow-x-auto py-0.5 text-muted-foreground text-xs">
-      <span aria-label={`${items.length} 个在线来源`} className="flex shrink-0 items-center">
-        {items.map((item, index) => {
-          const iconClassName = `relative inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-[5px] border border-background bg-surface text-muted-foreground shadow-xs transition-transform hover:z-30 hover:-translate-y-0.5 ${index > 0 ? '-ml-2.5' : ''}`
-          const tooltipText = item.kind === 'url' ? item.host : (item.filename || item.mediaType)
-          return (
-            <Tooltip closeDelay={80} delay={120} key={`provider-source-icon-${item.id}`}>
-              <Tooltip.Trigger>
-                {item.kind === 'url' ? (
-                  <Source
-                    aria-label={`打开来源：${item.title}`}
-                    className={iconClassName}
-                    href={item.url}
-                  >
-                    <ProviderSourceIcon item={item} />
-                  </Source>
-                ) : (
-                  <span className={iconClassName}>
-                    <ProviderSourceIcon item={item} />
-                  </span>
-                )}
-              </Tooltip.Trigger>
-              <Tooltip.Content className="max-w-72" placement="top start">
-                <div className="truncate font-medium text-xs">{item.title}</div>
-                <div className="truncate text-[11px] text-muted">{tooltipText}</div>
-              </Tooltip.Content>
-            </Tooltip>
+    <Sources className="my-2 mb-2 w-full max-w-xl text-muted-foreground">
+      <SourcesTrigger
+        aria-label={`展开 ${items.length} 个在线来源`}
+        className="w-fit gap-1.5 rounded-full py-0.5 text-muted-foreground hover:text-foreground"
+        count={items.length}
+      >
+        <span aria-hidden="true" className="flex shrink-0 items-center">
+          {items.slice(0, 5).map((item, index) => (
+            <span
+              className={`relative inline-flex size-5 shrink-0 items-center justify-center overflow-hidden rounded-full border border-background bg-surface text-muted-foreground shadow-xs ${index > 0 ? '-ml-2.5' : ''}`}
+              key={`provider-source-icon-${item.id}`}
+            >
+              <ProviderSourceIcon item={item} />
+            </span>
+          ))}
+        </span>
+        <span className="shrink-0 font-medium text-xs">查看详情</span>
+      </SourcesTrigger>
+      <SourcesContent className="mt-2 w-full gap-1">
+        {items.map((item) => {
+          const detail = item.kind === 'url' ? item.host : (item.filename || item.mediaType)
+          const content = (
+            <>
+              <span className="inline-flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border/60 bg-surface text-muted-foreground shadow-xs">
+                <ProviderSourceIcon item={item} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium text-foreground text-xs">{item.title}</span>
+                <span className="block truncate text-[11px] text-muted-foreground">{detail}</span>
+              </span>
+            </>
+          )
+          return item.kind === 'url' ? (
+            <Source
+              aria-label={`打开来源：${item.title}`}
+              className="group flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-foreground no-underline hover:bg-default/50"
+              href={item.url}
+              key={`provider-source-detail-${item.id}`}
+            >
+              {content}
+              <ArrowUpRightFromSquare className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
+            </Source>
+          ) : (
+            <div
+              className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5"
+              key={`provider-source-detail-${item.id}`}
+            >
+              {content}
+            </div>
           )
         })}
-      </span>
-      <span className="shrink-0 font-medium">在线来源</span>
-      <span aria-hidden="true" className="shrink-0 text-muted-foreground/45">·</span>
-      {primaryUrl ? (
-        <Source
-          aria-label={`打开来源：${primaryUrl.title}`}
-          className="group flex min-w-0 items-center gap-1 text-foreground no-underline hover:underline"
-          href={primaryUrl.url}
-        >
-          <span className="max-w-64 truncate">{primaryUrl.title}</span>
-          <ArrowUpRightFromSquare className="size-3.5 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" />
-        </Source>
-      ) : (
-        <span className="min-w-0 max-w-64 truncate text-foreground">{items[0].title}</span>
-      )}
-      {remainingCount > 0 && <span className="shrink-0 text-muted-foreground">+{remainingCount}</span>}
-    </div>
+      </SourcesContent>
+    </Sources>
   )
 }
 
